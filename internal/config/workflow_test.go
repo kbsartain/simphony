@@ -1,0 +1,581 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"simphony/pkg/api"
+)
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestResolveConfig_FullDefaults(t *testing.T) {
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "test-key",
+				"project_slug": "proj",
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Tracker.Kind != "linear" {
+		t.Errorf("tracker.kind = %q, want linear", cfg.Tracker.Kind)
+	}
+	if cfg.Tracker.Endpoint != "https://api.linear.app/graphql" {
+		t.Errorf("tracker.endpoint = %q, want default", cfg.Tracker.Endpoint)
+	}
+	if cfg.Tracker.APIKey != "test-key" {
+		t.Errorf("tracker.api_key = %q, want test-key", cfg.Tracker.APIKey)
+	}
+	if cfg.Tracker.ProjectSlug != "proj" {
+		t.Errorf("tracker.project_slug = %q, want proj", cfg.Tracker.ProjectSlug)
+	}
+	wantActive := []string{"Todo", "In Progress"}
+	if !slicesEqual(cfg.Tracker.ActiveStates, wantActive) {
+		t.Errorf("tracker.active_states = %v, want %v", cfg.Tracker.ActiveStates, wantActive)
+	}
+	wantTerminal := []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"}
+	if !slicesEqual(cfg.Tracker.TerminalStates, wantTerminal) {
+		t.Errorf("tracker.terminal_states = %v, want %v", cfg.Tracker.TerminalStates, wantTerminal)
+	}
+
+	if cfg.Polling.IntervalMs != 30000 {
+		t.Errorf("polling.interval_ms = %d, want 30000", cfg.Polling.IntervalMs)
+	}
+
+	if !strings.Contains(cfg.Workspace.Root, "symphony_workspaces") {
+		t.Errorf("workspace.root = %q, should contain symphony_workspaces", cfg.Workspace.Root)
+	}
+	if !filepath.IsAbs(cfg.Workspace.Root) {
+		t.Errorf("workspace.root = %q, want absolute", cfg.Workspace.Root)
+	}
+
+	if cfg.Hooks.AfterCreate != nil {
+		t.Errorf("hooks.after_create = %v, want nil", cfg.Hooks.AfterCreate)
+	}
+	if cfg.Hooks.BeforeRun != nil {
+		t.Errorf("hooks.before_run = %v, want nil", cfg.Hooks.BeforeRun)
+	}
+	if cfg.Hooks.AfterRun != nil {
+		t.Errorf("hooks.after_run = %v, want nil", cfg.Hooks.AfterRun)
+	}
+	if cfg.Hooks.BeforeRemove != nil {
+		t.Errorf("hooks.before_remove = %v, want nil", cfg.Hooks.BeforeRemove)
+	}
+	if cfg.Hooks.TimeoutMs != 60000 {
+		t.Errorf("hooks.timeout_ms = %d, want 60000", cfg.Hooks.TimeoutMs)
+	}
+
+	if cfg.Agent.MaxConcurrentAgents != 10 {
+		t.Errorf("agent.max_concurrent_agents = %d, want 10", cfg.Agent.MaxConcurrentAgents)
+	}
+	if cfg.Agent.MaxTurns != 20 {
+		t.Errorf("agent.max_turns = %d, want 20", cfg.Agent.MaxTurns)
+	}
+	if cfg.Agent.MaxRetryBackoffMs != 300000 {
+		t.Errorf("agent.max_retry_backoff_ms = %d, want 300000", cfg.Agent.MaxRetryBackoffMs)
+	}
+	if len(cfg.Agent.MaxConcurrentAgentsByState) != 0 {
+		t.Errorf("agent.max_concurrent_agents_by_state = %v, want empty", cfg.Agent.MaxConcurrentAgentsByState)
+	}
+
+	if cfg.Codex.Command != "codex app-server" {
+		t.Errorf("codex.command = %q, want default", cfg.Codex.Command)
+	}
+	if cfg.Codex.ApprovalPolicy != "auto" {
+		t.Errorf("codex.approval_policy = %q, want auto", cfg.Codex.ApprovalPolicy)
+	}
+	if cfg.Codex.ThreadSandbox != "none" {
+		t.Errorf("codex.thread_sandbox = %q, want none", cfg.Codex.ThreadSandbox)
+	}
+	if cfg.Codex.TurnSandboxPolicy != "none" {
+		t.Errorf("codex.turn_sandbox_policy = %q, want none", cfg.Codex.TurnSandboxPolicy)
+	}
+	if cfg.Codex.TurnTimeoutMs != 3600000 {
+		t.Errorf("codex.turn_timeout_ms = %d, want 3600000", cfg.Codex.TurnTimeoutMs)
+	}
+	if cfg.Codex.ReadTimeoutMs != 5000 {
+		t.Errorf("codex.read_timeout_ms = %d, want 5000", cfg.Codex.ReadTimeoutMs)
+	}
+	if cfg.Codex.StallTimeoutMs != 300000 {
+		t.Errorf("codex.stall_timeout_ms = %d, want 300000", cfg.Codex.StallTimeoutMs)
+	}
+
+	if cfg.Server != nil {
+		t.Errorf("server = %v, want nil", cfg.Server)
+	}
+}
+
+func TestResolveConfig_EnvVarResolution(t *testing.T) {
+	os.Setenv("TEST_LINEAR_KEY", "resolved-key")
+	defer os.Unsetenv("TEST_LINEAR_KEY")
+
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "$TEST_LINEAR_KEY",
+				"project_slug": "proj",
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Tracker.APIKey != "resolved-key" {
+		t.Errorf("tracker.api_key = %q, want resolved-key", cfg.Tracker.APIKey)
+	}
+}
+
+func TestResolveConfig_EnvVarEmpty(t *testing.T) {
+	os.Setenv("TEST_LINEAR_KEY", "")
+	defer os.Unsetenv("TEST_LINEAR_KEY")
+
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "$TEST_LINEAR_KEY",
+				"project_slug": "proj",
+			},
+		},
+	}
+
+	_, err := ResolveConfig(def, t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for empty env var, got nil")
+	}
+	if !strings.Contains(err.Error(), api.ErrMissingTrackerAPIKey) {
+		t.Errorf("expected error containing %q, got %v", api.ErrMissingTrackerAPIKey, err)
+	}
+}
+
+func TestResolveConfig_PathResolution(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine home dir:", err)
+	}
+	workflowDir := t.TempDir()
+
+	tests := []struct {
+		name       string
+		rawRoot    string
+		wantPrefix string
+		wantAbs    bool
+	}{
+		{
+			name:    "relative",
+			rawRoot: "./workspaces",
+			wantAbs: true,
+		},
+		{
+			name:       "tilde",
+			rawRoot:    "~/workspaces",
+			wantPrefix: filepath.Join(home, "workspaces"),
+			wantAbs:    true,
+		},
+		{
+			name:    "absolute",
+			rawRoot: filepath.Join(workflowDir, "absolute", "workspaces"),
+			wantAbs: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			def := &api.WorkflowDefinition{
+				Config: map[string]interface{}{
+					"tracker": map[string]interface{}{
+						"kind":         "linear",
+						"api_key":      "key",
+						"project_slug": "proj",
+					},
+					"workspace": map[string]interface{}{
+						"root": tt.rawRoot,
+					},
+				},
+			}
+
+			cfg, err := ResolveConfig(def, workflowDir)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.wantAbs && !filepath.IsAbs(cfg.Workspace.Root) {
+				t.Errorf("workspace.root = %q, want absolute", cfg.Workspace.Root)
+			}
+
+			if tt.name == "relative" {
+				want := filepath.Join(workflowDir, "workspaces")
+				if cfg.Workspace.Root != want {
+					t.Errorf("workspace.root = %q, want %q", cfg.Workspace.Root, want)
+				}
+			}
+
+			if tt.wantPrefix != "" && cfg.Workspace.Root != tt.wantPrefix {
+				t.Errorf("workspace.root = %q, want %q", cfg.Workspace.Root, tt.wantPrefix)
+			}
+		})
+	}
+}
+
+func TestResolveConfig_PathEnvVar(t *testing.T) {
+	os.Setenv("TEST_WS_ROOT", "env_workspaces")
+	defer os.Unsetenv("TEST_WS_ROOT")
+
+	workflowDir := t.TempDir()
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "key",
+				"project_slug": "proj",
+			},
+			"workspace": map[string]interface{}{
+				"root": "$TEST_WS_ROOT",
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, workflowDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := filepath.Join(workflowDir, "env_workspaces")
+	if cfg.Workspace.Root != want {
+		t.Errorf("workspace.root = %q, want %q", cfg.Workspace.Root, want)
+	}
+}
+
+func TestResolveConfig_ValidationFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    map[string]interface{}
+		wantError string
+	}{
+		{
+			name: "missing tracker kind",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+			},
+			wantError: api.ErrUnsupportedTrackerKind,
+		},
+		{
+			name: "unsupported tracker kind",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "jira",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+			},
+			wantError: api.ErrUnsupportedTrackerKind,
+		},
+		{
+			name: "missing api_key",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"project_slug": "proj",
+				},
+			},
+			wantError: api.ErrMissingTrackerAPIKey,
+		},
+		{
+			name: "missing project_slug",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":    "linear",
+					"api_key": "key",
+				},
+			},
+			wantError: api.ErrMissingTrackerProjectSlug,
+		},
+		{
+			name: "invalid max_turns",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"agent": map[string]interface{}{
+					"max_turns": 0,
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
+			name: "invalid polling interval",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"polling": map[string]interface{}{
+					"interval_ms": 0,
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
+			name: "invalid max concurrent agents",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"agent": map[string]interface{}{
+					"max_concurrent_agents": 0,
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
+			name: "invalid max retry backoff",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"agent": map[string]interface{}{
+					"max_retry_backoff_ms": 0,
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
+			name: "invalid hooks timeout",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"hooks": map[string]interface{}{
+					"timeout_ms": -1,
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
+			name: "empty codex command",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"codex": map[string]interface{}{
+					"command": "",
+				},
+			},
+			wantError: api.ErrCodexNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			def := &api.WorkflowDefinition{Config: tt.config}
+			_, err := ResolveConfig(def, t.TempDir())
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantError)
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Errorf("expected error containing %q, got %v", tt.wantError, err)
+			}
+		})
+	}
+}
+
+func TestResolveConfig_PartialConfig(t *testing.T) {
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "key",
+				"project_slug": "proj",
+			},
+			"agent": map[string]interface{}{
+				"max_concurrent_agents": 5,
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Agent.MaxConcurrentAgents != 5 {
+		t.Errorf("agent.max_concurrent_agents = %d, want 5", cfg.Agent.MaxConcurrentAgents)
+	}
+	if cfg.Agent.MaxTurns != 20 {
+		t.Errorf("agent.max_turns = %d, want 20", cfg.Agent.MaxTurns)
+	}
+	if cfg.Tracker.Kind != "linear" {
+		t.Errorf("tracker.kind = %q, want linear", cfg.Tracker.Kind)
+	}
+}
+
+func TestResolveConfig_UnknownKeysIgnored(t *testing.T) {
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":          "linear",
+				"api_key":       "key",
+				"project_slug":  "proj",
+				"unknown_field": "should be ignored",
+			},
+			"future_section": map[string]interface{}{
+				"foo": "bar",
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Tracker.Kind != "linear" {
+		t.Errorf("tracker.kind = %q, want linear", cfg.Tracker.Kind)
+	}
+}
+
+func TestResolveConfig_InvalidAgentStateEntriesFiltered(t *testing.T) {
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "key",
+				"project_slug": "proj",
+			},
+			"agent": map[string]interface{}{
+				"max_concurrent_agents_by_state": map[string]interface{}{
+					"todo":       5,
+					"inprogress": -1,
+					"done":       "not-a-number",
+					"Review":     3,
+				},
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.Agent.MaxConcurrentAgentsByState) != 2 {
+		t.Fatalf("expected 2 valid entries, got %d", len(cfg.Agent.MaxConcurrentAgentsByState))
+	}
+	if cfg.Agent.MaxConcurrentAgentsByState["todo"] != 5 {
+		t.Errorf("todo = %d, want 5", cfg.Agent.MaxConcurrentAgentsByState["todo"])
+	}
+	if cfg.Agent.MaxConcurrentAgentsByState["review"] != 3 {
+		t.Errorf("review = %d, want 3", cfg.Agent.MaxConcurrentAgentsByState["review"])
+	}
+	if _, ok := cfg.Agent.MaxConcurrentAgentsByState["inprogress"]; ok {
+		t.Error("inprogress should be filtered out")
+	}
+	if _, ok := cfg.Agent.MaxConcurrentAgentsByState["done"]; ok {
+		t.Error("done should be filtered out")
+	}
+}
+
+func TestWatchWorkflow(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "WORKFLOW.md")
+	if err := os.WriteFile(path, []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	changed := make(chan struct{}, 1)
+	onChange := func() {
+		changed <- struct{}{}
+	}
+
+	watcher, err := WatchWorkflow(path, onChange)
+	if err != nil {
+		t.Fatalf("failed to start watcher: %v", err)
+	}
+	defer watcher.Close()
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := os.WriteFile(path, []byte("world"), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	select {
+	case <-changed:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for change event")
+	}
+}
+
+func TestWatchWorkflow_RenameRecreate(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "WORKFLOW.md")
+	if err := os.WriteFile(path, []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	changed := make(chan struct{}, 2)
+	onChange := func() {
+		changed <- struct{}{}
+	}
+
+	watcher, err := WatchWorkflow(path, onChange)
+	if err != nil {
+		t.Fatalf("failed to start watcher: %v", err)
+	}
+	defer watcher.Close()
+
+	time.Sleep(100 * time.Millisecond)
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte("updated"), 0644); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		t.Fatalf("failed to rename: %v", err)
+	}
+
+	select {
+	case <-changed:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for change event after rename")
+	}
+}

@@ -1,0 +1,29 @@
+# Go
+/simphony
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# TypeScript / Node
+node_modules/
+dist/
+*.log
+
+# Workspaces
+symphony_workspaces/
+tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
