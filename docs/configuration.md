@@ -26,7 +26,7 @@ tracker:
   active_states:
     - Todo
     - In Progress
-    - Merge and Commit
+    - Approved
   completion_states:
     - In Review
     - Done
@@ -50,7 +50,7 @@ See [Linear setup](linear.md) for project slug selection, issue filtering, and b
 ```yaml
 pipeline:
   review_state: In Review
-  merge_state: Merge and Commit
+  merge_state: Approved
   done_state: Done
   coding_states:
     - Todo

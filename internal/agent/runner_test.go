@@ -554,7 +554,7 @@ func TestBuildParamsIncludeModelSelection(t *testing.T) {
 
 func TestMergePromptUsesStageInstructions(t *testing.T) {
 	runner := NewRunner("coding prompt")
-	issue := api.Issue{Identifier: "A-1", Title: "Reviewed change", State: "Merge and Commit"}
+	issue := api.Issue{Identifier: "A-1", Title: "Reviewed change", State: "Approved"}
 	prompt, err := runner.turnPrompt(issue, nil, api.PipelineStage{Kind: "merge", Instructions: "Merge this reviewed change."}, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

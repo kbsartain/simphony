@@ -358,7 +358,7 @@ func resolvePipeline(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		reviewState = strings.TrimSpace(v)
 	}
 
-	mergeState := "Merge and Commit"
+	mergeState := "Approved"
 	if v, ok := getString(m, "merge_state"); ok && strings.TrimSpace(v) != "" {
 		mergeState = strings.TrimSpace(v)
 	}

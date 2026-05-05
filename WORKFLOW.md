@@ -7,7 +7,7 @@ tracker:
     - Backlog
     - Todo
     - In Progress
-    - Merge and Commit
+    - Approved
   working_state: In Progress
   completion_states:
     - In Review
@@ -16,7 +16,7 @@ tracker:
     - Completed
 pipeline:
   review_state: In Review
-  merge_state: Merge and Commit
+  merge_state: Approved
   done_state: Done
 polling:
   interval_ms: 30000

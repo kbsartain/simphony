@@ -226,13 +226,13 @@ func defaultConfig() *api.WorkflowConfig {
 			Kind:             "linear",
 			APIKey:           "key",
 			ProjectSlug:      "proj",
-			ActiveStates:     []string{"Todo", "In Progress", "Merge and Commit"},
+			ActiveStates:     []string{"Todo", "In Progress", "Approved"},
 			TerminalStates:   []string{"Closed", "Done", "Cancelled"},
 			CompletionStates: []string{"In Review", "Review", "Done", "Completed", "Closed", "Cancelled"},
 		},
 		Pipeline: api.PipelineConfig{
 			ReviewState:  "In Review",
-			MergeState:   "Merge and Commit",
+			MergeState:   "Approved",
 			DoneState:    "Done",
 			CodingStates: []string{"Todo", "In Progress"},
 		},
@@ -909,10 +909,10 @@ func TestOrchestrator_SuccessfulActiveRunMovesToCompletionState(t *testing.T) {
 func TestOrchestrator_MergeStageMovesToDone(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{
-			{ID: "1", Identifier: "A-1", Title: "First", State: "Merge and Commit"},
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Approved"},
 		},
 		byIDs: map[string]api.Issue{
-			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "Merge and Commit"},
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "Approved"},
 		},
 	}
 	wsMgr, _ := workspace.NewManager(t.TempDir())

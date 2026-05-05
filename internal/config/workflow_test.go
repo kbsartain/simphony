@@ -52,7 +52,7 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	if cfg.Tracker.ProjectSlug != "proj" {
 		t.Errorf("tracker.project_slug = %q, want proj", cfg.Tracker.ProjectSlug)
 	}
-	wantActive := []string{"Todo", "In Progress", "Merge and Commit"}
+	wantActive := []string{"Todo", "In Progress", "Approved"}
 	if !slicesEqual(cfg.Tracker.ActiveStates, wantActive) {
 		t.Errorf("tracker.active_states = %v, want %v", cfg.Tracker.ActiveStates, wantActive)
 	}
@@ -66,8 +66,8 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	if cfg.Pipeline.ReviewState != "In Review" {
 		t.Errorf("pipeline.review_state = %q, want In Review", cfg.Pipeline.ReviewState)
 	}
-	if cfg.Pipeline.MergeState != "Merge and Commit" {
-		t.Errorf("pipeline.merge_state = %q, want Merge and Commit", cfg.Pipeline.MergeState)
+	if cfg.Pipeline.MergeState != "Approved" {
+		t.Errorf("pipeline.merge_state = %q, want Approved", cfg.Pipeline.MergeState)
 	}
 	if cfg.Pipeline.DoneState != "Done" {
 		t.Errorf("pipeline.done_state = %q, want Done", cfg.Pipeline.DoneState)
@@ -264,7 +264,7 @@ func TestResolveConfig_WorkingStateAppendedToActiveStates(t *testing.T) {
 	if cfg.Tracker.WorkingState != "In Progress" {
 		t.Fatalf("tracker.working_state = %q, want In Progress", cfg.Tracker.WorkingState)
 	}
-	wantActive := []string{"Todo", "In Progress", "Merge and Commit"}
+	wantActive := []string{"Todo", "In Progress", "Approved"}
 	if !slicesEqual(cfg.Tracker.ActiveStates, wantActive) {
 		t.Fatalf("tracker.active_states = %v, want %v", cfg.Tracker.ActiveStates, wantActive)
 	}
