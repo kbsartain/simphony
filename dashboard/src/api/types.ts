@@ -22,6 +22,8 @@ export interface Issue {
 export interface StateCounts {
   running: number;
   retrying: number;
+  claimed: number;
+  completed: number;
 }
 
 export interface TokenSnapshot {
@@ -33,6 +35,10 @@ export interface TokenSnapshot {
 export interface RunningSnapshot {
   issue_id: string;
   issue_identifier: string;
+  issue_title: string;
+  issue_url: string | null;
+  priority: number | null;
+  labels: string[];
   state: string;
   session_id: string;
   turn_count: number;
@@ -46,6 +52,7 @@ export interface RunningSnapshot {
 export interface RetrySnapshot {
   issue_id: string;
   issue_identifier: string;
+  kind: string;
   attempt: number;
   due_at: string;
   error: string | null;
@@ -60,6 +67,8 @@ export interface CodexTotals {
 
 export interface StateSnapshot {
   generated_at: string;
+  poll_interval_ms: number;
+  max_concurrent_agents: number;
   counts: StateCounts;
   running: RunningSnapshot[];
   retrying: RetrySnapshot[];
@@ -95,4 +104,90 @@ export interface IssueDetailResponse {
   recent_events: { at: string; event: string; message: string }[];
   last_error: string | null;
   tracked: Record<string, unknown>;
+}
+
+export interface TrackerConfig {
+  kind: string;
+  endpoint: string;
+  api_key: string;
+  project_slug: string;
+  active_states: string[];
+  working_state: string;
+  terminal_states: string[];
+  completion_states: string[];
+}
+
+export interface PipelineConfig {
+  review_state: string;
+  merge_state: string;
+  done_state: string;
+  coding_states: string[];
+}
+
+export interface PollingConfig {
+  interval_ms: number;
+}
+
+export interface WorkspaceConfig {
+  root: string;
+  mode: string;
+  repo: string;
+  base_branch: string;
+  branch_prefix: string;
+  cleanup_worktrees: boolean;
+}
+
+export interface HooksConfig {
+  after_create: string | null;
+  before_run: string | null;
+  after_run: string | null;
+  before_remove: string | null;
+  timeout_ms: number;
+}
+
+export interface AgentConfig {
+  max_concurrent_agents: number;
+  max_concurrent_agents_by_state: Record<string, number>;
+  max_turns: number;
+  max_retry_backoff_ms: number;
+}
+
+export interface CodexConfig {
+  command: string;
+  model?: string;
+  model_provider?: string;
+  approval_policy: string;
+  thread_sandbox: string;
+  turn_sandbox_policy: string;
+  turn_timeout_ms: number;
+  read_timeout_ms: number;
+  stall_timeout_ms: number;
+}
+
+export interface ServerConfig {
+  port: number;
+}
+
+export interface WorkflowConfig {
+  tracker: TrackerConfig;
+  pipeline: PipelineConfig;
+  polling: PollingConfig;
+  workspace: WorkspaceConfig;
+  hooks: HooksConfig;
+  agent: AgentConfig;
+  codex: CodexConfig;
+  server?: ServerConfig;
+}
+
+export interface SettingsResponse {
+  workflow_path: string;
+  config: Record<string, unknown>;
+  resolved_config: WorkflowConfig;
+  prompt_template: string;
+  validation_error?: string;
+}
+
+export interface SettingsUpdateRequest {
+  config: Record<string, unknown>;
+  prompt_template?: string;
 }

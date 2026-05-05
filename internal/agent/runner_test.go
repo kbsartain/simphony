@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"simphony/pkg/api"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 // mockMode controls the behavior of the mock Codex app-server.
@@ -255,7 +255,7 @@ func TestRunnerSuccessfulSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := runner.Run(ctx, issue, workspace, nil, &cfg, 1, nil, eventCallback)
+	err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 1, nil, eventCallback)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -325,7 +325,7 @@ func TestRunnerContinuationUsesSameThread(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := runner.Run(ctx, issue, workspace, nil, &cfg, 3, shouldContinue, eventCallback)
+	err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 3, shouldContinue, eventCallback)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -371,7 +371,7 @@ func TestRunnerMaxTurnsReached(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := runner.Run(ctx, issue, workspace, nil, &cfg, 1, func() (api.ContinueDecision, error) {
+	err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 1, func() (api.ContinueDecision, error) {
 		return api.ContinueDecision{Issue: issue, Continue: true}, nil
 	}, func(api.AgentEvent) {})
 	if err == nil {
@@ -410,7 +410,7 @@ func TestRunnerContextCancellation(t *testing.T) {
 		cancel()
 	}()
 
-	err := runner.Run(ctx, issue, workspace, nil, &cfg, 1, nil, func(api.AgentEvent) {})
+	err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 1, nil, func(api.AgentEvent) {})
 	if err != context.Canceled {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
@@ -438,7 +438,7 @@ func TestRunnerSubprocessExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := runner.Run(ctx, issue, workspace, nil, &cfg, 1, nil, func(api.AgentEvent) {})
+	err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 1, nil, func(api.AgentEvent) {})
 	if err == nil {
 		t.Fatalf("expected error for subprocess exit")
 	}
@@ -469,7 +469,7 @@ func TestRunnerTurnTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := runner.Run(ctx, issue, workspace, nil, &cfg, 1, nil, func(api.AgentEvent) {})
+	err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 1, nil, func(api.AgentEvent) {})
 	if err == nil {
 		t.Fatalf("expected error for turn timeout")
 	}
@@ -500,7 +500,7 @@ func TestRunnerRequestUserInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := runner.Run(ctx, issue, workspace, nil, &cfg, 1, nil, func(api.AgentEvent) {})
+	err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 1, nil, func(api.AgentEvent) {})
 	if err == nil {
 		t.Fatalf("expected error for user input request")
 	}
@@ -528,6 +528,39 @@ func TestMapSandboxPolicy(t *testing.T) {
 		if m["type"] != c.expected {
 			t.Errorf("mapSandboxPolicy(%s) type=%v, want %v", c.input, m["type"], c.expected)
 		}
+	}
+}
+
+func TestBuildParamsIncludeModelSelection(t *testing.T) {
+	workspace := &api.Workspace{Path: t.TempDir()}
+	cfg := &api.CodexConfig{
+		Model:         "gpt-5.4",
+		ModelProvider: "openai",
+	}
+
+	threadParams := buildThreadStartParams(workspace, cfg, api.Issue{ID: "1"})
+	if threadParams["model"] != "gpt-5.4" {
+		t.Fatalf("thread model = %v, want gpt-5.4", threadParams["model"])
+	}
+	if threadParams["modelProvider"] != "openai" {
+		t.Fatalf("thread modelProvider = %v, want openai", threadParams["modelProvider"])
+	}
+
+	turnParams := buildTurnStartParams("thread-1", workspace, cfg, "hello")
+	if turnParams["model"] != "gpt-5.4" {
+		t.Fatalf("turn model = %v, want gpt-5.4", turnParams["model"])
+	}
+}
+
+func TestMergePromptUsesStageInstructions(t *testing.T) {
+	runner := NewRunner("coding prompt")
+	issue := api.Issue{Identifier: "A-1", Title: "Reviewed change", State: "Merge and Commit"}
+	prompt, err := runner.turnPrompt(issue, nil, api.PipelineStage{Kind: "merge", Instructions: "Merge this reviewed change."}, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(prompt, "Merge this reviewed change.") || !strings.Contains(prompt, "A-1 - Reviewed change") {
+		t.Fatalf("merge prompt = %q, want stage instructions and issue context", prompt)
 	}
 }
 

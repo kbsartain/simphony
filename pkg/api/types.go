@@ -4,16 +4,16 @@ import "time"
 
 // Issue is a normalized issue record used by orchestration, prompt rendering, and observability.
 type Issue struct {
-	ID          string    `json:"id"`
-	Identifier  string    `json:"identifier"`
-	Title       string    `json:"title"`
-	Description *string   `json:"description"`
-	Priority    *int      `json:"priority"`
-	State       string    `json:"state"`
-	BranchName  *string   `json:"branch_name"`
-	URL         *string   `json:"url"`
-	Labels      []string  `json:"labels"`
-	BlockedBy   []Blocker `json:"blocked_by"`
+	ID          string     `json:"id"`
+	Identifier  string     `json:"identifier"`
+	Title       string     `json:"title"`
+	Description *string    `json:"description"`
+	Priority    *int       `json:"priority"`
+	State       string     `json:"state"`
+	BranchName  *string    `json:"branch_name"`
+	URL         *string    `json:"url"`
+	Labels      []string   `json:"labels"`
+	BlockedBy   []Blocker  `json:"blocked_by"`
 	CreatedAt   *time.Time `json:"created_at"`
 	UpdatedAt   *time.Time `json:"updated_at"`
 }
@@ -34,6 +34,7 @@ type WorkflowDefinition struct {
 // WorkflowConfig holds typed runtime values derived from WorkflowDefinition.Config.
 type WorkflowConfig struct {
 	Tracker   TrackerConfig   `json:"tracker"`
+	Pipeline  PipelineConfig  `json:"pipeline"`
 	Polling   PollingConfig   `json:"polling"`
 	Workspace WorkspaceConfig `json:"workspace"`
 	Hooks     HooksConfig     `json:"hooks"`
@@ -44,12 +45,28 @@ type WorkflowConfig struct {
 
 // TrackerConfig configures the issue tracker integration.
 type TrackerConfig struct {
-	Kind           string   `json:"kind"`
-	Endpoint       string   `json:"endpoint"`
-	APIKey         string   `json:"api_key"`
-	ProjectSlug    string   `json:"project_slug"`
-	ActiveStates   []string `json:"active_states"`
-	TerminalStates []string `json:"terminal_states"`
+	Kind             string   `json:"kind"`
+	Endpoint         string   `json:"endpoint"`
+	APIKey           string   `json:"api_key"`
+	ProjectSlug      string   `json:"project_slug"`
+	ActiveStates     []string `json:"active_states"`
+	WorkingState     string   `json:"working_state"`
+	TerminalStates   []string `json:"terminal_states"`
+	CompletionStates []string `json:"completion_states"`
+}
+
+// PipelineConfig configures the issue states used for coding, review, merge, and completion.
+type PipelineConfig struct {
+	ReviewState  string   `json:"review_state"`
+	MergeState   string   `json:"merge_state"`
+	DoneState    string   `json:"done_state"`
+	CodingStates []string `json:"coding_states"`
+}
+
+// PipelineStage describes the kind of work the agent should perform for a dispatched issue.
+type PipelineStage struct {
+	Kind         string `json:"kind"`
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // PollingConfig configures the orchestrator poll loop.
@@ -59,7 +76,12 @@ type PollingConfig struct {
 
 // WorkspaceConfig configures workspace directories.
 type WorkspaceConfig struct {
-	Root string `json:"root"`
+	Root             string `json:"root"`
+	Mode             string `json:"mode"`
+	Repo             string `json:"repo"`
+	BaseBranch       string `json:"base_branch"`
+	BranchPrefix     string `json:"branch_prefix"`
+	CleanupWorktrees bool   `json:"cleanup_worktrees"`
 }
 
 // HooksConfig configures workspace lifecycle hooks.
@@ -82,6 +104,8 @@ type AgentConfig struct {
 // CodexConfig configures the Codex app-server client.
 type CodexConfig struct {
 	Command           string `json:"command"`
+	Model             string `json:"model,omitempty"`
+	ModelProvider     string `json:"model_provider,omitempty"`
 	ApprovalPolicy    string `json:"approval_policy"`
 	ThreadSandbox     string `json:"thread_sandbox"`
 	TurnSandboxPolicy string `json:"turn_sandbox_policy"`
@@ -97,7 +121,7 @@ type ServerConfig struct {
 
 // Workspace represents a filesystem workspace assigned to one issue.
 type Workspace struct {
-	Path        string `json:"path"`
+	Path         string `json:"path"`
 	WorkspaceKey string `json:"workspace_key"`
 	CreatedNow   bool   `json:"created_now"`
 }
@@ -135,6 +159,7 @@ type AgentSession struct {
 type RetryEntry struct {
 	IssueID     string      `json:"issue_id"`
 	Identifier  string      `json:"identifier"`
+	Kind        string      `json:"kind"`
 	Attempt     int         `json:"attempt"`
 	DueAtMs     int64       `json:"due_at_ms"`
 	TimerHandle interface{} `json:"-"` // runtime-specific timer reference
@@ -155,11 +180,12 @@ type OrchestratorState struct {
 
 // RunningEntry tracks an active worker run.
 type RunningEntry struct {
-	Issue        Issue        `json:"issue"`
-	Session      AgentSession `json:"session"`
-	StartedAt    time.Time    `json:"started_at"`
-	TurnCount    int          `json:"turn_count"`
-	WorkspacePath string      `json:"workspace_path"`
+	Issue         Issue         `json:"issue"`
+	Session       AgentSession  `json:"session"`
+	StartedAt     time.Time     `json:"started_at"`
+	TurnCount     int           `json:"turn_count"`
+	WorkspacePath string        `json:"workspace_path"`
+	RecentEvents  []EventDetail `json:"recent_events"`
 }
 
 // CodexTotals holds aggregate token and runtime accounting.
@@ -172,24 +198,32 @@ type CodexTotals struct {
 
 // StateSnapshot is returned by the optional HTTP API for dashboard consumption.
 type StateSnapshot struct {
-	GeneratedAt time.Time         `json:"generated_at"`
-	Counts      StateCounts       `json:"counts"`
-	Running     []RunningSnapshot `json:"running"`
-	Retrying    []RetrySnapshot   `json:"retrying"`
-	CodexTotals CodexTotals       `json:"codex_totals"`
-	RateLimits  map[string]interface{} `json:"rate_limits"`
+	GeneratedAt         time.Time              `json:"generated_at"`
+	PollIntervalMs      int                    `json:"poll_interval_ms"`
+	MaxConcurrentAgents int                    `json:"max_concurrent_agents"`
+	Counts              StateCounts            `json:"counts"`
+	Running             []RunningSnapshot      `json:"running"`
+	Retrying            []RetrySnapshot        `json:"retrying"`
+	CodexTotals         CodexTotals            `json:"codex_totals"`
+	RateLimits          map[string]interface{} `json:"rate_limits"`
 }
 
 // StateCounts provides summary counts.
 type StateCounts struct {
-	Running  int `json:"running"`
-	Retrying int `json:"retrying"`
+	Running   int `json:"running"`
+	Retrying  int `json:"retrying"`
+	Claimed   int `json:"claimed"`
+	Completed int `json:"completed"`
 }
 
 // RunningSnapshot represents a single running session for the API.
 type RunningSnapshot struct {
 	IssueID         string        `json:"issue_id"`
 	IssueIdentifier string        `json:"issue_identifier"`
+	IssueTitle      string        `json:"issue_title"`
+	IssueURL        *string       `json:"issue_url"`
+	Priority        *int          `json:"priority"`
+	Labels          []string      `json:"labels"`
 	State           string        `json:"state"`
 	SessionID       string        `json:"session_id"`
 	TurnCount       int           `json:"turn_count"`
@@ -204,6 +238,7 @@ type RunningSnapshot struct {
 type RetrySnapshot struct {
 	IssueID         string    `json:"issue_id"`
 	IssueIdentifier string    `json:"issue_identifier"`
+	Kind            string    `json:"kind"`
 	Attempt         int       `json:"attempt"`
 	DueAt           time.Time `json:"due_at"`
 	Error           *string   `json:"error"`
@@ -278,4 +313,19 @@ type APIError struct {
 // APIErrorResponse wraps APIError for JSON responses.
 type APIErrorResponse struct {
 	Error APIError `json:"error"`
+}
+
+// SettingsResponse returns editable and resolved workflow settings.
+type SettingsResponse struct {
+	WorkflowPath    string                 `json:"workflow_path"`
+	Config          map[string]interface{} `json:"config"`
+	ResolvedConfig  WorkflowConfig         `json:"resolved_config"`
+	PromptTemplate  string                 `json:"prompt_template"`
+	ValidationError *string                `json:"validation_error,omitempty"`
+}
+
+// SettingsUpdateRequest updates WORKFLOW.md front matter and prompt template.
+type SettingsUpdateRequest struct {
+	Config         map[string]interface{} `json:"config"`
+	PromptTemplate *string                `json:"prompt_template"`
 }

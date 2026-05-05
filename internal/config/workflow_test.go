@@ -3,11 +3,13 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
-	"simphony/pkg/api"
+	"github.com/kbsartain/simphony/internal/prompt"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 func slicesEqual(a, b []string) bool {
@@ -50,13 +52,28 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	if cfg.Tracker.ProjectSlug != "proj" {
 		t.Errorf("tracker.project_slug = %q, want proj", cfg.Tracker.ProjectSlug)
 	}
-	wantActive := []string{"Todo", "In Progress"}
+	wantActive := []string{"Todo", "In Progress", "Merge and Commit"}
 	if !slicesEqual(cfg.Tracker.ActiveStates, wantActive) {
 		t.Errorf("tracker.active_states = %v, want %v", cfg.Tracker.ActiveStates, wantActive)
+	}
+	if cfg.Tracker.WorkingState != "" {
+		t.Errorf("tracker.working_state = %q, want empty", cfg.Tracker.WorkingState)
 	}
 	wantTerminal := []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"}
 	if !slicesEqual(cfg.Tracker.TerminalStates, wantTerminal) {
 		t.Errorf("tracker.terminal_states = %v, want %v", cfg.Tracker.TerminalStates, wantTerminal)
+	}
+	if cfg.Pipeline.ReviewState != "In Review" {
+		t.Errorf("pipeline.review_state = %q, want In Review", cfg.Pipeline.ReviewState)
+	}
+	if cfg.Pipeline.MergeState != "Merge and Commit" {
+		t.Errorf("pipeline.merge_state = %q, want Merge and Commit", cfg.Pipeline.MergeState)
+	}
+	if cfg.Pipeline.DoneState != "Done" {
+		t.Errorf("pipeline.done_state = %q, want Done", cfg.Pipeline.DoneState)
+	}
+	if !slicesEqual(cfg.Pipeline.CodingStates, []string{"Todo", "In Progress"}) {
+		t.Errorf("pipeline.coding_states = %v, want [Todo In Progress]", cfg.Pipeline.CodingStates)
 	}
 
 	if cfg.Polling.IntervalMs != 30000 {
@@ -68,6 +85,18 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	}
 	if !filepath.IsAbs(cfg.Workspace.Root) {
 		t.Errorf("workspace.root = %q, want absolute", cfg.Workspace.Root)
+	}
+	if cfg.Workspace.Mode != "directory" {
+		t.Errorf("workspace.mode = %q, want directory", cfg.Workspace.Mode)
+	}
+	if cfg.Workspace.BaseBranch != "main" {
+		t.Errorf("workspace.base_branch = %q, want main", cfg.Workspace.BaseBranch)
+	}
+	if cfg.Workspace.BranchPrefix != "github.com/kbsartain/simphony/" {
+		t.Errorf("workspace.branch_prefix = %q, want simphony/", cfg.Workspace.BranchPrefix)
+	}
+	if cfg.Workspace.CleanupWorktrees {
+		t.Error("workspace.cleanup_worktrees = true, want false")
 	}
 
 	if cfg.Hooks.AfterCreate != nil {
@@ -149,6 +178,49 @@ func TestResolveConfig_EnvVarResolution(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_ModelAndPipeline(t *testing.T) {
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":          "linear",
+				"api_key":       "key",
+				"project_slug":  "proj",
+				"active_states": []interface{}{"Ready", "Coding"},
+			},
+			"pipeline": map[string]interface{}{
+				"review_state":  "Reviewing",
+				"merge_state":   "Approved",
+				"done_state":    "Shipped",
+				"coding_states": []interface{}{"Ready", "Coding"},
+			},
+			"codex": map[string]interface{}{
+				"model":          "gpt-5.4",
+				"model_provider": "openai",
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Codex.Model != "gpt-5.4" {
+		t.Fatalf("codex.model = %q, want gpt-5.4", cfg.Codex.Model)
+	}
+	if cfg.Codex.ModelProvider != "openai" {
+		t.Fatalf("codex.model_provider = %q, want openai", cfg.Codex.ModelProvider)
+	}
+	if cfg.Pipeline.ReviewState != "Reviewing" || cfg.Pipeline.MergeState != "Approved" || cfg.Pipeline.DoneState != "Shipped" {
+		t.Fatalf("pipeline = %+v, want custom states", cfg.Pipeline)
+	}
+	if !slicesEqual(cfg.Tracker.ActiveStates, []string{"Ready", "Coding", "Approved"}) {
+		t.Fatalf("tracker.active_states = %v, want [Ready Coding Approved]", cfg.Tracker.ActiveStates)
+	}
+	if !containsFold(cfg.Tracker.TerminalStates, "Shipped") {
+		t.Fatalf("tracker.terminal_states = %v, want Shipped included", cfg.Tracker.TerminalStates)
+	}
+}
+
 func TestResolveConfig_EnvVarEmpty(t *testing.T) {
 	os.Setenv("TEST_LINEAR_KEY", "")
 	defer os.Unsetenv("TEST_LINEAR_KEY")
@@ -169,6 +241,32 @@ func TestResolveConfig_EnvVarEmpty(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), api.ErrMissingTrackerAPIKey) {
 		t.Errorf("expected error containing %q, got %v", api.ErrMissingTrackerAPIKey, err)
+	}
+}
+
+func TestResolveConfig_WorkingStateAppendedToActiveStates(t *testing.T) {
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":          "linear",
+				"api_key":       "key",
+				"project_slug":  "proj",
+				"active_states": []interface{}{"Todo"},
+				"working_state": "In Progress",
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Tracker.WorkingState != "In Progress" {
+		t.Fatalf("tracker.working_state = %q, want In Progress", cfg.Tracker.WorkingState)
+	}
+	wantActive := []string{"Todo", "In Progress", "Merge and Commit"}
+	if !slicesEqual(cfg.Tracker.ActiveStates, wantActive) {
+		t.Fatalf("tracker.active_states = %v, want %v", cfg.Tracker.ActiveStates, wantActive)
 	}
 }
 
@@ -267,6 +365,48 @@ func TestResolveConfig_PathEnvVar(t *testing.T) {
 	want := filepath.Join(workflowDir, "env_workspaces")
 	if cfg.Workspace.Root != want {
 		t.Errorf("workspace.root = %q, want %q", cfg.Workspace.Root, want)
+	}
+}
+
+func TestResolveConfig_GitWorktreeWorkspace(t *testing.T) {
+	workflowDir := t.TempDir()
+	repoDir := filepath.Join(workflowDir, "repo")
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "key",
+				"project_slug": "proj",
+			},
+			"workspace": map[string]interface{}{
+				"root":              "./workspaces",
+				"mode":              "git_worktree",
+				"repo":              "./repo",
+				"base_branch":       "origin/main",
+				"branch_prefix":     "work/",
+				"cleanup_worktrees": true,
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, workflowDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Workspace.Mode != "git_worktree" {
+		t.Errorf("mode = %q, want git_worktree", cfg.Workspace.Mode)
+	}
+	if cfg.Workspace.Repo != repoDir {
+		t.Errorf("repo = %q, want %q", cfg.Workspace.Repo, repoDir)
+	}
+	if cfg.Workspace.BaseBranch != "origin/main" {
+		t.Errorf("base_branch = %q, want origin/main", cfg.Workspace.BaseBranch)
+	}
+	if cfg.Workspace.BranchPrefix != "work/" {
+		t.Errorf("branch_prefix = %q, want work/", cfg.Workspace.BranchPrefix)
+	}
+	if !cfg.Workspace.CleanupWorktrees {
+		t.Error("cleanup_worktrees = false, want true")
 	}
 }
 
@@ -401,6 +541,34 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			},
 			wantError: api.ErrCodexNotFound,
 		},
+		{
+			name: "git worktree missing repo",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"workspace": map[string]interface{}{
+					"mode": "git_worktree",
+				},
+			},
+			wantError: api.ErrInvalidWorkspaceCWD,
+		},
+		{
+			name: "invalid workspace mode",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"workspace": map[string]interface{}{
+					"mode": "magic",
+				},
+			},
+			wantError: api.ErrInvalidWorkspaceCWD,
+		},
 	}
 
 	for _, tt := range tests {
@@ -468,6 +636,178 @@ func TestResolveConfig_UnknownKeysIgnored(t *testing.T) {
 	}
 	if cfg.Tracker.Kind != "linear" {
 		t.Errorf("tracker.kind = %q, want linear", cfg.Tracker.Kind)
+	}
+}
+
+func TestSaveWorkflow_RoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "key",
+				"project_slug": "proj",
+			},
+			"future_section": map[string]interface{}{
+				"enabled": true,
+			},
+		},
+		PromptTemplate: "Hello {{ issue.identifier }}",
+	}
+
+	if err := SaveWorkflow(path, def); err != nil {
+		t.Fatalf("SaveWorkflow returned error: %v", err)
+	}
+
+	got, err := LoadWorkflow(path)
+	if err != nil {
+		t.Fatalf("LoadWorkflow returned error: %v", err)
+	}
+	if got.PromptTemplate != def.PromptTemplate {
+		t.Errorf("prompt template = %q, want %q", got.PromptTemplate, def.PromptTemplate)
+	}
+	if getSubMap(got.Config, "future_section")["enabled"] != true {
+		t.Errorf("future_section.enabled was not preserved: %v", got.Config)
+	}
+}
+
+func TestSaveWorkflow_ReplacesExistingWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	if err := os.WriteFile(path, []byte("---\ntracker:\n  kind: linear\n  api_key: old\n  project_slug: old\n---\n\nOld prompt\n"), 0o600); err != nil {
+		t.Fatalf("write initial workflow: %v", err)
+	}
+	beforeInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat initial workflow: %v", err)
+	}
+
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "new",
+				"project_slug": "new-proj",
+			},
+		},
+		PromptTemplate: "New prompt",
+	}
+	if err := SaveWorkflow(path, def); err != nil {
+		t.Fatalf("SaveWorkflow returned error: %v", err)
+	}
+
+	got, err := LoadWorkflow(path)
+	if err != nil {
+		t.Fatalf("LoadWorkflow returned error: %v", err)
+	}
+	if got.PromptTemplate != "New prompt" {
+		t.Errorf("prompt template = %q, want New prompt", got.PromptTemplate)
+	}
+	tracker := getSubMap(got.Config, "tracker")
+	if tracker["api_key"] != "new" {
+		t.Errorf("tracker.api_key = %v, want new", tracker["api_key"])
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, ".WORKFLOW.md.tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Errorf("temporary workflow files remain: %v", matches)
+	}
+	afterInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat saved workflow: %v", err)
+	}
+	if afterInfo.Mode().Perm() != beforeInfo.Mode().Perm() {
+		t.Errorf("mode = %v, want %v", afterInfo.Mode().Perm(), beforeInfo.Mode().Perm())
+	}
+}
+
+func TestCheckedInWorkflowTemplateResolves(t *testing.T) {
+	t.Setenv("LINEAR_API_KEY", "test-linear-key")
+
+	workflowPath := filepath.Join("..", "..", "WORKFLOW.md")
+	def, err := LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("load checked-in WORKFLOW.md: %v", err)
+	}
+
+	cfg, err := ResolveConfig(def, filepath.Dir(workflowPath))
+	if err != nil {
+		t.Fatalf("resolve checked-in WORKFLOW.md: %v", err)
+	}
+
+	if strings.TrimSpace(cfg.Tracker.ProjectSlug) == "" {
+		t.Fatal("tracker.project_slug resolved empty")
+	}
+	if cfg.Tracker.APIKey != "test-linear-key" {
+		t.Fatalf("tracker.api_key = %q, want env-resolved test value", cfg.Tracker.APIKey)
+	}
+	if strings.TrimSpace(cfg.Codex.Command) == "" {
+		t.Fatal("codex.command resolved empty")
+	}
+	if strings.TrimSpace(def.PromptTemplate) == "" {
+		t.Fatal("checked-in WORKFLOW.md prompt template is empty")
+	}
+
+	desc := "Public workflow template render check."
+	_, err = prompt.NewRenderer().Render(def.PromptTemplate, api.Issue{
+		ID:          "issue-id",
+		Identifier:  "SIM-123",
+		Title:       "Document the project",
+		Description: &desc,
+		State:       "In Progress",
+		Labels:      []string{"docs", "public"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("render checked-in WORKFLOW.md prompt template: %v", err)
+	}
+}
+
+func TestDocumentationWorkflowExamplesResolve(t *testing.T) {
+	t.Setenv("LINEAR_API_KEY", "test-linear-key")
+
+	docsPath := filepath.Join("..", "..", "docs", "workflow-examples.md")
+	content, err := os.ReadFile(docsPath)
+	if err != nil {
+		t.Fatalf("read workflow examples: %v", err)
+	}
+
+	re := regexp.MustCompile("(?s)```markdown\n(.*?)\n```")
+	matches := re.FindAllStringSubmatch(string(content), -1)
+	if len(matches) < 2 {
+		t.Fatalf("expected at least 2 markdown workflow examples, got %d", len(matches))
+	}
+
+	desc := "Example workflow render check."
+	issue := api.Issue{
+		ID:          "issue-id",
+		Identifier:  "SIM-123",
+		Title:       "Document the project",
+		Description: &desc,
+		State:       "In Progress",
+		Labels:      []string{"docs", "public"},
+	}
+
+	for i, match := range matches {
+		t.Run(filepath.Base(docsPath)+" example", func(t *testing.T) {
+			workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+			if err := os.WriteFile(workflowPath, []byte(match[1]), 0644); err != nil {
+				t.Fatalf("write workflow example: %v", err)
+			}
+
+			def, err := LoadWorkflow(workflowPath)
+			if err != nil {
+				t.Fatalf("load workflow example %d: %v", i+1, err)
+			}
+			if _, err := ResolveConfig(def, filepath.Dir(workflowPath)); err != nil {
+				t.Fatalf("resolve workflow example %d: %v", i+1, err)
+			}
+			if _, err := prompt.NewRenderer().Render(def.PromptTemplate, issue, nil); err != nil {
+				t.Fatalf("render workflow example %d: %v", i+1, err)
+			}
+		})
 	}
 }
 

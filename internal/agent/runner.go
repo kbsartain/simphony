@@ -10,14 +10,15 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"simphony/internal/prompt"
-	"simphony/pkg/api"
+	"github.com/kbsartain/simphony/internal/prompt"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 // Runner implements orchestrator.AgentRunner by speaking the Codex app-server
@@ -121,7 +122,7 @@ func (r *Runner) SetPromptTemplate(template string) {
 
 // Run launches a Codex app-server subprocess, initializes a thread, starts a
 // turn, and blocks until the turn completes or an error occurs.
-func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.CodexConfig, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error {
+func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.CodexConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error {
 	if workspace == nil || workspace.Path == "" {
 		return fmt.Errorf("%s: workspace path is empty", api.ErrInvalidWorkspaceCWD)
 	}
@@ -142,6 +143,9 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	cmd := shellCommandContext(ctx, command)
 	cmd.Dir = workspace.Path
 	cmd.Stderr = os.Stderr
+	if err := configureSubprocessEnv(cmd, workspace.Path); err != nil {
+		return err
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -374,7 +378,7 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	}
 
 	for turnCount := 1; turnCount <= maxTurns; turnCount++ {
-		turnPrompt, err := r.turnPrompt(issue, attempt, turnCount)
+		turnPrompt, err := r.turnPrompt(issue, attempt, stage, turnCount)
 		if err != nil {
 			return err
 		}
@@ -449,6 +453,13 @@ func buildThreadStartParams(workspace *api.Workspace, cfg *api.CodexConfig, issu
 		"cwd": workspace.Path,
 	}
 
+	if cfg.Model != "" {
+		params["model"] = cfg.Model
+	}
+	if cfg.ModelProvider != "" {
+		params["modelProvider"] = cfg.ModelProvider
+	}
+
 	// Map approval policy. The Codex protocol only accepts specific strings.
 	policy := cfg.ApprovalPolicy
 	if policy == "auto" {
@@ -466,8 +477,11 @@ func buildThreadStartParams(workspace *api.Workspace, cfg *api.CodexConfig, issu
 	return params
 }
 
-func (r *Runner) turnPrompt(issue api.Issue, attempt *int, turnCount int) (string, error) {
+func (r *Runner) turnPrompt(issue api.Issue, attempt *int, stage api.PipelineStage, turnCount int) (string, error) {
 	if turnCount == 1 {
+		if stage.Kind == "merge" {
+			return mergePrompt(issue, stage.Instructions), nil
+		}
 		r.mu.RLock()
 		template := r.promptTemplate
 		r.mu.RUnlock()
@@ -479,6 +493,21 @@ func (r *Runner) turnPrompt(issue api.Issue, attempt *int, turnCount int) (strin
 	}
 
 	return fmt.Sprintf("Continue working on issue %s. Do not restart from the original task prompt; use the existing thread context, inspect the current workspace state, and proceed with the next useful step.", issue.Identifier), nil
+}
+
+func mergePrompt(issue api.Issue, instructions string) string {
+	var b strings.Builder
+	if strings.TrimSpace(instructions) == "" {
+		instructions = "Human review has been approved. Evaluate the existing workspace changes for merging, resolve merge-related issues, run appropriate checks, and commit the final changes to the repository."
+	}
+	fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(instructions))
+	fmt.Fprintf(&b, "Issue: %s - %s\n", issue.Identifier, issue.Title)
+	fmt.Fprintf(&b, "State: %s\n", issue.State)
+	if issue.Description != nil && strings.TrimSpace(*issue.Description) != "" {
+		fmt.Fprintf(&b, "\nDescription:\n%s\n", strings.TrimSpace(*issue.Description))
+	}
+	fmt.Fprint(&b, "\nWork from the current repository state in this workspace. Preserve the reviewed implementation unless a merge or verification problem requires a fix.")
+	return b.String()
 }
 
 func waitForTurn(
@@ -589,6 +618,90 @@ func shellCommandContext(ctx context.Context, command string) *exec.Cmd {
 	return exec.CommandContext(ctx, "bash", "-lc", command)
 }
 
+func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string) error {
+	env := os.Environ()
+
+	gitConfigPath, err := writeGitSafeDirectoryConfig(workspacePath)
+	if err != nil {
+		return err
+	}
+	env = setEnv(env, "GIT_CONFIG_GLOBAL", gitConfigPath)
+
+	if rgPath, err := exec.LookPath("rg"); err == nil {
+		env = prependPath(env, filepath.Dir(rgPath))
+	}
+	env = prependWorkspaceToolPaths(env, workspacePath)
+
+	cmd.Env = env
+	return nil
+}
+
+func writeGitSafeDirectoryConfig(workspacePath string) (string, error) {
+	configDir := filepath.Join(workspacePath, ".simphony")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return "", fmt.Errorf("%s: create codex git config dir: %w", api.ErrInvalidWorkspaceCWD, err)
+	}
+	workspacePath = filepath.ToSlash(filepath.Clean(workspacePath))
+	content := fmt.Sprintf("[safe]\n\tdirectory = %s\n", workspacePath)
+	configPath := filepath.Join(configDir, "gitconfig")
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("%s: write codex git config: %w", api.ErrInvalidWorkspaceCWD, err)
+	}
+	return configPath, nil
+}
+
+func setEnv(env []string, key string, value string) []string {
+	prefix := strings.ToUpper(key) + "="
+	for i, entry := range env {
+		if strings.HasPrefix(strings.ToUpper(entry), prefix) {
+			env[i] = key + "=" + value
+			return env
+		}
+	}
+	return append(env, key+"="+value)
+}
+
+func prependPath(env []string, dir string) []string {
+	if dir == "" {
+		return env
+	}
+	pathKey := "PATH"
+	if runtime.GOOS == "windows" {
+		pathKey = "Path"
+	}
+	current := getEnv(env, pathKey)
+	if current == "" && pathKey != "PATH" {
+		current = getEnv(env, "PATH")
+	}
+	return setEnv(env, pathKey, dir+string(os.PathListSeparator)+current)
+}
+
+func getEnv(env []string, key string) string {
+	prefix := strings.ToUpper(key) + "="
+	for _, entry := range env {
+		if strings.HasPrefix(strings.ToUpper(entry), prefix) {
+			return entry[len(key)+1:]
+		}
+	}
+	return ""
+}
+
+func prependWorkspaceToolPaths(env []string, workspacePath string) []string {
+	candidates := []string{
+		filepath.Join(workspacePath, "node_modules", ".bin"),
+		filepath.Join(workspacePath, "dashboard", "node_modules", ".bin"),
+	}
+	if runtime.GOOS == "windows" {
+		candidates = append(candidates, `C:\Program Files\nodejs`)
+	}
+	for _, dir := range candidates {
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			env = prependPath(env, dir)
+		}
+	}
+	return env
+}
+
 func buildTurnStartParams(threadID string, workspace *api.Workspace, cfg *api.CodexConfig, prompt string) map[string]interface{} {
 	params := map[string]interface{}{
 		"threadId": threadID,
@@ -599,6 +712,10 @@ func buildTurnStartParams(threadID string, workspace *api.Workspace, cfg *api.Co
 				"text": prompt,
 			},
 		},
+	}
+
+	if cfg.Model != "" {
+		params["model"] = cfg.Model
 	}
 
 	policy := cfg.ApprovalPolicy

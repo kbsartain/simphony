@@ -1,59 +1,74 @@
-# Codex Setup Reference
+# Codex App-Server Setup
 
-## Installation
-Codex CLI v0.128.0 was installed via winget:
-```
-winget install --id OpenAI.Codex
-```
+Simphony runs Codex in app-server mode and communicates with it over stdio using newline-delimited JSON-RPC.
 
-## Windows Executable Path
-The actual binary on this system is:
-```
-C:\Users\kbsar\AppData\Local\Microsoft\WinGet\Packages\OpenAI.Codex_Microsoft.Winget.Source_8wekyb3d8bbwe\codex-x86_64-pc-windows-msvc.exe
+## Install Codex
+
+Install Codex for your platform using the official OpenAI distribution. The configured command must support:
+
+```bash
+codex app-server --listen stdio://
 ```
 
-**Note:** The `codex` alias is not directly available on Windows because the executable includes the target triple in its name. The WORKFLOW.md has been updated with the full path.
+If `codex` is not on `PATH`, set `codex.command` in `WORKFLOW.md` to the full executable path followed by `app-server`.
+
+```yaml
+codex:
+  command: codex app-server
+```
+
+On Windows, a full path can be used:
+
+```yaml
+codex:
+  command: C:\Path\To\codex.exe app-server
+```
+
+Simphony appends `--listen stdio://` automatically when the command does not already include `--listen`.
+
+## Authentication
+
+Configure Codex authentication using the mechanism supported by your Codex installation, or set the required environment variables before starting Simphony.
+
+For example, in PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY = "replace-with-your-openai-api-key"
+```
+
+## Runtime Behavior
+
+For each issue, the agent runner:
+
+1. Starts the Codex app-server subprocess.
+2. Sets the subprocess working directory to the issue workspace.
+3. Sends `initialize`.
+4. Sends `thread/start`.
+5. Sends `turn/start` with the rendered issue prompt.
+6. Streams notifications back to the orchestrator.
+7. Starts continuation turns while the tracker says the issue is still active.
+
+The runner rejects interactive user-input requests because Simphony is intended to run unattended.
 
 ## JSON Protocol Schemas
-Generated schemas are available at:
-```
-C:\Users\kbsar\simphony\codex-schema\
+
+Codex protocol schemas are checked into `codex-schema/` for reference. Important files include:
+
+- `codex_app_server_protocol.v2.schemas.json`
+- `JSONRPCMessage.json`
+- `ClientRequest.json`
+- `ServerNotification.json`
+- `v2/ThreadStartParams.json`
+- `v2/TurnStartParams.json`
+
+Regenerate schemas with your local Codex binary when needed:
+
+```bash
+codex app-server generate-json-schema --out ./codex-schema
 ```
 
-Key files for agent runner implementation:
-- `codex_app_server_protocol.v2.schemas.json` — Master schema bundle
-- `v2/ThreadStartParams.json` — Thread initialization parameters
-- `v2/TurnStartParams.json` — Turn start parameters
-- `JSONRPCMessage.json` — Transport framing
-- `ClientRequest.json` / `ServerNotification.json` — Request/notification shapes
+On Windows with a full executable path:
 
-Generate updated schemas anytime with:
 ```powershell
-$codex = "C:\Users\kbsar\AppData\Local\Microsoft\WinGet\Packages\OpenAI.Codex_Microsoft.Winget.Source_8wekyb3d8bbwe\codex-x86_64-pc-windows-msvc.exe"
-& $codex app-server generate-json-schema --out "$env:USERPROFILE\simphony\codex-schema"
+& "C:\Path\To\codex.exe" app-server generate-json-schema --out ".\codex-schema"
 ```
-
-## Required Environment Variable
-Before running simphony, set your OpenAI API key:
-```powershell
-$env:OPENAI_API_KEY = "sk-..."
-```
-
-Or configure it in `~/.codex/config.toml` (see Codex docs).
-
-## App-Server Mode
-The Symphony agent runner launches Codex in app-server mode over stdio:
-```
-codex-x86_64-pc-windows-msvc.exe app-server --listen stdio://
-```
-
-Protocol transport is JSON-RPC over stdio. The Go agent runner must:
-1. Start the subprocess with cwd = workspace path
-2. Read/write JSON-RPC messages on stdin/stdout
-3. Keep stderr separate for diagnostics
-4. Handle approval requests, tool calls, and turn lifecycle events
-
-## Windows-Specific Notes
-- Subprocess spawning should use `cmd /C` or direct `.exe` execution rather than `bash -lc`
-- The spec mentions `bash -lc` as the POSIX default; on Windows we invoke the executable directly
-- Sandbox and approval policies are passed as Codex config values (`-c` flags or config.toml)

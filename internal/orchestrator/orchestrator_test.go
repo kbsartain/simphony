@@ -10,15 +10,23 @@ import (
 	"testing"
 	"time"
 
-	"simphony/internal/workspace"
-	"simphony/pkg/api"
+	"github.com/kbsartain/simphony/internal/workspace"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 type mockTracker struct {
-	mu         sync.Mutex
-	candidates []api.Issue
-	byStates   map[string][]api.Issue
-	byIDs      map[string]api.Issue
+	mu              sync.Mutex
+	candidates      []api.Issue
+	byStates        map[string][]api.Issue
+	byIDs           map[string]api.Issue
+	comments        []string
+	transitions     []string
+	transitionErr   error
+	transitionedTo  string
+	completionState string
+	moveErr         error
+	movedIssues     []string
+	movePreferences [][]string
 }
 
 func (m *mockTracker) FetchCandidateIssues(ctx context.Context) ([]api.Issue, error) {
@@ -53,6 +61,70 @@ func (m *mockTracker) FetchIssueStatesByIDs(ctx context.Context, ids []string) (
 	return out, nil
 }
 
+func (m *mockTracker) TransitionIssueState(ctx context.Context, issue api.Issue, state string) (api.Issue, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transitions = append(m.transitions, issue.Identifier+":"+state)
+	if m.transitionErr != nil {
+		return api.Issue{}, m.transitionErr
+	}
+	issue.State = state
+	m.transitionedTo = state
+	return issue, nil
+}
+
+func (m *mockTracker) MoveIssueToFirstAvailableState(ctx context.Context, issueID string, preferredStates []string) (api.Issue, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.movedIssues = append(m.movedIssues, issueID)
+	prefs := make([]string, len(preferredStates))
+	copy(prefs, preferredStates)
+	m.movePreferences = append(m.movePreferences, prefs)
+	if m.moveErr != nil {
+		return api.Issue{}, m.moveErr
+	}
+	issue, ok := m.byIDs[issueID]
+	if !ok {
+		for _, candidate := range m.candidates {
+			if candidate.ID == issueID {
+				issue = candidate
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok {
+		issue = api.Issue{ID: issueID}
+	}
+	if m.completionState != "" {
+		issue.State = m.completionState
+	} else if len(preferredStates) > 0 {
+		issue.State = preferredStates[0]
+	}
+	if m.byIDs == nil {
+		m.byIDs = make(map[string]api.Issue)
+	}
+	m.byIDs[issueID] = issue
+	for i := range m.candidates {
+		if m.candidates[i].ID == issueID {
+			m.candidates[i].State = issue.State
+			break
+		}
+	}
+	return issue, nil
+}
+
+func (m *mockTracker) MoveIssueToState(ctx context.Context, issueID string, state string) (api.Issue, error) {
+	return m.MoveIssueToFirstAvailableState(ctx, issueID, []string{state})
+}
+
+func (m *mockTracker) AddIssueComment(ctx context.Context, issue api.Issue, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.comments = append(m.comments, issue.Identifier+":"+body)
+	return nil
+}
+
 func (m *mockTracker) setCandidates(issues []api.Issue) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -65,18 +137,27 @@ func (m *mockTracker) setByID(issues map[string]api.Issue) {
 	m.byIDs = issues
 }
 
-type mockRunner struct {
-	mu          sync.Mutex
-	runs        []api.Issue
-	delay       time.Duration
-	errAfter    int // return error after N successful runs
-	emitSession bool
-	err         error
+func (m *mockTracker) setByStates(issues map[string][]api.Issue) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.byStates = issues
 }
 
-func (m *mockRunner) Run(ctx context.Context, issue api.Issue, w *api.Workspace, attempt *int, cfg *api.CodexConfig, maxTurns int, shouldContinue func() (api.ContinueDecision, error), cb func(api.AgentEvent)) error {
+type mockRunner struct {
+	mu           sync.Mutex
+	runs         []api.Issue
+	stages       []api.PipelineStage
+	delay        time.Duration
+	errAfter     int // return error after N successful runs
+	emitSession  bool
+	agentMessage string
+	err          error
+}
+
+func (m *mockRunner) Run(ctx context.Context, issue api.Issue, w *api.Workspace, attempt *int, cfg *api.CodexConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), cb func(api.AgentEvent)) error {
 	m.mu.Lock()
 	m.runs = append(m.runs, issue)
+	m.stages = append(m.stages, stage)
 	fail := len(m.runs) > m.errAfter && m.errAfter >= 0
 	m.mu.Unlock()
 	if m.emitSession {
@@ -97,6 +178,21 @@ func (m *mockRunner) Run(ctx context.Context, issue api.Issue, w *api.Workspace,
 				"input_tokens":  10,
 				"output_tokens": 5,
 				"total_tokens":  15,
+			},
+		})
+	}
+	if m.agentMessage != "" {
+		cb(api.AgentEvent{
+			Event:     "item/completed",
+			Timestamp: time.Now(),
+			Payload: map[string]interface{}{
+				"item": map[string]interface{}{
+					"id":   "msg-1",
+					"type": "agentMessage",
+					"text": m.agentMessage,
+				},
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
 			},
 		})
 	}
@@ -127,11 +223,18 @@ func (m *mockRunner) Run(ctx context.Context, issue api.Issue, w *api.Workspace,
 func defaultConfig() *api.WorkflowConfig {
 	return &api.WorkflowConfig{
 		Tracker: api.TrackerConfig{
-			Kind:           "linear",
-			APIKey:         "key",
-			ProjectSlug:    "proj",
-			ActiveStates:   []string{"Todo", "In Progress"},
-			TerminalStates: []string{"Closed", "Done", "Cancelled"},
+			Kind:             "linear",
+			APIKey:           "key",
+			ProjectSlug:      "proj",
+			ActiveStates:     []string{"Todo", "In Progress", "Merge and Commit"},
+			TerminalStates:   []string{"Closed", "Done", "Cancelled"},
+			CompletionStates: []string{"In Review", "Review", "Done", "Completed", "Closed", "Cancelled"},
+		},
+		Pipeline: api.PipelineConfig{
+			ReviewState:  "In Review",
+			MergeState:   "Merge and Commit",
+			DoneState:    "Done",
+			CodingStates: []string{"Todo", "In Progress"},
 		},
 		Polling: api.PollingConfig{IntervalMs: 10000},
 		Workspace: api.WorkspaceConfig{
@@ -163,7 +266,7 @@ func TestOrchestrator_DispatchEligibility(t *testing.T) {
 		},
 	}
 	wsMgr, _ := workspace.NewManager(t.TempDir())
-	runner := &mockRunner{}
+	runner := &mockRunner{errAfter: -1}
 	cfg := defaultConfig()
 	cfg.Agent.MaxConcurrentAgents = 2
 
@@ -182,6 +285,69 @@ func TestOrchestrator_DispatchEligibility(t *testing.T) {
 	// A-3 is terminal, A-4 missing title, A-5 blocked.
 	if runs != 2 {
 		t.Fatalf("expected 2 dispatches, got %d", runs)
+	}
+}
+
+func TestOrchestrator_MovesIssueToWorkingStateBeforeRun(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Todo"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{delay: 500 * time.Millisecond}
+	cfg := defaultConfig()
+	cfg.Tracker.WorkingState = "In Progress"
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	tracker.mu.Lock()
+	transitions := append([]string(nil), tracker.transitions...)
+	tracker.mu.Unlock()
+	if len(transitions) != 1 || transitions[0] != "A-1:In Progress" {
+		t.Fatalf("transitions = %v, want [A-1:In Progress]", transitions)
+	}
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runner.runs))
+	}
+	if runner.runs[0].State != "In Progress" {
+		t.Fatalf("runner issue state = %q, want In Progress", runner.runs[0].State)
+	}
+}
+
+func TestOrchestrator_WorkingStateFailureDoesNotRun(t *testing.T) {
+	tracker := &mockTracker{
+		candidates:    []api.Issue{{ID: "1", Identifier: "A-1", Title: "First", State: "Todo"}},
+		transitionErr: errors.New("linear down"),
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1}
+	cfg := defaultConfig()
+	cfg.Tracker.WorkingState = "In Progress"
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	runner.mu.Lock()
+	runs := len(runner.runs)
+	runner.mu.Unlock()
+	if runs != 0 {
+		t.Fatalf("expected no runs after transition failure, got %d", runs)
+	}
+
+	snapshot := orch.Snapshot()
+	if snapshot.Counts.Retrying != 1 {
+		t.Fatalf("retrying count = %d, want 1", snapshot.Counts.Retrying)
 	}
 }
 
@@ -419,6 +585,12 @@ func TestOrchestrator_Reconciliation_TerminalState(t *testing.T) {
 	tracker.setByID(map[string]api.Issue{
 		"1": {ID: "1", Identifier: "A-1", Title: "First", State: "Done"},
 	})
+	tracker.setByStates(map[string][]api.Issue{
+		"done": {
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Done"},
+		},
+	})
+	tracker.setCandidates(nil)
 
 	// Wait for reconciliation tick.
 	time.Sleep(150 * time.Millisecond)
@@ -429,6 +601,58 @@ func TestOrchestrator_Reconciliation_TerminalState(t *testing.T) {
 
 	if runningCount != 0 {
 		t.Fatalf("expected 0 running after terminal reconciliation, got %d", runningCount)
+	}
+
+	if completed := orch.Snapshot().Counts.Completed; completed != 1 {
+		t.Fatalf("completed count = %d, want 1", completed)
+	}
+}
+
+func TestOrchestrator_CompletedCountRefreshesFromTerminalStates(t *testing.T) {
+	tracker := &mockTracker{}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{}
+	cfg := defaultConfig()
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	if completed := orch.Snapshot().Counts.Completed; completed != 0 {
+		t.Fatalf("initial completed count = %d, want 0", completed)
+	}
+
+	tracker.setByStates(map[string][]api.Issue{
+		"done": {
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Done"},
+			{ID: "2", Identifier: "A-2", Title: "Second", State: "Done"},
+		},
+	})
+	orch.tick()
+
+	if completed := orch.Snapshot().Counts.Completed; completed != 2 {
+		t.Fatalf("completed count = %d, want 2", completed)
+	}
+}
+
+func TestOrchestrator_StartupCleanupCountsTerminalIssues(t *testing.T) {
+	tracker := &mockTracker{
+		byStates: map[string][]api.Issue{
+			"done": {
+				{ID: "1", Identifier: "A-1", Title: "First", State: "Done"},
+			},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{}
+	cfg := defaultConfig()
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	if completed := orch.Snapshot().Counts.Completed; completed != 1 {
+		t.Fatalf("completed count = %d, want 1", completed)
 	}
 }
 
@@ -574,6 +798,39 @@ func TestOrchestrator_SessionAndTokenEventsPopulateSnapshot(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_PostsAgentMessageComments(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "In Progress"},
+		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "In Progress"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{delay: 200 * time.Millisecond, agentMessage: "I updated the dashboard."}
+	cfg := defaultConfig()
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tracker.mu.Lock()
+		comments := append([]string(nil), tracker.comments...)
+		tracker.mu.Unlock()
+		if len(comments) > 0 {
+			if !strings.Contains(comments[0], "Simphony agent update") || !strings.Contains(comments[0], "I updated the dashboard.") {
+				t.Fatalf("comment = %q, want agent update body", comments[0])
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected agent message comment to be posted")
+}
+
 func TestOrchestrator_BlockerRule_NonTerminalBlocker(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{
@@ -604,14 +861,17 @@ func TestOrchestrator_BlockerRule_NonTerminalBlocker(t *testing.T) {
 	}
 }
 
-func TestOrchestrator_ContinuationRetry(t *testing.T) {
+func TestOrchestrator_SuccessfulActiveRunMovesToCompletionState(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{
 			{ID: "1", Identifier: "A-1", Title: "First", State: "In Progress"},
 		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "In Progress"},
+		},
 	}
 	wsMgr, _ := workspace.NewManager(t.TempDir())
-	runner := &mockRunner{}
+	runner := &mockRunner{errAfter: -1}
 	cfg := defaultConfig()
 	cfg.Agent.MaxConcurrentAgents = 1
 
@@ -622,22 +882,71 @@ func TestOrchestrator_ContinuationRetry(t *testing.T) {
 	// Wait for dispatch and completion.
 	time.Sleep(100 * time.Millisecond)
 
-	// Runner succeeds immediately, so continuation retry should be scheduled.
+	// Runner succeeds immediately, so Simphony hands the issue to review.
 	orch.mu.Lock()
 	retryCount := len(orch.state.RetryAttempts)
+	_, completed := orch.state.Completed["1"]
 	orch.mu.Unlock()
 
-	if retryCount != 1 {
-		t.Fatalf("expected 1 continuation retry, got %d", retryCount)
+	if retryCount != 0 {
+		t.Fatalf("expected no retry after completion transition, got %d", retryCount)
+	}
+	if !completed {
+		t.Fatal("expected issue to be marked completed after completion transition")
+	}
+	tracker.mu.Lock()
+	moved := append([]string(nil), tracker.movedIssues...)
+	prefs := append([][]string(nil), tracker.movePreferences...)
+	tracker.mu.Unlock()
+	if len(moved) != 1 || moved[0] != "1" {
+		t.Fatalf("moved issues = %v, want [1]", moved)
+	}
+	if len(prefs) != 1 || len(prefs[0]) == 0 || prefs[0][0] != "In Review" {
+		t.Fatalf("move preferences = %v, want In Review first", prefs)
+	}
+}
+
+func TestOrchestrator_MergeStageMovesToDone(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Merge and Commit"},
+		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "Merge and Commit"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1}
+	cfg := defaultConfig()
+	cfg.Tracker.WorkingState = "In Progress"
+	cfg.Agent.MaxConcurrentAgents = 1
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	tracker.mu.Lock()
+	transitions := append([]string(nil), tracker.transitions...)
+	moved := append([]string(nil), tracker.movedIssues...)
+	prefs := append([][]string(nil), tracker.movePreferences...)
+	tracker.mu.Unlock()
+	if len(transitions) != 0 {
+		t.Fatalf("working state transitions = %v, want none for merge stage", transitions)
+	}
+	if len(moved) != 1 || moved[0] != "1" {
+		t.Fatalf("moved issues = %v, want [1]", moved)
+	}
+	if len(prefs) != 1 || len(prefs[0]) != 1 || prefs[0][0] != "Done" {
+		t.Fatalf("move preferences = %v, want [[Done]]", prefs)
 	}
 
-	orch.mu.Lock()
-	entry := orch.state.RetryAttempts["1"]
-	orch.mu.Unlock()
-	if entry != nil {
-		if timer, ok := entry.TimerHandle.(*time.Timer); ok {
-			timer.Stop()
-		}
+	runner.mu.Lock()
+	stages := append([]api.PipelineStage(nil), runner.stages...)
+	runner.mu.Unlock()
+	if len(stages) != 1 || stages[0].Kind != "merge" {
+		t.Fatalf("runner stages = %v, want one merge stage", stages)
 	}
 }
 

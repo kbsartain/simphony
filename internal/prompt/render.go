@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kbsartain/simphony/pkg/api"
 	"github.com/osteele/liquid"
-	"simphony/pkg/api"
 )
 
 // Renderer handles prompt template rendering.

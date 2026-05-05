@@ -2,11 +2,13 @@ package workspace
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
-	"simphony/pkg/api"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 func TestNewManager(t *testing.T) {
@@ -126,6 +128,110 @@ func TestPrepareWorkspace_PathEscape(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkspace_GitWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repo := initTestRepo(t)
+	root := t.TempDir()
+	m, err := NewManagerWithConfig(api.WorkspaceConfig{
+		Root:         root,
+		Mode:         "git_worktree",
+		Repo:         repo,
+		BaseBranch:   "main",
+		BranchPrefix: "github.com/kbsartain/simphony/",
+	})
+	if err != nil {
+		t.Fatalf("NewManagerWithConfig failed: %v", err)
+	}
+
+	ws, err := m.PrepareWorkspace(api.Issue{Identifier: "TEST-123"})
+	if err != nil {
+		t.Fatalf("PrepareWorkspace failed: %v", err)
+	}
+	if !ws.CreatedNow {
+		t.Fatal("expected CreatedNow=true for new worktree")
+	}
+	if _, err := os.Stat(filepath.Join(ws.Path, ".git")); err != nil {
+		t.Fatalf("expected worktree .git file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws.Path, "README.md")); err != nil {
+		t.Fatalf("expected repo file in worktree: %v", err)
+	}
+
+	branch := gitOutput(t, ws.Path, "branch", "--show-current")
+	if branch != "github.com/kbsartain/simphony/TEST-123" {
+		t.Fatalf("branch = %q, want simphony/TEST-123", branch)
+	}
+
+	reused, err := m.PrepareWorkspace(api.Issue{Identifier: "TEST-123"})
+	if err != nil {
+		t.Fatalf("PrepareWorkspace existing failed: %v", err)
+	}
+	if reused.CreatedNow {
+		t.Fatal("expected CreatedNow=false for existing worktree")
+	}
+}
+
+func TestPrepareWorkspace_GitWorktree_UsesIssueBranchName(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repo := initTestRepo(t)
+	root := t.TempDir()
+	m, err := NewManagerWithConfig(api.WorkspaceConfig{
+		Root:       root,
+		Mode:       "git_worktree",
+		Repo:       repo,
+		BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("NewManagerWithConfig failed: %v", err)
+	}
+
+	branchName := "feature/custom-branch"
+	ws, err := m.PrepareWorkspace(api.Issue{Identifier: "TEST-124", BranchName: &branchName})
+	if err != nil {
+		t.Fatalf("PrepareWorkspace failed: %v", err)
+	}
+	branch := gitOutput(t, ws.Path, "branch", "--show-current")
+	if branch != branchName {
+		t.Fatalf("branch = %q, want %q", branch, branchName)
+	}
+}
+
+func TestRemoveWorkspace_GitWorktreeCleanup(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repo := initTestRepo(t)
+	root := t.TempDir()
+	m, err := NewManagerWithConfig(api.WorkspaceConfig{
+		Root:             root,
+		Mode:             "git_worktree",
+		Repo:             repo,
+		BaseBranch:       "main",
+		CleanupWorktrees: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManagerWithConfig failed: %v", err)
+	}
+
+	ws, err := m.PrepareWorkspace(api.Issue{Identifier: "TEST-125"})
+	if err != nil {
+		t.Fatalf("PrepareWorkspace failed: %v", err)
+	}
+	if err := m.RemoveWorkspace("TEST-125"); err != nil {
+		t.Fatalf("RemoveWorkspace failed: %v", err)
+	}
+	if _, err := os.Stat(ws.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree path removed, got err=%v", err)
+	}
+}
+
 func TestRemoveWorkspace(t *testing.T) {
 	root := t.TempDir()
 	m, err := NewManager(root)
@@ -206,4 +312,39 @@ func TestRunHook_Failure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected failure error, got nil")
 	}
+}
+
+func initTestRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runGitForTest(t, repo, "init", "-b", "main")
+	runGitForTest(t, repo, "config", "user.email", "test@example.com")
+	runGitForTest(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# test\n"), 0644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGitForTest(t, repo, "add", "README.md")
+	runGitForTest(t, repo, "commit", "-m", "initial")
+	return repo
+}
+
+func runGitForTest(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+	return strings.TrimSpace(string(out))
 }

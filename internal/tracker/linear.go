@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"simphony/pkg/api"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 const (
@@ -93,6 +93,244 @@ func (c *LinearClient) FetchIssueStatesByIDs(ctx context.Context, ids []string) 
 		result[issue.ID] = issue
 	}
 	return result, nil
+}
+
+// MoveIssueToFirstAvailableState moves an issue to the first workflow state
+// matching preferredStates order and returns the updated issue.
+func (c *LinearClient) MoveIssueToFirstAvailableState(ctx context.Context, issueID string, preferredStates []string) (api.Issue, error) {
+	if issueID == "" {
+		return api.Issue{}, fmt.Errorf("%s: issue id is required", api.ErrLinearUnknownPayload)
+	}
+	preferredStates = normalizeStatePreferences(preferredStates)
+	if len(preferredStates) == 0 {
+		return api.Issue{}, fmt.Errorf("%s: completion state list is empty", api.ErrLinearUnknownPayload)
+	}
+
+	stateID, stateName, err := c.findIssueWorkflowStateID(ctx, issueID, preferredStates)
+	if err != nil {
+		return api.Issue{}, err
+	}
+
+	respBody, err := c.doGraphQL(ctx, c.buildIssueUpdateMutation(), map[string]interface{}{
+		"issueID": issueID,
+		"stateID": stateID,
+	})
+	if err != nil {
+		return api.Issue{}, err
+	}
+
+	var payload struct {
+		IssueUpdate struct {
+			Success bool        `json:"success"`
+			Issue   linearIssue `json:"issue"`
+		} `json:"issueUpdate"`
+	}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return api.Issue{}, fmt.Errorf("%s: %w", api.ErrLinearUnknownPayload, err)
+	}
+	if !payload.IssueUpdate.Success {
+		return api.Issue{}, fmt.Errorf("%s: issueUpdate returned success=false", api.ErrLinearUnknownPayload)
+	}
+	issue := normalizeIssue(payload.IssueUpdate.Issue)
+	if issue.ID == "" {
+		issue.ID = issueID
+	}
+	if issue.State == "" {
+		issue.State = stateName
+	}
+	return issue, nil
+}
+
+// MoveIssueToState moves an issue to the named Linear workflow state.
+func (c *LinearClient) MoveIssueToState(ctx context.Context, issueID string, state string) (api.Issue, error) {
+	return c.MoveIssueToFirstAvailableState(ctx, issueID, []string{state})
+}
+
+// TransitionIssueState moves an issue to the named Linear workflow state.
+func (c *LinearClient) TransitionIssueState(ctx context.Context, issue api.Issue, state string) (api.Issue, error) {
+	state = strings.TrimSpace(state)
+	if state == "" || strings.EqualFold(issue.State, state) {
+		return issue, nil
+	}
+
+	stateID, err := c.findIssueTeamStateID(ctx, issue.ID, state)
+	if err != nil {
+		return api.Issue{}, err
+	}
+
+	respBody, err := c.doGraphQL(ctx, c.buildIssueUpdateMutation(), map[string]interface{}{
+		"issueID": issue.ID,
+		"stateID": stateID,
+	})
+	if err != nil {
+		return api.Issue{}, err
+	}
+
+	var payload struct {
+		IssueUpdate struct {
+			Success bool        `json:"success"`
+			Issue   linearIssue `json:"issue"`
+		} `json:"issueUpdate"`
+	}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return api.Issue{}, fmt.Errorf("%s: %w", api.ErrLinearUnknownPayload, err)
+	}
+	if !payload.IssueUpdate.Success {
+		return api.Issue{}, fmt.Errorf("%s: issueUpdate returned success=false", api.ErrLinearUnknownPayload)
+	}
+	updated := normalizeIssue(payload.IssueUpdate.Issue)
+	if updated.ID == "" {
+		return api.Issue{}, fmt.Errorf("%s: issueUpdate response missing issue", api.ErrLinearUnknownPayload)
+	}
+	return updated, nil
+}
+
+// AddIssueComment posts a comment to a Linear issue.
+func (c *LinearClient) AddIssueComment(ctx context.Context, issue api.Issue, body string) error {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return nil
+	}
+
+	respBody, err := c.doGraphQL(ctx, c.buildCommentCreateMutation(), map[string]interface{}{
+		"issueID": issue.ID,
+		"body":    body,
+	})
+	if err != nil {
+		return err
+	}
+
+	var payload struct {
+		CommentCreate struct {
+			Success bool `json:"success"`
+		} `json:"commentCreate"`
+	}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return fmt.Errorf("%s: %w", api.ErrLinearUnknownPayload, err)
+	}
+	if !payload.CommentCreate.Success {
+		return fmt.Errorf("%s: commentCreate returned success=false", api.ErrLinearUnknownPayload)
+	}
+	return nil
+}
+
+func (c *LinearClient) findIssueWorkflowStateID(ctx context.Context, issueID string, preferredStates []string) (string, string, error) {
+	byName := make(map[string]struct {
+		id   string
+		name string
+	})
+	var after *string
+
+	for {
+		variables := map[string]interface{}{"issueID": issueID}
+		if after != nil {
+			variables["after"] = *after
+		}
+
+		respBody, err := c.doGraphQL(ctx, c.buildIssueWorkflowStatesQuery(), variables)
+		if err != nil {
+			return "", "", err
+		}
+
+		var payload struct {
+			Issue *struct {
+				Team struct {
+					States struct {
+						Nodes []struct {
+							ID   string `json:"id"`
+							Name string `json:"name"`
+						} `json:"nodes"`
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+					} `json:"states"`
+				} `json:"team"`
+			} `json:"issue"`
+		}
+		if err := json.Unmarshal(respBody, &payload); err != nil {
+			return "", "", fmt.Errorf("%s: %w", api.ErrLinearUnknownPayload, err)
+		}
+		if payload.Issue == nil {
+			return "", "", fmt.Errorf("%s: issue %q not found", api.ErrLinearUnknownPayload, issueID)
+		}
+
+		for _, state := range payload.Issue.Team.States.Nodes {
+			name := strings.TrimSpace(state.Name)
+			if state.ID == "" || name == "" {
+				continue
+			}
+			byName[strings.ToLower(name)] = struct {
+				id   string
+				name string
+			}{id: state.ID, name: name}
+		}
+
+		if !payload.Issue.Team.States.PageInfo.HasNextPage {
+			break
+		}
+		if payload.Issue.Team.States.PageInfo.EndCursor == "" {
+			return "", "", fmt.Errorf("%s: workflow states hasNextPage true but endCursor missing", api.ErrLinearMissingEndCursor)
+		}
+		after = &payload.Issue.Team.States.PageInfo.EndCursor
+	}
+
+	for _, preferred := range preferredStates {
+		if state, ok := byName[strings.ToLower(preferred)]; ok {
+			return state.id, state.name, nil
+		}
+	}
+	return "", "", fmt.Errorf("%s: none of preferred completion states exist: %s", api.ErrLinearUnknownPayload, strings.Join(preferredStates, ", "))
+}
+
+func (c *LinearClient) findIssueTeamStateID(ctx context.Context, issueID string, state string) (string, error) {
+	respBody, err := c.doGraphQL(ctx, c.buildIssueTeamStatesQuery(), map[string]interface{}{
+		"issueID": issueID,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var payload struct {
+		Issue struct {
+			Team struct {
+				States struct {
+					Nodes []struct {
+						ID   string `json:"id"`
+						Name string `json:"name"`
+					} `json:"nodes"`
+				} `json:"states"`
+			} `json:"team"`
+		} `json:"issue"`
+	}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return "", fmt.Errorf("%s: %w", api.ErrLinearUnknownPayload, err)
+	}
+
+	for _, node := range payload.Issue.Team.States.Nodes {
+		if strings.EqualFold(node.Name, state) && node.ID != "" {
+			return node.ID, nil
+		}
+	}
+	return "", fmt.Errorf("%s: Linear state %q not found for issue %s", api.ErrLinearUnknownPayload, state, issueID)
+}
+
+func normalizeStatePreferences(states []string) []string {
+	seen := make(map[string]struct{}, len(states))
+	out := make([]string, 0, len(states))
+	for _, state := range states {
+		state = strings.TrimSpace(state)
+		if state == "" {
+			continue
+		}
+		key := strings.ToLower(state)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, state)
+	}
+	return out
 }
 
 func (c *LinearClient) fetchIssuesByStates(ctx context.Context, states []string) ([]api.Issue, error) {
@@ -198,6 +436,79 @@ func (c *LinearClient) doGraphQL(ctx context.Context, query string, variables ma
 	}
 
 	return respPayload.Data, nil
+}
+
+func (c *LinearClient) buildCommentCreateMutation() string {
+	return `mutation CreateComment($issueID: String!, $body: String!) {
+  commentCreate(input: { issueId: $issueID, body: $body }) {
+    success
+  }
+}`
+}
+
+func (c *LinearClient) buildIssueTeamStatesQuery() string {
+	return `query IssueTeamStates($issueID: String!) {
+  issue(id: $issueID) {
+    team {
+      states(first: 100) {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+  }
+}`
+}
+
+func (c *LinearClient) buildIssueWorkflowStatesQuery() string {
+	return `query IssueWorkflowStates($issueID: String!, $after: String) {
+  issue(id: $issueID) {
+    team {
+      states(first: 100, after: $after) {
+        nodes {
+          id
+          name
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}`
+}
+
+func (c *LinearClient) buildIssueUpdateMutation() string {
+	return `mutation UpdateIssueState($issueID: String!, $stateID: String!) {
+  issueUpdate(id: $issueID, input: { stateId: $stateID }) {
+    success
+    issue {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      labels { nodes { name } }
+      createdAt
+      updatedAt
+      inverseRelations {
+        nodes {
+          type
+          issue {
+            id
+            identifier
+            state { name }
+          }
+        }
+      }
+    }
+  }
+}`
 }
 
 func (c *LinearClient) buildCandidateQuery() string {

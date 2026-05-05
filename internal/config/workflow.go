@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/kbsartain/simphony/pkg/api"
 	"gopkg.in/yaml.v3"
-	"simphony/pkg/api"
 )
 
 // LoadWorkflow reads and parses a WORKFLOW.md file.
@@ -56,6 +56,70 @@ func LoadWorkflow(path string) (*api.WorkflowDefinition, error) {
 	}, nil
 }
 
+// SaveWorkflow writes a WorkflowDefinition back to a WORKFLOW.md file.
+func SaveWorkflow(path string, def *api.WorkflowDefinition) error {
+	if def == nil {
+		return fmt.Errorf("%s: workflow definition is nil", api.ErrWorkflowParseError)
+	}
+	configMap := def.Config
+	if configMap == nil {
+		configMap = make(map[string]interface{})
+	}
+
+	frontMatter, err := yaml.Marshal(configMap)
+	if err != nil {
+		return fmt.Errorf("%s: %w", api.ErrWorkflowParseError, err)
+	}
+
+	perm := os.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+
+	content := fmt.Sprintf("---\n%s---\n\n%s\n", string(frontMatter), strings.TrimSpace(def.PromptTemplate))
+	if err := writeFileAtomic(path, []byte(content), perm); err != nil {
+		return fmt.Errorf("write workflow: %w", err)
+	}
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+
+	tmp, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
 // ResolveConfig builds a typed WorkflowConfig from a WorkflowDefinition.
 // It applies defaults, resolves environment variable indirection, and validates values.
 func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.WorkflowConfig, error) {
@@ -67,6 +131,11 @@ func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.Workfl
 
 	trackerMap := getSubMap(def.Config, "tracker")
 	if err := resolveTracker(trackerMap, cfg); err != nil {
+		return nil, err
+	}
+
+	pipelineMap := getSubMap(def.Config, "pipeline")
+	if err := resolvePipeline(pipelineMap, cfg); err != nil {
 		return nil, err
 	}
 
@@ -96,7 +165,9 @@ func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.Workfl
 	}
 
 	serverMap := getSubMap(def.Config, "server")
-	resolveServer(serverMap, cfg)
+	if err := resolveServer(serverMap, cfg); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
 }
@@ -169,6 +240,18 @@ func getInt(m map[string]interface{}, key string) (int, bool) {
 	}
 }
 
+func getBool(m map[string]interface{}, key string) (bool, bool) {
+	if m == nil {
+		return false, false
+	}
+	v, ok := m[key]
+	if !ok {
+		return false, false
+	}
+	b, ok := v.(bool)
+	return b, ok
+}
+
 func getStringSlice(m map[string]interface{}, key string) ([]string, bool) {
 	if m == nil {
 		return nil, false
@@ -225,21 +308,138 @@ func resolveTracker(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	if v, ok := getStringSlice(m, "active_states"); ok && len(v) > 0 {
 		activeStates = v
 	}
+	activeStates = appendUniqueStrings(activeStates)
+	if len(activeStates) == 0 {
+		return fmt.Errorf("%s: tracker.active_states must contain at least one state", api.ErrWorkflowParseError)
+	}
+
+	workingState := ""
+	if v, ok := getString(m, "working_state"); ok {
+		workingState = strings.TrimSpace(v)
+	}
+	if workingState != "" && !containsFold(activeStates, workingState) {
+		activeStates = append(activeStates, workingState)
+	}
 
 	terminalStates := []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"}
 	if v, ok := getStringSlice(m, "terminal_states"); ok && len(v) > 0 {
 		terminalStates = v
 	}
+	terminalStates = appendUniqueStrings(terminalStates)
+	if len(terminalStates) == 0 {
+		return fmt.Errorf("%s: tracker.terminal_states must contain at least one state", api.ErrWorkflowParseError)
+	}
+
+	completionStates := []string{"In Review", "Review", "Done", "Completed"}
+	if v, ok := getStringSlice(m, "completion_states"); ok && len(v) > 0 {
+		completionStates = v
+	}
+	completionStates = appendUniqueStrings(completionStates, terminalStates...)
+	if overlap := firstOverlappingString(activeStates, completionStates); overlap != "" {
+		return fmt.Errorf("%s: tracker.completion_states must not overlap tracker.active_states: %q", api.ErrWorkflowParseError, overlap)
+	}
 
 	cfg.Tracker = api.TrackerConfig{
-		Kind:           kind,
-		Endpoint:       endpoint,
-		APIKey:         apiKey,
-		ProjectSlug:    projectSlug,
-		ActiveStates:   activeStates,
-		TerminalStates: terminalStates,
+		Kind:             kind,
+		Endpoint:         endpoint,
+		APIKey:           apiKey,
+		ProjectSlug:      projectSlug,
+		ActiveStates:     activeStates,
+		WorkingState:     workingState,
+		TerminalStates:   terminalStates,
+		CompletionStates: completionStates,
 	}
 	return nil
+}
+
+func resolvePipeline(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	reviewState := "In Review"
+	if v, ok := getString(m, "review_state"); ok && strings.TrimSpace(v) != "" {
+		reviewState = strings.TrimSpace(v)
+	}
+
+	mergeState := "Merge and Commit"
+	if v, ok := getString(m, "merge_state"); ok && strings.TrimSpace(v) != "" {
+		mergeState = strings.TrimSpace(v)
+	}
+
+	doneState := "Done"
+	if v, ok := getString(m, "done_state"); ok && strings.TrimSpace(v) != "" {
+		doneState = strings.TrimSpace(v)
+	}
+
+	codingStates := make([]string, 0, len(cfg.Tracker.ActiveStates))
+	if v, ok := getStringSlice(m, "coding_states"); ok && len(v) > 0 {
+		codingStates = appendUniqueStrings(v)
+	} else {
+		for _, state := range cfg.Tracker.ActiveStates {
+			if strings.EqualFold(state, reviewState) || strings.EqualFold(state, mergeState) {
+				continue
+			}
+			codingStates = append(codingStates, state)
+		}
+		codingStates = appendUniqueStrings(codingStates)
+	}
+	if len(codingStates) == 0 {
+		return fmt.Errorf("%s: pipeline.coding_states must contain at least one state", api.ErrWorkflowParseError)
+	}
+
+	cfg.Pipeline = api.PipelineConfig{
+		ReviewState:  reviewState,
+		MergeState:   mergeState,
+		DoneState:    doneState,
+		CodingStates: codingStates,
+	}
+	cfg.Tracker.ActiveStates = appendUniqueStrings(cfg.Tracker.ActiveStates, mergeState)
+	cfg.Tracker.TerminalStates = appendUniqueStrings(cfg.Tracker.TerminalStates, doneState)
+	return nil
+}
+
+func appendUniqueStrings(base []string, extras ...string) []string {
+	seen := make(map[string]struct{}, len(base)+len(extras))
+	out := make([]string, 0, len(base)+len(extras))
+	for _, s := range append(base, extras...) {
+		key := strings.ToLower(strings.TrimSpace(s))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, strings.TrimSpace(s))
+	}
+	return out
+}
+
+func firstOverlappingString(left []string, right []string) string {
+	seen := make(map[string]string, len(left))
+	for _, s := range left {
+		key := strings.ToLower(strings.TrimSpace(s))
+		if key == "" {
+			continue
+		}
+		seen[key] = s
+	}
+	for _, s := range right {
+		key := strings.ToLower(strings.TrimSpace(s))
+		if key == "" {
+			continue
+		}
+		if original, ok := seen[key]; ok {
+			return original
+		}
+	}
+	return ""
+}
+
+func containsFold(values []string, target string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolvePolling(m map[string]interface{}, cfg *api.WorkflowConfig) error {
@@ -269,7 +469,51 @@ func resolveWorkspace(m map[string]interface{}, cfg *api.WorkflowConfig, workflo
 			return fmt.Errorf("%s: %w", api.ErrInvalidWorkspaceCWD, err)
 		}
 	}
-	cfg.Workspace = api.WorkspaceConfig{Root: root}
+
+	mode := "directory"
+	if v, ok := getString(m, "mode"); ok && v != "" {
+		mode = v
+	}
+	if mode != "directory" && mode != "git_worktree" {
+		return fmt.Errorf("%s: workspace.mode must be directory or git_worktree, got %q", api.ErrInvalidWorkspaceCWD, mode)
+	}
+
+	repo := ""
+	if v, ok := getString(m, "repo"); ok && v != "" {
+		var err error
+		repo, err = resolvePath(v, workflowDir)
+		if err != nil {
+			return fmt.Errorf("%s: %w", api.ErrInvalidWorkspaceCWD, err)
+		}
+	}
+
+	baseBranch := "main"
+	if v, ok := getString(m, "base_branch"); ok && v != "" {
+		baseBranch = v
+	}
+
+	branchPrefix := "github.com/kbsartain/simphony/"
+	if v, ok := getString(m, "branch_prefix"); ok {
+		branchPrefix = v
+	}
+
+	cleanupWorktrees := false
+	if v, ok := getBool(m, "cleanup_worktrees"); ok {
+		cleanupWorktrees = v
+	}
+
+	if mode == "git_worktree" && repo == "" {
+		return fmt.Errorf("%s: workspace.repo is required when workspace.mode is git_worktree", api.ErrInvalidWorkspaceCWD)
+	}
+
+	cfg.Workspace = api.WorkspaceConfig{
+		Root:             root,
+		Mode:             mode,
+		Repo:             repo,
+		BaseBranch:       baseBranch,
+		BranchPrefix:     branchPrefix,
+		CleanupWorktrees: cleanupWorktrees,
+	}
 	return nil
 }
 
@@ -414,6 +658,16 @@ func resolveCodex(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		return fmt.Errorf("%s: codex.command must be non-empty", api.ErrCodexNotFound)
 	}
 
+	model := ""
+	if v, ok := getString(m, "model"); ok {
+		model = strings.TrimSpace(v)
+	}
+
+	modelProvider := ""
+	if v, ok := getString(m, "model_provider"); ok {
+		modelProvider = strings.TrimSpace(v)
+	}
+
 	approvalPolicy := "auto"
 	if v, ok := getString(m, "approval_policy"); ok && v != "" {
 		approvalPolicy = v
@@ -449,9 +703,14 @@ func resolveCodex(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	if v, ok := getInt(m, "stall_timeout_ms"); ok {
 		stallTimeout = v
 	}
+	if stallTimeout < 0 {
+		return fmt.Errorf("%s: codex.stall_timeout_ms must be non-negative, got %d", api.ErrWorkflowParseError, stallTimeout)
+	}
 
 	cfg.Codex = api.CodexConfig{
 		Command:           command,
+		Model:             model,
+		ModelProvider:     modelProvider,
 		ApprovalPolicy:    approvalPolicy,
 		ThreadSandbox:     threadSandbox,
 		TurnSandboxPolicy: turnSandboxPolicy,
@@ -462,15 +721,19 @@ func resolveCodex(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	return nil
 }
 
-func resolveServer(m map[string]interface{}, cfg *api.WorkflowConfig) {
+func resolveServer(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	if m == nil {
-		return
+		return nil
 	}
 	port, ok := getInt(m, "port")
 	if !ok {
-		return
+		return nil
+	}
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("%s: server.port must be between 1 and 65535, got %d", api.ErrWorkflowParseError, port)
 	}
 	cfg.Server = &api.ServerConfig{Port: port}
+	return nil
 }
 
 // ResolveEnvVar replaces $VAR_NAME with the environment variable value.

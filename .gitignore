@@ -14,7 +14,10 @@ dist/
 *.log
 
 # Workspaces
-symphony_workspaces/
+simphony_workspaces/
+.simphony/
+**/.simphony/
+dashboard/.npm-cache/
 tmp/
 
 # IDE

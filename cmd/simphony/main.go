@@ -10,12 +10,13 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"simphony/internal/agent"
-	"simphony/internal/config"
-	"simphony/internal/orchestrator"
-	"simphony/internal/server"
-	"simphony/internal/tracker"
-	"simphony/internal/workspace"
+	"github.com/kbsartain/simphony/internal/agent"
+	"github.com/kbsartain/simphony/internal/config"
+	"github.com/kbsartain/simphony/internal/orchestrator"
+	"github.com/kbsartain/simphony/internal/server"
+	"github.com/kbsartain/simphony/internal/tracker"
+	"github.com/kbsartain/simphony/internal/workspace"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 func main() {
@@ -58,7 +59,7 @@ func run(ctx context.Context, workflowPath string) error {
 		return fmt.Errorf("initialize tracker: %w", err)
 	}
 
-	wsMgr, err := workspace.NewManager(cfg.Workspace.Root)
+	wsMgr, err := workspace.NewManagerWithConfig(cfg.Workspace)
 	if err != nil {
 		return fmt.Errorf("initialize workspace manager: %w", err)
 	}
@@ -67,9 +68,23 @@ func run(ctx context.Context, workflowPath string) error {
 	orch := orchestrator.New(cfg, trackerClient, wsMgr, runner)
 	orch.Start()
 
+	applyWorkflow := func(newDef *api.WorkflowDefinition, newCfg *api.WorkflowConfig) error {
+		newTrackerClient, err := tracker.NewLinearClient(newCfg.Tracker)
+		if err != nil {
+			return fmt.Errorf("initialize tracker: %w", err)
+		}
+		newWsMgr, err := workspace.NewManagerWithConfig(newCfg.Workspace)
+		if err != nil {
+			return fmt.Errorf("initialize workspace manager: %w", err)
+		}
+		orch.UpdateRuntime(newCfg, newTrackerClient, newWsMgr)
+		runner.SetPromptTemplate(newDef.PromptTemplate)
+		return nil
+	}
+
 	// Optional HTTP server.
 	if cfg.Server != nil {
-		srv := server.New(orch, cfg.Server.Port)
+		srv := server.NewWithSettings(orch, cfg.Server.Port, workflowPath, applyWorkflow)
 		go func() {
 			if err := srv.Start(ctx); err != nil {
 				log.Printf("server error: %v", err)
@@ -90,18 +105,10 @@ func run(ctx context.Context, workflowPath string) error {
 			log.Printf("workflow reload error: %v", err)
 			return
 		}
-		newTrackerClient, err := tracker.NewLinearClient(newCfg.Tracker)
-		if err != nil {
+		if err := applyWorkflow(newDef, newCfg); err != nil {
 			log.Printf("workflow reload error: %v", err)
 			return
 		}
-		newWsMgr, err := workspace.NewManager(newCfg.Workspace.Root)
-		if err != nil {
-			log.Printf("workflow reload error: %v", err)
-			return
-		}
-		orch.UpdateRuntime(newCfg, newTrackerClient, newWsMgr)
-		runner.SetPromptTemplate(newDef.PromptTemplate)
 		log.Printf("workflow reloaded successfully")
 	})
 	if err != nil {

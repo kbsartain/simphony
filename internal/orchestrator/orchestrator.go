@@ -10,13 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"simphony/internal/workspace"
-	"simphony/pkg/api"
+	"github.com/kbsartain/simphony/internal/workspace"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 // AgentRunner is the interface for launching coding-agent sessions.
 type AgentRunner interface {
-	Run(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.CodexConfig, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error
+	Run(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.CodexConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error
 }
 
 type workerResult struct {
@@ -30,6 +30,11 @@ type runtimeSnapshot struct {
 	workspaceMgr *workspace.Manager
 	runner       AgentRunner
 }
+
+const (
+	retryKindAgent                = "agent"
+	retryKindCompletionTransition = "completion_transition"
+)
 
 // Orchestrator owns the poll loop, dispatch, retries, and reconciliation.
 type Orchestrator struct {
@@ -45,6 +50,7 @@ type Orchestrator struct {
 	wg            sync.WaitGroup
 	workerWg      sync.WaitGroup
 	workerCancels map[string]context.CancelFunc
+	terminalDone  map[string]struct{}
 	completedCh   chan workerResult
 	retryCh       chan string
 	refreshCh     chan struct{}
@@ -73,6 +79,7 @@ func (o *Orchestrator) Start() {
 	o.state.PollIntervalMs = o.cfg.Polling.IntervalMs
 	o.state.MaxConcurrentAgents = o.cfg.Agent.MaxConcurrentAgents
 	o.workerCancels = make(map[string]context.CancelFunc)
+	o.terminalDone = make(map[string]struct{})
 	o.completedCh = make(chan workerResult, 32)
 	o.retryCh = make(chan string, 32)
 	o.refreshCh = make(chan struct{}, 1)
@@ -158,6 +165,7 @@ func (o *Orchestrator) loop() {
 
 func (o *Orchestrator) tick() {
 	o.reconcile()
+	o.refreshTerminalIssues()
 	o.dispatchEligibleIssues()
 }
 
@@ -240,6 +248,7 @@ func (o *Orchestrator) reconcile() {
 			o.terminateWorkerLocked(id)
 			o.removeRunningLocked(id)
 			delete(o.state.Claimed, id)
+			o.terminalDone[id] = struct{}{}
 			if runtime.cfg.Hooks.BeforeRemove != nil {
 				_ = runtime.workspaceMgr.RunHook("before_remove", *runtime.cfg.Hooks.BeforeRemove, running.WorkspacePath, runtime.cfg.Hooks.TimeoutMs)
 			}
@@ -247,6 +256,7 @@ func (o *Orchestrator) reconcile() {
 		} else if o.isActiveWithConfig(runtime.cfg, stateNorm) {
 			// Update in-memory snapshot.
 			running.Issue = issue
+			delete(o.terminalDone, id)
 		} else {
 			log.Printf("issue_id=%s issue_identifier=%s action=terminate reason=non_active_state state=%s", id, running.Issue.Identifier, issue.State)
 			o.terminateWorkerLocked(id)
@@ -344,13 +354,11 @@ func (o *Orchestrator) filterEligible(candidates []api.Issue) []api.Issue {
 		if !o.isActiveWithConfig(cfg, stateNorm) || o.isTerminalWithConfig(cfg, stateNorm) {
 			continue
 		}
+		delete(o.terminalDone, issue.ID)
 		if _, running := o.state.Running[issue.ID]; running {
 			continue
 		}
 		if _, claimed := o.state.Claimed[issue.ID]; claimed {
-			continue
-		}
-		if _, completed := o.state.Completed[issue.ID]; completed {
 			continue
 		}
 
@@ -435,6 +443,19 @@ func (o *Orchestrator) dispatch(issue api.Issue) {
 	o.state.Claimed[issue.ID] = struct{}{}
 	o.mu.Unlock()
 
+	if runtime.cfg.Tracker.WorkingState != "" && !strings.EqualFold(issue.State, runtime.cfg.Tracker.WorkingState) && !equalState(issue.State, runtime.cfg.Pipeline.MergeState) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		updated, err := runtime.tracker.TransitionIssueState(ctx, issue, runtime.cfg.Tracker.WorkingState)
+		cancel()
+		if err != nil {
+			log.Printf("issue_id=%s issue_identifier=%s action=working_state_transition failed=%v", issue.ID, issue.Identifier, err)
+			o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("working state transition: %v", err))
+			return
+		}
+		log.Printf("issue_id=%s issue_identifier=%s action=working_state_transition from=%q to=%q", issue.ID, issue.Identifier, issue.State, updated.State)
+		issue = updated
+	}
+
 	workspace, err := runtime.workspaceMgr.PrepareWorkspace(issue)
 	if err != nil {
 		log.Printf("issue_id=%s issue_identifier=%s action=workspace_prepare failed=%v", issue.ID, issue.Identifier, err)
@@ -489,6 +510,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue api.Issue, workspace
 			running.Session.LastCodexEvent = &event.Event
 			running.Session.LastCodexTimestamp = &event.Timestamp
 			running.Session.LastCodexMessage = summarizeEvent(event)
+			running.RecentEvents = appendRecentEvent(running.RecentEvents, event)
 			if event.CodexPID != nil {
 				running.Session.CodexAppServerPID = event.CodexPID
 			}
@@ -510,6 +532,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue api.Issue, workspace
 					running.Issue.State = state
 				}
 			}
+			if msg := commentableAgentMessage(event); msg != "" {
+				running.Session.LastCodexMessage = msg
+				go o.postAgentComment(issue, runtime, msg)
+			}
 			// Token accounting from usage payload.
 			if event.Usage != nil {
 				updateTokens(&running.Session, event.Usage)
@@ -522,7 +548,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue api.Issue, workspace
 		return o.continueDecision(ctx, issue.ID)
 	}
 
-	err := runtime.runner.Run(ctx, issue, workspace, nil, &runtime.cfg.Codex, runtime.cfg.Agent.MaxTurns, shouldContinue, eventCallback)
+	stage := o.pipelineStage(issue, runtime.cfg)
+	err := runtime.runner.Run(ctx, issue, workspace, nil, &runtime.cfg.Codex, stage, runtime.cfg.Agent.MaxTurns, shouldContinue, eventCallback)
 
 	// after_run hook (logged but ignored).
 	if runtime.cfg.Hooks.AfterRun != nil {
@@ -563,9 +590,27 @@ func updateTokens(session *api.AgentSession, usage map[string]interface{}) {
 	}
 }
 
+func (o *Orchestrator) postAgentComment(issue api.Issue, runtime runtimeSnapshot, message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body := fmt.Sprintf("**Simphony agent update**\n\n%s", message)
+	if err := runtime.tracker.AddIssueComment(ctx, issue, body); err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=agent_comment failed=%v", issue.ID, issue.Identifier, err)
+		return
+	}
+	log.Printf("issue_id=%s issue_identifier=%s action=agent_comment posted", issue.ID, issue.Identifier)
+}
+
 func summarizeEvent(event api.AgentEvent) string {
 	if event.Payload == nil {
 		return ""
+	}
+	if msg := commentableAgentMessage(event); msg != "" {
+		return msg
 	}
 	for _, key := range []string{"message", "text", "status", "reason"} {
 		if v, ok := event.Payload[key].(string); ok {
@@ -573,6 +618,51 @@ func summarizeEvent(event api.AgentEvent) string {
 		}
 	}
 	return ""
+}
+
+func commentableAgentMessage(event api.AgentEvent) string {
+	if event.Event != "item/completed" || event.Payload == nil {
+		return ""
+	}
+	item, ok := event.Payload["item"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	if itemType, ok := item["type"].(string); !ok || itemType != "agentMessage" {
+		return ""
+	}
+	text, _ := item["text"].(string)
+	return strings.TrimSpace(text)
+}
+
+func appendRecentEvent(events []api.EventDetail, event api.AgentEvent) []api.EventDetail {
+	events = append(events, api.EventDetail{
+		At:      event.Timestamp,
+		Event:   event.Event,
+		Message: summarizeEvent(event),
+	})
+	if len(events) > 20 {
+		return events[len(events)-20:]
+	}
+	return events
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string(nil), values...)
+}
+
+func cloneInterfaceMap(values map[string]interface{}) map[string]interface{} {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(values))
+	for k, v := range values {
+		out[k] = v
+	}
+	return out
 }
 
 func (o *Orchestrator) continueDecision(ctx context.Context, issueID string) (api.ContinueDecision, error) {
@@ -593,14 +683,14 @@ func (o *Orchestrator) continueDecision(ctx context.Context, issueID string) (ap
 	stateNorm := strings.ToLower(issue.State)
 	decision := api.ContinueDecision{
 		Issue:    issue,
-		Continue: o.isActiveWithConfig(runtime.cfg, stateNorm) && !o.isTerminalWithConfig(runtime.cfg, stateNorm),
+		Continue: false,
 	}
-	if !decision.Continue {
-		if o.isTerminalWithConfig(runtime.cfg, stateNorm) {
-			decision.Reason = "terminal_state"
-		} else {
-			decision.Reason = "non_active_state"
-		}
+	if o.isTerminalWithConfig(runtime.cfg, stateNorm) {
+		decision.Reason = "terminal_state"
+	} else if !o.isActiveWithConfig(runtime.cfg, stateNorm) {
+		decision.Reason = "non_active_state"
+	} else {
+		decision.Reason = "completed_turn"
 	}
 
 	o.mu.Lock()
@@ -610,6 +700,20 @@ func (o *Orchestrator) continueDecision(ctx context.Context, issueID string) (ap
 	o.mu.Unlock()
 
 	return decision, nil
+}
+
+func (o *Orchestrator) pipelineStage(issue api.Issue, cfg *api.WorkflowConfig) api.PipelineStage {
+	if cfg != nil && equalState(issue.State, cfg.Pipeline.MergeState) {
+		return api.PipelineStage{
+			Kind:         "merge",
+			Instructions: fmt.Sprintf("Human review for issue %s has been approved. Evaluate the existing workspace changes for merging, resolve merge-related issues, run appropriate checks, and commit the final changes to the repository.", issue.Identifier),
+		}
+	}
+	return api.PipelineStage{Kind: "coding"}
+}
+
+func equalState(a string, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 func toInt64(v interface{}) (int64, bool) {
@@ -651,10 +755,7 @@ func (o *Orchestrator) handleWorkerResult(result workerResult) {
 	if result.err != nil {
 		if strings.Contains(result.err.Error(), api.ErrMaxTurnsReached) {
 			log.Printf("issue_id=%s issue_identifier=%s action=worker_exit status=max_turns_reached", result.issueID, identifier)
-			o.mu.Lock()
-			o.state.Completed[result.issueID] = struct{}{}
-			delete(o.state.Claimed, result.issueID)
-			o.mu.Unlock()
+			o.completeIssueAfterRun(runtime, result.issueID, identifier, entry)
 			return
 		}
 		log.Printf("issue_id=%s issue_identifier=%s action=worker_exit status=failed error=%v", result.issueID, identifier, result.err)
@@ -663,26 +764,102 @@ func (o *Orchestrator) handleWorkerResult(result workerResult) {
 		log.Printf("issue_id=%s issue_identifier=%s action=worker_exit status=success", result.issueID, identifier)
 		stateNorm := strings.ToLower(entry.Issue.State)
 		if o.isTerminalWithConfig(runtime.cfg, stateNorm) {
-			deleteTerminal := false
 			o.mu.Lock()
 			delete(o.state.Claimed, result.issueID)
-			deleteTerminal = true
 			o.mu.Unlock()
-			if deleteTerminal {
-				if runtime.cfg.Hooks.BeforeRemove != nil {
-					_ = runtime.workspaceMgr.RunHook("before_remove", *runtime.cfg.Hooks.BeforeRemove, entry.WorkspacePath, runtime.cfg.Hooks.TimeoutMs)
-				}
-				_ = runtime.workspaceMgr.RemoveWorkspace(identifier)
-			}
+			o.removeTerminalWorkspace(runtime, entry.Issue, entry.WorkspacePath)
 			return
 		}
 		if !o.isActiveWithConfig(runtime.cfg, stateNorm) {
 			o.releaseClaim(result.issueID)
 			return
 		}
-		// Schedule continuation retry (1s fixed delay).
-		o.scheduleContinuationRetry(result.issueID, identifier)
+		o.completeIssueAfterRun(runtime, result.issueID, identifier, entry)
 	}
+}
+
+func (o *Orchestrator) completeIssueAfterRun(runtime runtimeSnapshot, issueID string, identifier string, entry *api.RunningEntry) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	states, err := runtime.tracker.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_state_check status=failed error=%v", issueID, identifier, err)
+		o.scheduleRetry(issueID, identifier, fmt.Sprintf("completion state check: %v", err), retryKindCompletionTransition)
+		return
+	}
+
+	currentIssue, found := states[issueID]
+	if !found {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_transition skipped=missing_from_tracker", issueID, identifier)
+		o.releaseClaim(issueID)
+		return
+	}
+	if currentIssue.Identifier != "" {
+		identifier = currentIssue.Identifier
+	}
+	stateNorm := strings.ToLower(currentIssue.State)
+	if o.isTerminalWithConfig(runtime.cfg, stateNorm) {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_transition skipped=terminal_state state=%q", issueID, identifier, currentIssue.State)
+		o.releaseClaim(issueID)
+		o.removeTerminalWorkspace(runtime, currentIssue, entry.WorkspacePath)
+		return
+	}
+	if !o.isActiveWithConfig(runtime.cfg, stateNorm) {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_transition skipped=non_active_state state=%q", issueID, identifier, currentIssue.State)
+		o.releaseClaim(issueID)
+		return
+	}
+	if equalState(currentIssue.State, runtime.cfg.Pipeline.MergeState) {
+		o.transitionMergeIssueToDone(ctx, runtime, currentIssue, identifier, entry.WorkspacePath)
+		return
+	}
+
+	updatedIssue, err := runtime.tracker.MoveIssueToFirstAvailableState(ctx, issueID, completionStatePreferences(runtime.cfg))
+	if err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_transition status=failed error=%v", issueID, identifier, err)
+		o.scheduleRetry(issueID, identifier, fmt.Sprintf("completion transition: %v", err), retryKindCompletionTransition)
+		return
+	}
+	if updatedIssue.Identifier != "" {
+		identifier = updatedIssue.Identifier
+	}
+
+	log.Printf("issue_id=%s issue_identifier=%s action=completion_transition status=success state=%q", issueID, identifier, updatedIssue.State)
+	o.markCompletionTransitioned(runtime, updatedIssue.State, issueID, identifier, entry.WorkspacePath)
+}
+
+func completionStatePreferences(cfg *api.WorkflowConfig) []string {
+	if cfg == nil {
+		return []string{"In Review", "Review", "Done", "Completed"}
+	}
+	if len(cfg.Tracker.CompletionStates) > 0 {
+		return appendPreferenceUnique([]string{cfg.Pipeline.ReviewState}, cfg.Tracker.CompletionStates...)
+	}
+
+	states := appendPreferenceUnique([]string{cfg.Pipeline.ReviewState}, "In Review", "Review", "Done", "Completed")
+	for _, state := range cfg.Tracker.TerminalStates {
+		states = appendPreferenceUnique(states, state)
+	}
+	return states
+}
+
+func appendPreferenceUnique(states []string, extras ...string) []string {
+	seen := make(map[string]struct{}, len(states)+len(extras))
+	out := make([]string, 0, len(states)+len(extras))
+	for _, state := range append(states, extras...) {
+		state = strings.TrimSpace(state)
+		if state == "" {
+			continue
+		}
+		key := strings.ToLower(state)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, state)
+	}
+	return out
 }
 
 func (o *Orchestrator) scheduleContinuationRetry(issueID string, identifier string) {
@@ -707,6 +884,7 @@ func (o *Orchestrator) scheduleContinuationRetry(issueID string, identifier stri
 	o.state.RetryAttempts[issueID] = &api.RetryEntry{
 		IssueID:     issueID,
 		Identifier:  identifier,
+		Kind:        retryKindAgent,
 		Attempt:     1,
 		DueAtMs:     time.Now().UnixMilli() + 1000,
 		TimerHandle: timer,
@@ -714,6 +892,10 @@ func (o *Orchestrator) scheduleContinuationRetry(issueID string, identifier stri
 }
 
 func (o *Orchestrator) scheduleFailureRetry(issueID string, identifier string, errorMsg string) {
+	o.scheduleRetry(issueID, identifier, errorMsg, retryKindAgent)
+}
+
+func (o *Orchestrator) scheduleRetry(issueID string, identifier string, errorMsg string, kind string) {
 	runtime := o.runtimeSnapshot()
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -750,6 +932,7 @@ func (o *Orchestrator) scheduleFailureRetry(issueID string, identifier string, e
 	o.state.RetryAttempts[issueID] = &api.RetryEntry{
 		IssueID:     issueID,
 		Identifier:  identifier,
+		Kind:        kind,
 		Attempt:     attempt,
 		DueAtMs:     time.Now().UnixMilli() + delayMs,
 		TimerHandle: timer,
@@ -761,17 +944,35 @@ func (o *Orchestrator) handleRetry(issueID string) {
 	runtime := o.runtimeSnapshot()
 	o.mu.Lock()
 	identifier := ""
+	isCompletionTransitionRetry := false
+	dueAtMs := int64(0)
 	if entry := o.state.RetryAttempts[issueID]; entry != nil {
 		identifier = entry.Identifier
+		isCompletionTransitionRetry = entry.Kind == retryKindCompletionTransition
+		dueAtMs = entry.DueAtMs
+	} else {
+		o.mu.Unlock()
+		log.Printf("issue_id=%s action=retry_stale skipped=missing_retry_entry", issueID)
+		return
 	}
 	o.mu.Unlock()
+
+	if dueAtMs > time.Now().UnixMilli() {
+		log.Printf("issue_id=%s issue_identifier=%s action=retry_stale skipped=not_due due_at_ms=%d", issueID, identifier, dueAtMs)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	if isCompletionTransitionRetry {
+		o.handleCompletionTransitionRetry(ctx, runtime, issueID, identifier)
+		return
+	}
+
 	candidates, err := runtime.tracker.FetchCandidateIssues(ctx)
 	if err != nil {
-		log.Printf("issue_id=%s action=retry_fetch_failed error=%v", issueID, err)
+		log.Printf("issue_id=%s issue_identifier=%s action=retry_fetch_failed error=%v", issueID, identifier, err)
 		o.scheduleFailureRetry(issueID, identifier, fmt.Sprintf("retry fetch: %v", err))
 		return
 	}
@@ -785,7 +986,7 @@ func (o *Orchestrator) handleRetry(issueID string) {
 	}
 
 	if issue == nil {
-		log.Printf("issue_id=%s action=retry_issue_missing releasing_claim", issueID)
+		log.Printf("issue_id=%s issue_identifier=%s action=retry_issue_missing releasing_claim", issueID, identifier)
 		o.mu.Lock()
 		delete(o.state.RetryAttempts, issueID)
 		o.mu.Unlock()
@@ -795,7 +996,7 @@ func (o *Orchestrator) handleRetry(issueID string) {
 
 	stateNorm := strings.ToLower(issue.State)
 	if !o.isActiveWithConfig(runtime.cfg, stateNorm) || o.isTerminalWithConfig(runtime.cfg, stateNorm) {
-		log.Printf("issue_id=%s action=retry_issue_inactive state=%s releasing_claim", issueID, issue.State)
+		log.Printf("issue_id=%s issue_identifier=%s action=retry_issue_inactive state=%s releasing_claim", issueID, issue.Identifier, issue.State)
 		o.mu.Lock()
 		delete(o.state.RetryAttempts, issueID)
 		o.mu.Unlock()
@@ -804,7 +1005,7 @@ func (o *Orchestrator) handleRetry(issueID string) {
 	}
 
 	if !o.canDispatch() || o.perStateSlots(issue.State) <= 0 {
-		log.Printf("issue_id=%s action=retry_no_slots requeuing", issueID)
+		log.Printf("issue_id=%s issue_identifier=%s action=retry_no_slots requeuing", issueID, issue.Identifier)
 		o.scheduleFailureRetry(issueID, issue.Identifier, "no available orchestrator slots")
 		return
 	}
@@ -813,6 +1014,113 @@ func (o *Orchestrator) handleRetry(issueID string) {
 	delete(o.state.RetryAttempts, issueID)
 	o.mu.Unlock()
 	o.dispatch(*issue)
+}
+
+func (o *Orchestrator) handleCompletionTransitionRetry(ctx context.Context, runtime runtimeSnapshot, issueID string, identifier string) {
+	states, err := runtime.tracker.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_transition_retry state_check=failed error=%v", issueID, identifier, err)
+		o.scheduleRetry(issueID, identifier, fmt.Sprintf("completion state check: %v", err), retryKindCompletionTransition)
+		return
+	}
+
+	issue, found := states[issueID]
+	if !found {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_transition_retry skipped=missing_from_tracker", issueID, identifier)
+		o.mu.Lock()
+		delete(o.state.RetryAttempts, issueID)
+		o.mu.Unlock()
+		o.releaseClaim(issueID)
+		return
+	}
+	if issue.Identifier != "" {
+		identifier = issue.Identifier
+	}
+	if issue.ID == "" {
+		issue.ID = issueID
+	}
+
+	stateNorm := strings.ToLower(issue.State)
+	if o.isTerminalWithConfig(runtime.cfg, stateNorm) {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_transition_retry skipped=terminal_state state=%q", issueID, identifier, issue.State)
+		o.mu.Lock()
+		delete(o.state.RetryAttempts, issueID)
+		o.mu.Unlock()
+		o.releaseClaim(issueID)
+		o.removeTerminalWorkspace(runtime, issue, "")
+		return
+	}
+	if !o.isActiveWithConfig(runtime.cfg, stateNorm) {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_transition_retry skipped=non_active_state state=%q", issueID, identifier, issue.State)
+		o.mu.Lock()
+		delete(o.state.RetryAttempts, issueID)
+		o.mu.Unlock()
+		o.releaseClaim(issueID)
+		return
+	}
+	if equalState(issue.State, runtime.cfg.Pipeline.MergeState) {
+		o.transitionMergeIssueToDone(ctx, runtime, issue, identifier, "")
+		return
+	}
+
+	updatedIssue, err := runtime.tracker.MoveIssueToFirstAvailableState(ctx, issue.ID, completionStatePreferences(runtime.cfg))
+	if err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=completion_transition_retry status=failed error=%v", issue.ID, identifier, err)
+		o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("completion transition: %v", err), retryKindCompletionTransition)
+		return
+	}
+	if updatedIssue.Identifier != "" {
+		identifier = updatedIssue.Identifier
+	}
+
+	log.Printf("issue_id=%s issue_identifier=%s action=completion_transition_retry status=success state=%q", issue.ID, identifier, updatedIssue.State)
+	o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, "")
+}
+
+func (o *Orchestrator) transitionMergeIssueToDone(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string, workspacePath string) {
+	updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, runtime.cfg.Pipeline.DoneState)
+	if err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=merge_completion_transition status=failed error=%v", issue.ID, identifier, err)
+		o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("merge completion transition: %v", err), retryKindCompletionTransition)
+		return
+	}
+	if updatedIssue.Identifier != "" {
+		identifier = updatedIssue.Identifier
+	}
+	log.Printf("issue_id=%s issue_identifier=%s action=merge_completion_transition status=success state=%q", issue.ID, identifier, updatedIssue.State)
+	o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, workspacePath)
+}
+
+func (o *Orchestrator) markCompletionTransitioned(runtime runtimeSnapshot, state string, issueID string, identifier string, workspacePath string) {
+	o.mu.Lock()
+	delete(o.state.RetryAttempts, issueID)
+	o.state.Completed[issueID] = struct{}{}
+	delete(o.state.Claimed, issueID)
+	o.mu.Unlock()
+
+	if !o.isTerminalWithConfig(runtime.cfg, strings.ToLower(state)) || runtime.workspaceMgr == nil {
+		return
+	}
+	if strings.TrimSpace(identifier) == "" {
+		log.Printf("issue_id=%s action=completion_cleanup skipped=missing_identifier", issueID)
+		return
+	}
+	issue := api.Issue{ID: issueID, Identifier: identifier, State: state}
+	o.removeTerminalWorkspace(runtime, issue, workspacePath)
+}
+
+func (o *Orchestrator) removeTerminalWorkspace(runtime runtimeSnapshot, issue api.Issue, workspacePath string) {
+	o.mu.Lock()
+	o.terminalDone[issue.ID] = struct{}{}
+	o.mu.Unlock()
+
+	if runtime.workspaceMgr == nil || strings.TrimSpace(issue.Identifier) == "" {
+		return
+	}
+	if runtime.cfg.Hooks.BeforeRemove != nil && workspacePath != "" {
+		_ = runtime.workspaceMgr.RunHook("before_remove", *runtime.cfg.Hooks.BeforeRemove, workspacePath, runtime.cfg.Hooks.TimeoutMs)
+	}
+	_ = runtime.workspaceMgr.RemoveWorkspace(issue.Identifier)
 }
 
 func (o *Orchestrator) releaseClaim(issueID string) {
@@ -831,6 +1139,7 @@ func (o *Orchestrator) cleanupTerminalWorkspaces() {
 		log.Printf("action=startup_cleanup warning=%v", err)
 		return
 	}
+	o.setTerminalDone(issues)
 
 	for _, issue := range issues {
 		wsPath := runtime.workspaceMgr.GetWorkspacePath(issue.Identifier)
@@ -841,6 +1150,32 @@ func (o *Orchestrator) cleanupTerminalWorkspaces() {
 		}
 		_ = runtime.workspaceMgr.RemoveWorkspace(issue.Identifier)
 	}
+}
+
+func (o *Orchestrator) refreshTerminalIssues() {
+	runtime := o.runtimeSnapshot()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	issues, err := runtime.tracker.FetchIssuesByStates(ctx, runtime.cfg.Tracker.TerminalStates)
+	if err != nil {
+		log.Printf("action=terminal_count_refresh warning=%v", err)
+		return
+	}
+	o.setTerminalDone(issues)
+}
+
+func (o *Orchestrator) setTerminalDone(issues []api.Issue) {
+	terminalDone := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		if issue.ID != "" {
+			terminalDone[issue.ID] = struct{}{}
+		}
+	}
+
+	o.mu.Lock()
+	o.terminalDone = terminalDone
+	o.mu.Unlock()
 }
 
 // Snapshot returns a read-only view of current orchestrator state for the HTTP API.
@@ -875,6 +1210,10 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 		running = append(running, api.RunningSnapshot{
 			IssueID:         entry.Issue.ID,
 			IssueIdentifier: entry.Issue.Identifier,
+			IssueTitle:      entry.Issue.Title,
+			IssueURL:        entry.Issue.URL,
+			Priority:        entry.Issue.Priority,
+			Labels:          cloneStringSlice(entry.Issue.Labels),
 			State:           entry.Issue.State,
 			SessionID:       entry.Session.SessionID,
 			TurnCount:       entry.Session.TurnCount,
@@ -895,17 +1234,31 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 		retrying = append(retrying, api.RetrySnapshot{
 			IssueID:         entry.IssueID,
 			IssueIdentifier: entry.Identifier,
+			Kind:            entry.Kind,
 			Attempt:         entry.Attempt,
 			DueAt:           time.UnixMilli(entry.DueAtMs),
 			Error:           entry.Error,
 		})
 	}
+	sort.SliceStable(running, func(i, j int) bool {
+		return running[i].IssueIdentifier < running[j].IssueIdentifier
+	})
+	sort.SliceStable(retrying, func(i, j int) bool {
+		if !retrying[i].DueAt.Equal(retrying[j].DueAt) {
+			return retrying[i].DueAt.Before(retrying[j].DueAt)
+		}
+		return retrying[i].IssueIdentifier < retrying[j].IssueIdentifier
+	})
 
 	return api.StateSnapshot{
-		GeneratedAt: now,
+		GeneratedAt:         now,
+		PollIntervalMs:      o.state.PollIntervalMs,
+		MaxConcurrentAgents: o.state.MaxConcurrentAgents,
 		Counts: api.StateCounts{
-			Running:  len(o.state.Running),
-			Retrying: len(o.state.RetryAttempts),
+			Running:   len(o.state.Running),
+			Retrying:  len(o.state.RetryAttempts),
+			Claimed:   len(o.state.Claimed),
+			Completed: o.completedCountLocked(),
 		},
 		Running:  running,
 		Retrying: retrying,
@@ -915,8 +1268,18 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 			TotalTokens:    totalTokens,
 			SecondsRunning: seconds,
 		},
-		RateLimits: o.state.CodexRateLimits,
+		RateLimits: cloneInterfaceMap(o.state.CodexRateLimits),
 	}
+}
+
+func (o *Orchestrator) completedCountLocked() int {
+	count := len(o.state.Completed)
+	for id := range o.terminalDone {
+		if _, alreadyCounted := o.state.Completed[id]; !alreadyCounted {
+			count++
+		}
+	}
+	return count
 }
 
 // Refresh triggers an immediate orchestrator tick and returns the result.
@@ -994,6 +1357,10 @@ func (o *Orchestrator) IssueDetail(identifier string) (api.IssueDetailResponse, 
 				Running: &api.RunningSnapshot{
 					IssueID:         entry.Issue.ID,
 					IssueIdentifier: identifier,
+					IssueTitle:      entry.Issue.Title,
+					IssueURL:        entry.Issue.URL,
+					Priority:        entry.Issue.Priority,
+					Labels:          cloneStringSlice(entry.Issue.Labels),
 					State:           entry.Issue.State,
 					SessionID:       entry.Session.SessionID,
 					TurnCount:       entry.Session.TurnCount,
@@ -1013,7 +1380,7 @@ func (o *Orchestrator) IssueDetail(identifier string) (api.IssueDetailResponse, 
 					},
 				},
 				Logs:         api.LogDetail{CodexSessionLogs: []api.LogRef{}},
-				RecentEvents: []api.EventDetail{},
+				RecentEvents: append([]api.EventDetail(nil), entry.RecentEvents...),
 				LastError:    nil,
 				Tracked:      map[string]interface{}{},
 			}, true
@@ -1022,11 +1389,15 @@ func (o *Orchestrator) IssueDetail(identifier string) (api.IssueDetailResponse, 
 
 	for _, entry := range o.state.RetryAttempts {
 		if entry.Identifier == identifier {
+			workspacePath := ""
+			if o.workspaceMgr != nil {
+				workspacePath = o.workspaceMgr.GetWorkspacePath(identifier)
+			}
 			return api.IssueDetailResponse{
 				IssueIdentifier: identifier,
 				IssueID:         entry.IssueID,
 				Status:          "retrying",
-				Workspace:       api.WorkspaceDetail{},
+				Workspace:       api.WorkspaceDetail{Path: workspacePath},
 				Attempts:        api.AttemptDetail{CurrentRetryAttempt: entry.Attempt},
 				Running:         nil,
 				Retry: &api.RetrySnapshot{

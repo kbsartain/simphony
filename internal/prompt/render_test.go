@@ -5,16 +5,16 @@ import (
 	"testing"
 	"time"
 
-	"simphony/pkg/api"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 func TestRender_Basic(t *testing.T) {
 	r := NewRenderer()
 	issue := api.Issue{
-		ID:         "abc123",
-		Identifier: "PROJ-42",
-		Title:      "Fix the bug",
-		State:      "In Progress",
+		ID:          "abc123",
+		Identifier:  "PROJ-42",
+		Title:       "Fix the bug",
+		State:       "In Progress",
 		Description: strPtr("Something is broken."),
 	}
 	template := "Issue {{ issue.identifier }}: {{ issue.title }}\n{{ issue.description }}"
@@ -100,6 +100,28 @@ func TestRender_LabelsIteration(t *testing.T) {
 		Labels:     []string{"bug", "critical"},
 	}
 	template := "Labels: {% for label in issue.labels %}{{ label }}{% unless forloop.last %}, {% endunless %}{% endfor %}"
+
+	result, err := r.Render(template, issue, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "Labels: bug, critical"
+	if result != want {
+		t.Fatalf("render result = %q, want %q", result, want)
+	}
+}
+
+func TestRender_LabelsJoinFilter(t *testing.T) {
+	r := NewRenderer()
+	issue := api.Issue{
+		ID:         "abc123",
+		Identifier: "PROJ-42",
+		Title:      "Fix the bug",
+		State:      "In Progress",
+		Labels:     []string{"bug", "critical"},
+	}
+	template := `Labels: {{ issue.labels | join: ", " }}`
 
 	result, err := r.Render(template, issue, nil)
 	if err != nil {

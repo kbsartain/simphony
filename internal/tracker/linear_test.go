@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"simphony/pkg/api"
+	"github.com/kbsartain/simphony/pkg/api"
 )
 
 func TestNewLinearClient_Validation(t *testing.T) {
@@ -233,6 +233,57 @@ func TestFetchIssueStatesByIDs_Empty(t *testing.T) {
 	}
 	if len(result) != 0 {
 		t.Fatalf("expected 0 issues, got %d", len(result))
+	}
+}
+
+func TestTransitionIssueState(t *testing.T) {
+	server := newLinearMockServer(t, &mockServerConfig{
+		issues: []map[string]interface{}{
+			{"id": "issue-1", "identifier": "TEST-1", "title": "First", "state": map[string]string{"name": "Todo"}},
+		},
+		states: []map[string]string{
+			{"id": "state-todo", "name": "Todo"},
+			{"id": "state-progress", "name": "In Progress"},
+		},
+	})
+	defer server.Close()
+
+	client := mustNewClient(t, server.URL, "proj", []string{"Todo"})
+	updated, err := client.TransitionIssueState(context.Background(), api.Issue{
+		ID:         "issue-1",
+		Identifier: "TEST-1",
+		Title:      "First",
+		State:      "Todo",
+	}, "In Progress")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated.State != "In Progress" {
+		t.Fatalf("updated.State = %q, want In Progress", updated.State)
+	}
+}
+
+func TestTransitionIssueState_NoOpWhenAlreadyInState(t *testing.T) {
+	client := mustNewClient(t, "http://127.0.0.1:1", "proj", []string{"Todo"})
+	issue := api.Issue{ID: "issue-1", Identifier: "TEST-1", Title: "First", State: "In Progress"}
+
+	updated, err := client.TransitionIssueState(context.Background(), issue, "In Progress")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated.State != "In Progress" {
+		t.Fatalf("updated.State = %q, want In Progress", updated.State)
+	}
+}
+
+func TestAddIssueComment(t *testing.T) {
+	server := newLinearMockServer(t, &mockServerConfig{})
+	defer server.Close()
+
+	client := mustNewClient(t, server.URL, "proj", []string{"Todo"})
+	err := client.AddIssueComment(context.Background(), api.Issue{ID: "issue-1", Identifier: "TEST-1"}, "hello from simphony")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -516,6 +567,7 @@ func TestContextCancellation(t *testing.T) {
 
 type mockServerConfig struct {
 	issues   []map[string]interface{}
+	states   []map[string]string
 	pageSize int
 }
 
@@ -545,6 +597,69 @@ func newLinearMockServer(t *testing.T, cfg *mockServerConfig) *httptest.Server {
 		}
 
 		// Determine which query type this is.
+		if strings.Contains(reqBody.Query, "CreateComment") {
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"commentCreate": map[string]interface{}{
+						"success": true,
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if strings.Contains(reqBody.Query, "IssueTeamStates") {
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"issue": map[string]interface{}{
+						"team": map[string]interface{}{
+							"states": map[string]interface{}{
+								"nodes": cfg.states,
+							},
+						},
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if strings.Contains(reqBody.Query, "UpdateIssueState") {
+			stateID, _ := reqBody.Variables["stateID"].(string)
+			stateName := ""
+			for _, state := range cfg.states {
+				if state["id"] == stateID {
+					stateName = state["name"]
+					break
+				}
+			}
+			if stateName == "" {
+				stateName = "Unknown"
+			}
+
+			var issue map[string]interface{}
+			if len(cfg.issues) > 0 {
+				issue = cloneIssueMap(cfg.issues[0])
+			} else {
+				issue = map[string]interface{}{"id": reqBody.Variables["issueID"], "identifier": "TEST-1", "title": "First"}
+			}
+			issue["state"] = map[string]string{"name": stateName}
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"issueUpdate": map[string]interface{}{
+						"success": true,
+						"issue":   issue,
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
 		if strings.Contains(reqBody.Query, "IssuesByIds") {
 			// Return all matching issues by ID.
 			var ids []string
@@ -615,6 +730,14 @@ func newLinearMockServer(t *testing.T, cfg *mockServerConfig) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
+}
+
+func cloneIssueMap(issue map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(issue))
+	for k, v := range issue {
+		out[k] = v
+	}
+	return out
 }
 
 func mustNewClient(t *testing.T, endpoint, projectSlug string, activeStates []string) *LinearClient {

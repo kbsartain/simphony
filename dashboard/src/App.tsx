@@ -1,109 +1,1007 @@
-import { useCallback, useEffect, useState } from 'react'
-import { RefreshResponse, StateSnapshot } from './api/types'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  IssueDetailResponse,
+  RefreshResponse,
+  RetrySnapshot,
+  RunningSnapshot,
+  SettingsResponse,
+  StateSnapshot,
+} from './api/types'
+import { fetchIssueDetail, fetchSettings, fetchState, requestRefresh as requestRefreshAPI, saveSettings } from './api/client'
+import './App.css'
 
-const POLL_INTERVAL_MS = 5000
+const DEFAULT_POLL_INTERVAL_MS = 5000
+const MIN_UI_POLL_INTERVAL_MS = 1000
+
+type QueueFilter = 'all' | 'running' | 'retrying'
+type Page = 'runtime' | 'settings'
+type ActivityItem = {
+  id: string
+  label: string
+  tone: 'running' | 'retrying'
+  title: string
+  body: string
+  at: string
+}
+type DetailState =
+  | { status: 'idle' }
+  | { status: 'loading'; identifier: string }
+  | { status: 'ready'; detail: IssueDetailResponse }
+  | { status: 'error'; identifier: string; message: string }
 
 function App() {
+  const [page, setPage] = useState<Page>('runtime')
   const [state, setState] = useState<StateSnapshot | null>(null)
+  const [settings, setSettings] = useState<SettingsResponse | null>(null)
+  const [settingsDraft, setSettingsDraft] = useState('')
+  const [promptDraft, setPromptDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [savingSettings, setSavingSettings] = useState(false)
   const [refreshResult, setRefreshResult] = useState<RefreshResponse | null>(null)
+  const [filter, setFilter] = useState<QueueFilter>('all')
+  const [query, setQuery] = useState('')
+  const [detailState, setDetailState] = useState<DetailState>({ status: 'idle' })
+  const stateRequestID = useRef(0)
+  const detailRequestID = useRef(0)
+  const pollIntervalMs = Math.max(state?.poll_interval_ms || DEFAULT_POLL_INTERVAL_MS, MIN_UI_POLL_INTERVAL_MS)
 
   const loadState = useCallback(async () => {
-    const response = await fetch('/api/v1/state', { cache: 'no-store' })
-    if (!response.ok) {
-      throw new Error(`State request failed: ${response.status}`)
+    const requestID = stateRequestID.current + 1
+    stateRequestID.current = requestID
+    try {
+      const data = await fetchState()
+      if (stateRequestID.current === requestID) {
+        setState(data)
+        setLastUpdated(new Date())
+        setError(null)
+      }
+    } catch (err) {
+      if (stateRequestID.current === requestID) {
+        setError(normalizeError(err))
+      }
     }
-    const data = (await response.json()) as StateSnapshot
-    setState(data)
-    setLastUpdated(new Date())
+  }, [])
+
+  const loadSettings = useCallback(async () => {
+    const data = await fetchSettings()
+    setSettings(data)
+    setSettingsDraft(JSON.stringify(data.config || {}, null, 2))
+    setPromptDraft(data.prompt_template || '')
     setError(null)
   }, [])
 
   useEffect(() => {
-    loadState().catch(err => setError(err.message))
-
     const interval = window.setInterval(() => {
-      loadState().catch(err => setError(err.message))
-    }, POLL_INTERVAL_MS)
+      void loadState()
+    }, pollIntervalMs)
 
     return () => window.clearInterval(interval)
+  }, [loadState, pollIntervalMs])
+
+  useEffect(() => {
+    void loadState()
   }, [loadState])
+
+  useEffect(() => {
+    if (page === 'settings' && !settings) {
+      loadSettings().catch(err => setError(normalizeError(err)))
+    }
+  }, [loadSettings, page, settings])
 
   const requestRefresh = async () => {
     setRefreshing(true)
     setRefreshResult(null)
     try {
-      const response = await fetch('/api/v1/refresh', {
-        method: 'POST',
-        cache: 'no-store',
-      })
-      if (!response.ok) {
-        throw new Error(`Refresh request failed: ${response.status}`)
-      }
-      setRefreshResult((await response.json()) as RefreshResponse)
+      setRefreshResult(await requestRefreshAPI())
       await loadState()
+      setNotice(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(normalizeError(err))
     } finally {
       setRefreshing(false)
     }
   }
 
-  if (error) return <div style={{ padding: 20 }}>Error: {error}</div>
-  if (!state) return <div style={{ padding: 20 }}>Loading...</div>
+  const saveWorkflowSettings = async () => {
+    setSavingSettings(true)
+    setNotice(null)
+    try {
+      const config = JSON.parse(settingsDraft || '{}') as Record<string, unknown>
+      if (!isPlainObject(config)) {
+        throw new Error('Workflow config must be a JSON object.')
+      }
+      const data = await saveSettings({ config, prompt_template: promptDraft })
+      setSettings(data)
+      setSettingsDraft(JSON.stringify(data.config || {}, null, 2))
+      setPromptDraft(data.prompt_template || '')
+      setNotice('Settings saved')
+      setError(null)
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setSavingSettings(false)
+    }
+  }
+
+  const closeIssue = useCallback(() => {
+    detailRequestID.current += 1
+    setDetailState({ status: 'idle' })
+  }, [])
+
+  const loadIssueDetail = useCallback(async (identifier: string, showLoading: boolean) => {
+    const requestID = detailRequestID.current + 1
+    detailRequestID.current = requestID
+    if (showLoading) {
+      setDetailState({ status: 'loading', identifier })
+    }
+    try {
+      const detail = await fetchIssueDetail(identifier)
+      if (detailRequestID.current === requestID) {
+        setDetailState({ status: 'ready', detail })
+      }
+    } catch (err) {
+      if (detailRequestID.current === requestID) {
+        setDetailState({ status: 'error', identifier, message: normalizeError(err) })
+      }
+    }
+  }, [])
+
+  const openIssue = useCallback((identifier: string) => {
+    void loadIssueDetail(identifier, true)
+  }, [loadIssueDetail])
+
+  useEffect(() => {
+    if (detailState.status !== 'ready' || !lastUpdated) {
+      return
+    }
+    void loadIssueDetail(detailState.detail.issue_identifier, false)
+  }, [detailState.status === 'ready' ? detailState.detail.issue_identifier : '', lastUpdated, loadIssueDetail])
+
+  const summary = useMemo(() => {
+    if (!state) {
+      return null
+    }
+    return {
+      active: state.counts.running + state.counts.retrying,
+      running: state.counts.running,
+      retrying: state.counts.retrying,
+      tokens: state.codex_totals.total_tokens,
+      outputShare: percentOf(state.codex_totals.output_tokens, state.codex_totals.total_tokens),
+      slotCapacity: state.max_concurrent_agents,
+      slotUsage: state.max_concurrent_agents > 0 ? percentOf(state.counts.running, state.max_concurrent_agents) : 0,
+      queuePressure:
+        state.counts.running + state.counts.retrying === 0
+          ? 'Idle'
+          : state.max_concurrent_agents > 0 && state.counts.running >= state.max_concurrent_agents
+            ? 'At capacity'
+            : state.counts.retrying > state.counts.running
+              ? 'Backoff heavy'
+              : 'Dispatching',
+    }
+  }, [state])
+
+  const activity = useMemo<ActivityItem[]>(() => {
+    if (!state) {
+      return []
+    }
+
+    const running = state.running.map(item => ({
+      id: `running-${entryKey(item)}`,
+      label: item.issue_identifier,
+      tone: 'running' as const,
+      title: item.last_event || 'Running',
+      body: item.last_message || item.issue_title || `${item.turn_count} turns in progress`,
+      at: displayTimestamp(item.last_event_at, item.started_at),
+    }))
+
+    const retrying = state.retrying.map(item => ({
+      id: `retry-${entryKey(item)}`,
+      label: item.issue_identifier,
+      tone: 'retrying' as const,
+      title: `Retry attempt ${item.attempt}`,
+      body: item.error || 'Waiting for retry backoff',
+      at: item.due_at,
+    }))
+
+    return [...running, ...retrying]
+      .filter(item => item.at)
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+      .slice(0, 8)
+  }, [state])
+
+  if (!state || !summary) {
+    return (
+      <main className="app-shell loading-shell">
+        <section className="boot-panel">
+          <div className="brand-mark" aria-hidden="true">
+            S
+          </div>
+          <div>
+            <p className="eyebrow">Simphony</p>
+            <h1>Loading orchestration state</h1>
+            <p className="muted">Connecting to the local dashboard API.</p>
+          </div>
+          {error && (
+            <div className="alert alert-error" role="alert">
+              Error: {error}
+            </div>
+          )}
+        </section>
+      </main>
+    )
+  }
+
+  const visibleRunning = (filter === 'retrying' ? [] : state.running).filter(item => matchesIssueQuery(item, query))
+  const visibleRetrying = (filter === 'running' ? [] : state.retrying).filter(item => matchesIssueQuery(item, query))
 
   return (
-    <div style={{ padding: 20, fontFamily: 'system-ui, sans-serif' }}>
-      <h1>Simphony Dashboard</h1>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <p style={{ margin: 0 }}>Running: {state.counts.running} | Retrying: {state.counts.retrying}</p>
-        <button type="button" onClick={requestRefresh} disabled={refreshing}>
-          {refreshing ? 'Refreshing...' : 'Refresh now'}
-        </button>
-      </div>
-      <p style={{ color: '#555' }}>
-        API snapshot: {formatDate(state.generated_at)} | UI updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : 'never'} | Polling every {POLL_INTERVAL_MS / 1000}s
-      </p>
-      {refreshResult && (
-        <p style={{ color: '#555' }}>
-          Refresh queued: {String(refreshResult.queued)} | Coalesced: {String(refreshResult.coalesced)}
-        </p>
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="title-block">
+          <div className="brand-mark" aria-hidden="true">
+            S
+          </div>
+          <div>
+            <p className="eyebrow">Simphony command center</p>
+            <h1>Agent operations</h1>
+          </div>
+        </div>
+        <div className="topbar-actions">
+          <div className="segment-control" role="group" aria-label="Dashboard page">
+            <FilterButton active={page === 'runtime'} label="Runtime" onClick={() => setPage('runtime')} />
+            <FilterButton active={page === 'settings'} label="Settings" onClick={() => setPage('settings')} />
+          </div>
+          <div className="sync-copy">
+            <span>Snapshot {formatDateTime(state.generated_at)}</span>
+            <span>UI {lastUpdated ? lastUpdated.toLocaleTimeString() : 'never'}</span>
+          </div>
+          <button className="icon-button" type="button" onClick={requestRefresh} disabled={refreshing} title="Refresh now">
+            <span aria-hidden="true" className={refreshing ? 'refresh-glyph spinning' : 'refresh-glyph'} />
+            <span>{refreshing ? 'Syncing' : 'Sync'}</span>
+          </button>
+        </div>
+      </header>
+
+      {error && (
+        <div className="alert alert-error" role="alert">
+          <strong>API error</strong>
+          <span>{error}</span>
+        </div>
       )}
-      <h2>Running Sessions</h2>
-      {state.running.length === 0 && <p>No active sessions</p>}
-      {state.running.map(r => (
-        <div key={r.session_id} style={{ border: '1px solid #ccc', padding: 10, marginBottom: 10 }}>
-          <strong>{r.issue_identifier}</strong> - {r.state}<br />
-          Session: {r.session_id} | Turns: {r.turn_count}<br />
-          Last event: {r.last_event} - {r.last_message}
+
+      {notice && (
+        <div className="alert alert-info" role="status">
+          <strong>{notice}</strong>
         </div>
-      ))}
-      <h2>Retry Queue</h2>
-      {state.retrying.length === 0 && <p>No retries queued</p>}
-      {state.retrying.map(r => (
-        <div key={r.issue_id} style={{ border: '1px solid #ccc', padding: 10, marginBottom: 10 }}>
-          <strong>{r.issue_identifier}</strong> - attempt {r.attempt}<br />
-          Due: {r.due_at}<br />
-          {r.error && <span>Error: {r.error}</span>}
+      )}
+
+      {page === 'runtime' && refreshResult && (
+        <div className="alert alert-info" role="status">
+          <strong>{refreshResult.coalesced ? 'Refresh coalesced' : 'Refresh queued'}</strong>
+          <span>
+            {refreshResult.operations.length > 0 ? refreshResult.operations.join(', ') : 'No operations reported'} at{' '}
+            {formatDateTime(refreshResult.requested_at)}
+          </span>
         </div>
-      ))}
-      <h2>Totals</h2>
-      <p>
-        Input: {state.codex_totals.input_tokens} | Output: {state.codex_totals.output_tokens} | Total: {state.codex_totals.total_tokens}
-      </p>
-      <p>Runtime: {state.codex_totals.seconds_running}s</p>
+      )}
+
+      {page === 'runtime' ? (
+        <>
+          <section className="metrics-grid" aria-label="Runtime metrics">
+            <MetricCard label="Active issues" value={summary.active.toLocaleString()} detail="Running plus retry queue" tone="green" />
+            <MetricCard label="Running" value={summary.running.toLocaleString()} detail="Live Codex sessions" tone="blue" />
+            <MetricCard label="Retrying" value={summary.retrying.toLocaleString()} detail="Backoff queue" tone="amber" />
+            <MetricCard label="Completed" value={state.counts.completed.toLocaleString()} detail={`${state.counts.claimed.toLocaleString()} claimed`} tone="ink" />
+          </section>
+
+          <section className="ops-band" aria-label="Operations summary">
+            <div>
+              <span className="ops-label">Posture</span>
+              <strong>{summary.queuePressure}</strong>
+            </div>
+            <div>
+              <span className="ops-label">Output share</span>
+              <strong>{summary.tokens > 0 ? `${summary.outputShare}%` : 'No tokens'}</strong>
+            </div>
+            <div>
+              <span className="ops-label">Slot usage</span>
+              <strong>{summary.slotCapacity > 0 ? `${summary.slotUsage}%` : 'Unknown'}</strong>
+            </div>
+            <div>
+              <span className="ops-label">Poll interval</span>
+              <strong>{formatMilliseconds(state.poll_interval_ms)}</strong>
+            </div>
+          </section>
+
+          <section className="content-grid">
+            <div className="main-column">
+              <section className="panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">Queue</p>
+                    <h2>Issue flow</h2>
+                  </div>
+                  <div className="segment-control" role="group" aria-label="Queue filter">
+                    <FilterButton active={filter === 'all'} label="All" onClick={() => setFilter('all')} />
+                    <FilterButton active={filter === 'running'} label="Running" onClick={() => setFilter('running')} />
+                    <FilterButton active={filter === 'retrying'} label="Retrying" onClick={() => setFilter('retrying')} />
+                  </div>
+                </div>
+                <div className="queue-toolbar">
+                  <label className="search-field">
+                    <span className="search-icon" aria-hidden="true" />
+                    <span className="sr-only">Search queue</span>
+                    <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search issue, session, state, or error" />
+                  </label>
+                  <span className="queue-count">
+                    {visibleRunning.length + visibleRetrying.length} shown of {state.running.length + state.retrying.length}
+                  </span>
+                </div>
+
+                <div className="queue-stack">
+                  {visibleRunning.map(item => (
+                    <RunningRow key={entryKey(item)} item={item} onOpen={openIssue} />
+                  ))}
+                  {visibleRetrying.map(item => (
+                    <RetryRow key={entryKey(item)} item={item} onOpen={openIssue} />
+                  ))}
+                  {visibleRunning.length === 0 && visibleRetrying.length === 0 && (
+                    <EmptyState title="No issues in this view" body="The orchestrator has no matching running sessions or retry entries." />
+                  )}
+                </div>
+              </section>
+            </div>
+
+            <aside className="side-column">
+              <section className="panel compact-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">Activity</p>
+                    <h2>Latest signal</h2>
+                  </div>
+                </div>
+                <ActivityFeed items={activity} onOpen={openIssue} />
+              </section>
+
+              <section className="panel compact-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">Capacity</p>
+                    <h2>Runtime mix</h2>
+                  </div>
+                </div>
+                <div className="capacity-bars">
+                  <CapacityBar label="Slots" value={state.counts.running} total={Math.max(state.max_concurrent_agents, 1)} />
+                  <CapacityBar label="Input" value={state.codex_totals.input_tokens} total={Math.max(state.codex_totals.total_tokens, 1)} />
+                  <CapacityBar label="Output" value={state.codex_totals.output_tokens} total={Math.max(state.codex_totals.total_tokens, 1)} />
+                  <CapacityBar label="Total" value={state.codex_totals.total_tokens} total={Math.max(state.codex_totals.total_tokens, 1)} />
+                </div>
+              </section>
+
+              <section className="panel compact-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">Rate limits</p>
+                    <h2>Provider signal</h2>
+                  </div>
+                </div>
+                <RateLimitPanel rateLimits={state.rate_limits} />
+              </section>
+            </aside>
+          </section>
+
+          <IssueDrawer detailState={detailState} onClose={closeIssue} />
+        </>
+      ) : (
+        <SettingsView
+          settings={settings}
+          settingsDraft={settingsDraft}
+          promptDraft={promptDraft}
+          saving={savingSettings}
+          onSettingsDraftChange={setSettingsDraft}
+          onPromptDraftChange={setPromptDraft}
+          onReload={() => loadSettings().catch(err => setError(normalizeError(err)))}
+          onSave={saveWorkflowSettings}
+        />
+      )}
+    </main>
+  )
+}
+
+function MetricCard(props: { label: string; value: string; detail: string; tone: 'green' | 'blue' | 'amber' | 'ink' }) {
+  return (
+    <article className={`metric-card tone-${props.tone}`}>
+      <span className="metric-label">{props.label}</span>
+      <strong>{props.value}</strong>
+      <span>{props.detail}</span>
+    </article>
+  )
+}
+
+function FilterButton(props: { active: boolean; label: string; onClick: () => void }) {
+  return (
+    <button className={props.active ? 'segment active' : 'segment'} type="button" onClick={props.onClick} aria-pressed={props.active}>
+      {props.label}
+    </button>
+  )
+}
+
+function RunningRow(props: { item: RunningSnapshot; onOpen: (identifier: string) => void }) {
+  const { item } = props
+  return (
+    <article className="issue-row">
+      <div className="status-rail running" aria-hidden="true" />
+      <div className="issue-core">
+        <div className="issue-heading">
+          <button className="link-button" type="button" onClick={() => props.onOpen(item.issue_identifier)}>
+            {item.issue_identifier}
+          </button>
+          <span className="pill live">Running</span>
+          <span className="pill">{item.state}</span>
+          {item.priority !== null && <span className="pill">P{item.priority}</span>}
+        </div>
+        <p>{item.issue_title || item.last_message || item.last_event || 'Session is active.'}</p>
+        {item.labels.length > 0 && (
+          <div className="label-strip" aria-label="Issue labels">
+            {item.labels.map(label => (
+              <span key={label}>{label}</span>
+            ))}
+          </div>
+        )}
+        <div className="metadata-line">
+          {item.issue_url && (
+            <a href={item.issue_url} target="_blank" rel="noreferrer">
+              Tracker
+            </a>
+          )}
+          <span>Session {compactID(item.session_id)}</span>
+          <span>{item.turn_count} turns</span>
+          <span>Started {formatRelative(item.started_at)}</span>
+          <span>Last event {formatRelative(item.last_event_at, 'not yet')}</span>
+        </div>
+      </div>
+      <div className="token-box">
+        <strong>{item.tokens.total_tokens.toLocaleString()}</strong>
+        <span>tokens</span>
+      </div>
+    </article>
+  )
+}
+
+function RetryRow(props: { item: RetrySnapshot; onOpen: (identifier: string) => void }) {
+  const { item } = props
+  return (
+    <article className="issue-row">
+      <div className="status-rail retrying" aria-hidden="true" />
+      <div className="issue-core">
+        <div className="issue-heading">
+          <button className="link-button" type="button" onClick={() => props.onOpen(item.issue_identifier)}>
+            {item.issue_identifier}
+          </button>
+          <span className="pill warning">Retry</span>
+          <span className="pill">Attempt {item.attempt}</span>
+        </div>
+        <p>{item.error || 'Waiting for retry backoff to expire.'}</p>
+        <div className="metadata-line">
+          <span>Due {formatDateTime(item.due_at)}</span>
+          <span>Issue {compactID(item.issue_id)}</span>
+        </div>
+      </div>
+      <div className="token-box">
+        <strong>{formatRelative(item.due_at)}</strong>
+        <span>due</span>
+      </div>
+    </article>
+  )
+}
+
+function EmptyState(props: { title: string; body: string }) {
+  return (
+    <div className="empty-state">
+      <div className="empty-icon" aria-hidden="true" />
+      <h3>{props.title}</h3>
+      <p>{props.body}</p>
     </div>
   )
 }
 
-function formatDate(value: string) {
+function SettingsView(props: {
+  settings: SettingsResponse | null
+  settingsDraft: string
+  promptDraft: string
+  saving: boolean
+  onSettingsDraftChange: (value: string) => void
+  onPromptDraftChange: (value: string) => void
+  onReload: () => void
+  onSave: () => void
+}) {
+  if (!props.settings) {
+    return (
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Settings</p>
+            <h2>Loading workflow</h2>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  return (
+    <section className="settings-layout">
+      <div className="panel settings-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Settings</p>
+            <h2>Workflow</h2>
+          </div>
+          <div className="settings-actions">
+            <button className="secondary-button" type="button" onClick={props.onReload} disabled={props.saving}>
+              Reload
+            </button>
+            <button className="icon-button" type="button" onClick={props.onSave} disabled={props.saving}>
+              <span>{props.saving ? 'Saving' : 'Save'}</span>
+            </button>
+          </div>
+        </div>
+        <div className="settings-meta">
+          <span>{props.settings.workflow_path}</span>
+          {props.settings.validation_error && <strong>{props.settings.validation_error}</strong>}
+        </div>
+        <label className="settings-field">
+          <span>Front Matter JSON</span>
+          <textarea value={props.settingsDraft} onChange={event => props.onSettingsDraftChange(event.target.value)} spellCheck={false} />
+        </label>
+        <label className="settings-field">
+          <span>Prompt Template</span>
+          <textarea value={props.promptDraft} onChange={event => props.onPromptDraftChange(event.target.value)} spellCheck={false} />
+        </label>
+      </div>
+
+      <aside className="panel compact-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Resolved</p>
+            <h2>Runtime</h2>
+          </div>
+        </div>
+        <dl className="rate-list">
+          <div>
+            <dt>Project</dt>
+            <dd>{props.settings.resolved_config.tracker.project_slug || 'None'}</dd>
+          </div>
+          <div>
+            <dt>Active States</dt>
+            <dd>{props.settings.resolved_config.tracker.active_states.join(', ') || 'None'}</dd>
+          </div>
+          <div>
+            <dt>Terminal States</dt>
+            <dd>{props.settings.resolved_config.tracker.terminal_states.join(', ') || 'None'}</dd>
+          </div>
+          <div>
+            <dt>Workspace</dt>
+            <dd>{props.settings.resolved_config.workspace.mode}</dd>
+          </div>
+          <div>
+            <dt>Codex</dt>
+            <dd>{props.settings.resolved_config.codex.command}</dd>
+          </div>
+        </dl>
+      </aside>
+    </section>
+  )
+}
+
+function CapacityBar(props: { label: string; value: number; total: number }) {
+  const percent = props.total > 0 ? Math.min(100, (props.value / props.total) * 100) : 0
+  const width = props.value > 0 ? Math.max(4, percent) : 0
+  return (
+    <div className="capacity-row">
+      <div className="capacity-label">
+        <span>{props.label}</span>
+        <strong>{props.value.toLocaleString()}</strong>
+      </div>
+      <div
+        className="bar-track"
+        role="progressbar"
+        aria-label={`${props.label} usage`}
+        aria-valuemin={0}
+        aria-valuemax={props.total}
+        aria-valuenow={Math.min(props.value, props.total)}
+      >
+        <div className="bar-fill" style={{ width: `${width}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function RateLimitPanel(props: { rateLimits: Record<string, unknown> | null }) {
+  if (!props.rateLimits || Object.keys(props.rateLimits).length === 0) {
+    return <p className="muted">No rate limit data has been reported yet.</p>
+  }
+
+  return (
+    <dl className="rate-list">
+      {Object.entries(props.rateLimits).map(([key, value]) => (
+        <div key={key}>
+          <dt>{humanizeKey(key)}</dt>
+          <dd>{formatUnknown(value)}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+function ActivityFeed(props: { items: ActivityItem[]; onOpen: (identifier: string) => void }) {
+  if (props.items.length === 0) {
+    return <p className="muted">No active runtime events are available.</p>
+  }
+
+  return (
+    <ol className="activity-feed">
+      {props.items.map(item => (
+        <li key={item.id}>
+          <span className={`activity-dot ${item.tone}`} aria-hidden="true" />
+          <div>
+            <button className="link-button" type="button" onClick={() => props.onOpen(item.label)}>
+              {item.label}
+            </button>
+            <strong>{item.title}</strong>
+            <p>{item.body}</p>
+            <span>{item.tone === 'retrying' ? `Due ${formatRelative(item.at)}` : formatRelative(item.at)}</span>
+          </div>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function IssueDrawer(props: { detailState: DetailState; onClose: () => void }) {
+  const drawerRef = useRef<HTMLElement | null>(null)
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+  const drawerOpen = props.detailState.status !== 'idle'
+
+  useEffect(() => {
+    if (!drawerOpen) {
+      return undefined
+    }
+
+    const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const previousBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeButtonRef.current?.focus()
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        props.onClose()
+        return
+      }
+
+      if (event.key === 'Tab') {
+        trapFocus(event, drawerRef.current)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      document.body.style.overflow = previousBodyOverflow
+      previousActiveElement?.focus()
+    }
+  }, [drawerOpen, props.onClose])
+
+  if (props.detailState.status === 'idle') {
+    return null
+  }
+
+  const title =
+    props.detailState.status === 'ready'
+      ? props.detailState.detail.issue_identifier
+      : props.detailState.status === 'loading'
+        ? props.detailState.identifier
+        : props.detailState.identifier
+
+  return (
+    <div className="drawer-backdrop" role="presentation" onClick={props.onClose}>
+      <aside
+        ref={drawerRef}
+        className="drawer"
+        role="dialog"
+        aria-labelledby="issue-drawer-title"
+        aria-modal="true"
+        tabIndex={-1}
+        onClick={event => event.stopPropagation()}
+      >
+        <header className="drawer-header">
+          <div>
+            <p className="eyebrow">Issue detail</p>
+            <h2 id="issue-drawer-title">{title}</h2>
+          </div>
+          <button ref={closeButtonRef} className="close-button" type="button" onClick={props.onClose} title="Close details">
+            <span aria-hidden="true" />
+            <span className="sr-only">Close</span>
+          </button>
+        </header>
+
+        {props.detailState.status === 'loading' && <EmptyState title="Loading issue" body="Fetching workspace, attempts, logs, and recent events." />}
+        {props.detailState.status === 'error' && <div className="alert alert-error">{props.detailState.message}</div>}
+        {props.detailState.status === 'ready' && <IssueDetail detail={props.detailState.detail} />}
+      </aside>
+    </div>
+  )
+}
+
+function IssueDetail(props: { detail: IssueDetailResponse }) {
+  const { detail } = props
+  return (
+    <div className="drawer-content">
+      <div className="detail-grid">
+        <DetailStat label="Status" value={detail.status} />
+        <DetailStat label="Restarts" value={detail.attempts.restart_count.toLocaleString()} />
+        <DetailStat label="Retry attempt" value={detail.attempts.current_retry_attempt.toLocaleString()} />
+      </div>
+
+      <section className="detail-section">
+        <h3>Workspace</h3>
+        <code>{detail.workspace.path || 'No workspace assigned'}</code>
+      </section>
+
+      {detail.running && (
+        <section className="detail-section">
+          <h3>Live session</h3>
+          {detail.running.issue_title && <p>{detail.running.issue_title}</p>}
+          {detail.running.labels.length > 0 && (
+            <div className="label-strip" aria-label="Issue labels">
+              {detail.running.labels.map(label => (
+                <span key={label}>{label}</span>
+              ))}
+            </div>
+          )}
+          <div className="session-card">
+            <DetailStat label="Session" value={compactID(detail.running.session_id)} />
+            <DetailStat label="Turns" value={detail.running.turn_count.toLocaleString()} />
+            <DetailStat label="Tokens" value={detail.running.tokens.total_tokens.toLocaleString()} />
+          </div>
+        </section>
+      )}
+
+      {detail.retry && (
+        <section className="detail-section">
+          <h3>Retry backoff</h3>
+          <div className="session-card">
+            <DetailStat label="Attempt" value={detail.retry.attempt.toLocaleString()} />
+            <DetailStat label="Due" value={formatRelative(detail.retry.due_at)} />
+            <DetailStat label="Issue" value={compactID(detail.retry.issue_id)} />
+          </div>
+          {detail.retry.error && <p className="error-copy">{detail.retry.error}</p>}
+        </section>
+      )}
+
+      {detail.last_error && !detail.retry && (
+        <section className="detail-section">
+          <h3>Last error</h3>
+          <p className="error-copy">{detail.last_error}</p>
+        </section>
+      )}
+
+      <section className="detail-section">
+        <h3>Recent events</h3>
+        {detail.recent_events.length === 0 ? (
+          <p className="muted">No events recorded for this issue.</p>
+        ) : (
+          <ol className="event-list">
+            {detail.recent_events.map(event => (
+              <li key={`${event.at}-${event.event}-${event.message}`}>
+                <span>{formatDateTime(event.at)}</span>
+                <strong>{event.event}</strong>
+                <p>{event.message || 'No message'}</p>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+
+      <section className="detail-section">
+        <h3>Codex logs</h3>
+        {detail.logs.codex_session_logs.length === 0 ? (
+          <p className="muted">No Codex session logs have been attached.</p>
+        ) : (
+          <div className="log-list">
+            {detail.logs.codex_session_logs.map(log =>
+              log.url ? (
+                <a key={`${log.label}-${log.path}`} href={log.url}>
+                  <span>{log.label}</span>
+                  <code>{log.path}</code>
+                </a>
+              ) : (
+                <div className="log-item" key={`${log.label}-${log.path}`}>
+                  <span>{log.label}</span>
+                  <code>{log.path}</code>
+                </div>
+              ),
+            )}
+          </div>
+        )}
+      </section>
+
+      {Object.keys(detail.tracked).length > 0 && (
+        <section className="detail-section">
+          <h3>Tracked metadata</h3>
+          <dl className="rate-list">
+            {Object.entries(detail.tracked).map(([key, value]) => (
+              <div key={key}>
+                <dt>{humanizeKey(key)}</dt>
+                <dd>{formatUnknown(value)}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
+    </div>
+  )
+}
+
+function DetailStat(props: { label: string; value: string }) {
+  return (
+    <div className="detail-stat">
+      <span>{props.label}</span>
+      <strong>{props.value}</strong>
+    </div>
+  )
+}
+
+function trapFocus(event: KeyboardEvent, container: HTMLElement | null) {
+  if (!container) {
+    return
+  }
+
+  const focusable = Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter(element => element.offsetParent !== null)
+
+  if (focusable.length === 0) {
+    event.preventDefault()
+    container.focus()
+    return
+  }
+
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+function matchesIssueQuery(item: RunningSnapshot | RetrySnapshot, query: string) {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) {
+    return true
+  }
+
+  const values =
+    'session_id' in item
+      ? [item.issue_identifier, item.issue_id, item.issue_title, item.state, item.session_id, item.last_event, item.last_message, ...item.labels]
+      : [item.issue_identifier, item.issue_id, item.error || '', `attempt ${item.attempt}`]
+
+  return values.some(value => value.toLowerCase().includes(normalized))
+}
+
+function normalizeError(err: unknown) {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function percentOf(value: number, total: number) {
+  if (total <= 0) {
+    return 0
+  }
+  return Math.round((value / total) * 100)
+}
+
+function formatDateTime(value: string, fallback = value) {
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
+  if (!isMeaningfulDate(date)) {
+    return fallback
+  }
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+function formatRelative(value: string, fallback = value) {
+  const date = new Date(value)
+  if (!isMeaningfulDate(date)) {
+    return fallback
+  }
+
+  const diffSeconds = Math.round((date.getTime() - Date.now()) / 1000)
+  const absoluteSeconds = Math.abs(diffSeconds)
+  const unit =
+    absoluteSeconds < 60
+      ? 'second'
+      : absoluteSeconds < 3600
+        ? 'minute'
+        : absoluteSeconds < 86400
+          ? 'hour'
+          : 'day'
+  const divisor = unit === 'second' ? 1 : unit === 'minute' ? 60 : unit === 'hour' ? 3600 : 86400
+  const valueInUnit = Math.round(diffSeconds / divisor)
+
+  return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(valueInUnit, unit)
+}
+
+function displayTimestamp(primary: string, fallback: string) {
+  return isMeaningfulDate(new Date(primary)) ? primary : fallback
+}
+
+function isMeaningfulDate(date: Date) {
+  return !Number.isNaN(date.getTime()) && date.getFullYear() > 1970
+}
+
+function formatDuration(seconds: number) {
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`
+  }
+  if (seconds < 3600) {
+    return `${Math.round(seconds / 60)}m`
+  }
+  return `${(seconds / 3600).toFixed(1)}h`
+}
+
+function formatMilliseconds(milliseconds: number) {
+  if (milliseconds <= 0) {
+    return 'Unknown'
+  }
+  return formatDuration(milliseconds / 1000)
+}
+
+function entryKey(item: RunningSnapshot | RetrySnapshot) {
+  if ('session_id' in item) {
+    return item.issue_id || item.session_id || item.issue_identifier
+  }
+  return item.issue_id || item.issue_identifier
+}
+
+function compactID(value: string, fallback = 'pending') {
+  if (!value) {
+    return fallback
+  }
+  if (value.length <= 12) {
     return value
   }
-  return date.toLocaleTimeString()
+  return `${value.slice(0, 6)}...${value.slice(-4)}`
+}
+
+function humanizeKey(value: string) {
+  return value.replace(/[_-]/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+}
+
+function formatUnknown(value: unknown) {
+  if (value === null || value === undefined) {
+    return 'None'
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value)
+  }
+  return String(value)
 }
 
 export default App

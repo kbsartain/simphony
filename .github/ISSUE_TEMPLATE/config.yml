@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support questions
+    url: https://github.com/kbsartain/simphony/blob/main/SUPPORT.md
+    about: Read the support guide before opening a public issue.
+  - name: Security reports
+    url: https://github.com/kbsartain/simphony/blob/main/SECURITY.md
+    about: Do not report vulnerabilities, credentials, or sensitive logs in public issues.

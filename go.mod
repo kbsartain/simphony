@@ -1,4 +1,4 @@
-module simphony
+module github.com/kbsartain/simphony
 
 go 1.25.0
 
