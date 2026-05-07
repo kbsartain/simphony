@@ -493,6 +493,13 @@ func (o *Orchestrator) dispatch(issue api.Issue) {
 	}
 	o.mu.Unlock()
 	log.Printf("issue_id=%s issue_identifier=%s action=dispatch_started state=%q workspace=%q", issue.ID, issue.Identifier, issue.State, workspace.Path)
+	if stage.Kind == "review_resolution" {
+		o.postStatusComment(issue, runtime, "Simphony review resolution started", fmt.Sprintf("Autonomous PR/code-review resolution is running.\n\nPolicy:\n- Require checks green: %t\n- Require review approval: %t\n- Unresolved comments: %s",
+			runtime.cfg.ReviewResolution.RequireChecksGreen,
+			runtime.cfg.ReviewResolution.RequireCodeReviewApproval,
+			runtime.cfg.ReviewResolution.UnresolvedCommentPolicy,
+		))
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	o.mu.Lock()
@@ -606,6 +613,22 @@ func (o *Orchestrator) postAgentComment(issue api.Issue, runtime runtimeSnapshot
 		return
 	}
 	log.Printf("issue_id=%s issue_identifier=%s action=agent_comment posted", issue.ID, issue.Identifier)
+}
+
+func (o *Orchestrator) postStatusComment(issue api.Issue, runtime runtimeSnapshot, title string, message string) {
+	title = strings.TrimSpace(title)
+	message = strings.TrimSpace(message)
+	if title == "" || message == "" || runtime.tracker == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body := fmt.Sprintf("**%s**\n\n%s", title, message)
+	if err := runtime.tracker.AddIssueComment(ctx, issue, body); err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=status_comment title=%q failed=%v", issue.ID, issue.Identifier, title, err)
+		return
+	}
+	log.Printf("issue_id=%s issue_identifier=%s action=status_comment title=%q posted", issue.ID, issue.Identifier, title)
 }
 
 func summarizeEvent(event api.AgentEvent) string {
@@ -1200,6 +1223,7 @@ func (o *Orchestrator) resolveReviewResolutionCompletion(ctx context.Context, ru
 			identifier = updatedIssue.Identifier
 		}
 		log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_completion status=success state=%q decision=%q", issue.ID, identifier, updatedIssue.State, decision)
+		o.postStatusComment(updatedIssue, runtime, "Simphony review resolution approved", fmt.Sprintf("Autonomous PR/code-review resolution completed successfully.\n\nDecision: %s\nNext state: %s", decision, updatedIssue.State))
 		o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, entry.WorkspacePath)
 	}
 }
@@ -1214,6 +1238,7 @@ func (o *Orchestrator) scheduleReviewResolutionRetryOrEscalate(ctx context.Conte
 		return
 	}
 	log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_retry status=scheduled attempt=%d max_attempts=%d", issue.ID, identifier, attempt, runtime.cfg.ReviewResolution.MaxAttempts)
+	o.postStatusComment(issue, runtime, "Simphony review resolution retry scheduled", fmt.Sprintf("The review-resolution agent requested another autonomous pass.\n\nAttempt: %d of %d", attempt, runtime.cfg.ReviewResolution.MaxAttempts))
 	o.scheduleRetry(issue.ID, identifier, "review resolution requested another pass", retryKindAgent)
 }
 
@@ -1231,7 +1256,7 @@ func (o *Orchestrator) transitionReviewResolutionToEscalation(ctx context.Contex
 	if updatedIssue.Identifier != "" {
 		identifier = updatedIssue.Identifier
 	}
-	_ = runtime.tracker.AddIssueComment(ctx, updatedIssue, fmt.Sprintf("**Simphony review-resolution escalation**\n\n%s", reason))
+	_ = runtime.tracker.AddIssueComment(ctx, updatedIssue, fmt.Sprintf("**Simphony review resolution escalated**\n\n%s", reason))
 	log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_escalation status=success state=%q reason=%q", issue.ID, identifier, updatedIssue.State, reason)
 	o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, workspacePath)
 }

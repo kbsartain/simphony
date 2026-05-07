@@ -1053,9 +1053,13 @@ func TestOrchestrator_ReviewResolutionApprovedMovesToMerge(t *testing.T) {
 
 	tracker.mu.Lock()
 	prefs := append([][]string(nil), tracker.movePreferences...)
+	comments := append([]string(nil), tracker.comments...)
 	tracker.mu.Unlock()
 	if len(prefs) != 1 || len(prefs[0]) != 1 || prefs[0][0] != "Approved" {
 		t.Fatalf("move preferences = %v, want [[Approved]]", prefs)
+	}
+	if !hasCommentContaining(comments, "Simphony review resolution started") || !hasCommentContaining(comments, "Simphony review resolution approved") {
+		t.Fatalf("comments = %v, want review-resolution start and approved status comments", comments)
 	}
 
 	runner.mu.Lock()
@@ -1092,9 +1096,13 @@ func TestOrchestrator_ReviewResolutionRetryDoesNotApprove(t *testing.T) {
 
 	tracker.mu.Lock()
 	moveCount := len(tracker.movePreferences)
+	comments := append([]string(nil), tracker.comments...)
 	tracker.mu.Unlock()
 	if moveCount != 0 {
 		t.Fatalf("move count = %d, want 0 while review-resolution requested retry", moveCount)
+	}
+	if !hasCommentContaining(comments, "Simphony review resolution started") || !hasCommentContaining(comments, "Simphony review resolution retry scheduled") {
+		t.Fatalf("comments = %v, want review-resolution start and retry status comments", comments)
 	}
 	orch.mu.Lock()
 	retry := orch.state.RetryAttempts["1"]
@@ -1136,16 +1144,18 @@ func TestOrchestrator_ReviewResolutionEscalates(t *testing.T) {
 	if len(prefs) != 1 || len(prefs[0]) != 1 || prefs[0][0] != "Needs Human" {
 		t.Fatalf("move preferences = %v, want [[Needs Human]]", prefs)
 	}
-	foundEscalation := false
-	for _, comment := range comments {
-		if strings.Contains(comment, "review-resolution escalation") {
-			foundEscalation = true
-			break
-		}
-	}
-	if !foundEscalation {
+	if !hasCommentContaining(comments, "Simphony review resolution started") || !hasCommentContaining(comments, "Simphony review resolution escalated") {
 		t.Fatalf("comments = %v, want escalation comment", comments)
 	}
+}
+
+func hasCommentContaining(comments []string, needle string) bool {
+	for _, comment := range comments {
+		if strings.Contains(comment, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestOrchestrator_MaxTurnsReachedMarksCompleted(t *testing.T) {
