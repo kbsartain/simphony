@@ -114,6 +114,33 @@ The merge state is automatically included in tracker active states, and the done
 
 Set `codex.model` to pass a model name to Codex app-server. Set `codex.model_provider` when your Codex installation needs an explicit provider name. These values are optional; when omitted, Codex uses its own configured defaults.
 
+Set `codex.reasoning_effort` to control per-turn reasoning globally. Use `codex.stage_overrides` to change model, provider, or reasoning by pipeline stage:
+
+```yaml
+codex:
+  model: gpt-5.4
+  reasoning_effort: high
+  skills:
+    - architecture-standards
+  stage_overrides:
+    coding:
+      reasoning_effort: medium
+      skills:
+        - conjit-product-ui
+    review:
+      model: gpt-5.5
+      reasoning_effort: xhigh
+      skills:
+        - code-review
+        - security-review
+    merge:
+      reasoning_effort: high
+```
+
+The model and provider fields are free-form strings. That lets a workflow select configured alternatives such as Claude, Gemini, Kimi, GLM, or DeepSeek through whatever provider/router your Codex installation supports.
+
+`codex.skills` and `codex.stage_overrides.<stage>.skills` let you attach default skills by stage. Skill names are resolved through Codex at runtime when possible; use `{ name, path }` entries to pin a specific local skill file.
+
 ## Dashboard
 
 The dashboard is optional. During development, run Vite from the dashboard directory:

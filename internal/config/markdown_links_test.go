@@ -153,6 +153,9 @@ func walkPublicTextFiles(repoRoot string, extensions []string, visit func(path s
 			}
 			return nil
 		}
+		if matched, _ := filepath.Match("WORKFLOW-*.md", entry.Name()); matched {
+			return nil
+		}
 		if _, ok := allowed[filepath.Ext(path)]; !ok {
 			return nil
 		}

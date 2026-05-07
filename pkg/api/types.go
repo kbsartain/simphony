@@ -103,15 +103,32 @@ type AgentConfig struct {
 
 // CodexConfig configures the Codex app-server client.
 type CodexConfig struct {
-	Command           string `json:"command"`
-	Model             string `json:"model,omitempty"`
-	ModelProvider     string `json:"model_provider,omitempty"`
-	ApprovalPolicy    string `json:"approval_policy"`
-	ThreadSandbox     string `json:"thread_sandbox"`
-	TurnSandboxPolicy string `json:"turn_sandbox_policy"`
-	TurnTimeoutMs     int    `json:"turn_timeout_ms"`
-	ReadTimeoutMs     int    `json:"read_timeout_ms"`
-	StallTimeoutMs    int    `json:"stall_timeout_ms"`
+	Command           string                        `json:"command"`
+	Model             string                        `json:"model,omitempty"`
+	ModelProvider     string                        `json:"model_provider,omitempty"`
+	ReasoningEffort   string                        `json:"reasoning_effort,omitempty"`
+	Skills            []CodexSkillRef               `json:"skills,omitempty"`
+	ApprovalPolicy    string                        `json:"approval_policy"`
+	ThreadSandbox     string                        `json:"thread_sandbox"`
+	TurnSandboxPolicy string                        `json:"turn_sandbox_policy"`
+	TurnTimeoutMs     int                           `json:"turn_timeout_ms"`
+	ReadTimeoutMs     int                           `json:"read_timeout_ms"`
+	StallTimeoutMs    int                           `json:"stall_timeout_ms"`
+	StageOverrides    map[string]CodexStageOverride `json:"stage_overrides,omitempty"`
+}
+
+// CodexStageOverride overrides selected Codex settings for a pipeline stage.
+type CodexStageOverride struct {
+	Model           string          `json:"model,omitempty"`
+	ModelProvider   string          `json:"model_provider,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	Skills          []CodexSkillRef `json:"skills,omitempty"`
+}
+
+// CodexSkillRef selects a Codex skill by name and, when known, absolute path.
+type CodexSkillRef struct {
+	Name string `json:"name"`
+	Path string `json:"path,omitempty"`
 }
 
 // ServerConfig configures the optional HTTP server extension.

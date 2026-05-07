@@ -43,6 +43,7 @@ button {
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
+select:focus-visible,
 a:focus-visible {
   outline: 3px solid rgba(55, 111, 196, 0.35);
   outline-offset: 3px;
@@ -709,6 +710,117 @@ h3 {
   font: 0.9rem/1.5 "Cascadia Mono", Consolas, monospace;
 }
 
+.settings-field textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.compact-textarea {
+  min-height: 96px !important;
+}
+
+.skill-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.field-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.stage-skill-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.stage-skill-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f9f4;
+}
+
+.stage-skill-card strong {
+  font-size: 0.9rem;
+}
+
+.stage-skill-card textarea {
+  min-height: 118px;
+  background: #fff;
+}
+
+.stage-skill-card input,
+.stage-skill-card select {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.stage-skill-card input:disabled,
+.stage-skill-card select:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.settings-control-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.select-field {
+  display: block;
+}
+
+.select-field select {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.select-field select:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.model-summary {
+  display: grid;
+  gap: 4px;
+  min-height: 42px;
+  align-content: center;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f9f4;
+}
+
+.model-summary strong,
+.model-summary span {
+  overflow-wrap: anywhere;
+}
+
+.model-summary span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .settings-field:last-child textarea {
   min-height: 360px;
 }
@@ -989,6 +1101,8 @@ h3 {
   .ops-band,
   .content-grid,
   .settings-layout,
+  .settings-control-row,
+  .stage-skill-grid,
   .detail-grid,
   .session-card {
     grid-template-columns: 1fr;

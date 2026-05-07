@@ -950,6 +950,51 @@ func TestOrchestrator_MergeStageMovesToDone(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_ReviewStageMovesToMerge(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "In Review"},
+		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "In Review"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1}
+	cfg := defaultConfig()
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "In Review", "Approved"}
+	cfg.Tracker.WorkingState = "In Progress"
+	cfg.Agent.MaxConcurrentAgents = 1
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	tracker.mu.Lock()
+	transitions := append([]string(nil), tracker.transitions...)
+	moved := append([]string(nil), tracker.movedIssues...)
+	prefs := append([][]string(nil), tracker.movePreferences...)
+	tracker.mu.Unlock()
+	if len(transitions) != 0 {
+		t.Fatalf("working state transitions = %v, want none for review stage", transitions)
+	}
+	if len(moved) != 1 || moved[0] != "1" {
+		t.Fatalf("moved issues = %v, want [1]", moved)
+	}
+	if len(prefs) != 1 || len(prefs[0]) != 1 || prefs[0][0] != "Approved" {
+		t.Fatalf("move preferences = %v, want [[Approved]]", prefs)
+	}
+
+	runner.mu.Lock()
+	stages := append([]api.PipelineStage(nil), runner.stages...)
+	runner.mu.Unlock()
+	if len(stages) != 1 || stages[0].Kind != "review" {
+		t.Fatalf("runner stages = %v, want one review stage", stages)
+	}
+}
+
 func TestOrchestrator_MaxTurnsReachedMarksCompleted(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{

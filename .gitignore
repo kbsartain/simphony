@@ -20,6 +20,9 @@ simphony_workspaces/
 dashboard/.npm-cache/
 tmp/
 
+# Local per-project workflow configs
+WORKFLOW-*.md
+
 # IDE
 .idea/
 .vscode/

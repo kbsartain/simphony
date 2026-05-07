@@ -134,6 +134,15 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	if cfg.Codex.ApprovalPolicy != "auto" {
 		t.Errorf("codex.approval_policy = %q, want auto", cfg.Codex.ApprovalPolicy)
 	}
+	if cfg.Codex.ReasoningEffort != "" {
+		t.Errorf("codex.reasoning_effort = %q, want empty", cfg.Codex.ReasoningEffort)
+	}
+	if len(cfg.Codex.StageOverrides) != 0 {
+		t.Errorf("codex.stage_overrides = %v, want empty", cfg.Codex.StageOverrides)
+	}
+	if len(cfg.Codex.Skills) != 0 {
+		t.Errorf("codex.skills = %v, want empty", cfg.Codex.Skills)
+	}
 	if cfg.Codex.ThreadSandbox != "none" {
 		t.Errorf("codex.thread_sandbox = %q, want none", cfg.Codex.ThreadSandbox)
 	}
@@ -194,8 +203,21 @@ func TestResolveConfig_ModelAndPipeline(t *testing.T) {
 				"coding_states": []interface{}{"Ready", "Coding"},
 			},
 			"codex": map[string]interface{}{
-				"model":          "gpt-5.4",
-				"model_provider": "openai",
+				"model":            "gpt-5.4",
+				"model_provider":   "openai",
+				"reasoning_effort": "x-high",
+				"skills":           []interface{}{"architecture-review", map[string]interface{}{"name": "repo-skill", "path": "C:\\skills\\repo-skill\\SKILL.md"}},
+				"stage_overrides": map[string]interface{}{
+					"coding": map[string]interface{}{
+						"reasoning_effort": "medium",
+						"skills":           []interface{}{"conjit-product-ui"},
+					},
+					"review": map[string]interface{}{
+						"model":            "claude-opus-4.1",
+						"model_provider":   "anthropic",
+						"reasoning_effort": "x_high",
+					},
+				},
 			},
 		},
 	}
@@ -209,6 +231,22 @@ func TestResolveConfig_ModelAndPipeline(t *testing.T) {
 	}
 	if cfg.Codex.ModelProvider != "openai" {
 		t.Fatalf("codex.model_provider = %q, want openai", cfg.Codex.ModelProvider)
+	}
+	if cfg.Codex.ReasoningEffort != "xhigh" {
+		t.Fatalf("codex.reasoning_effort = %q, want xhigh", cfg.Codex.ReasoningEffort)
+	}
+	if len(cfg.Codex.Skills) != 2 || cfg.Codex.Skills[0].Name != "architecture-review" || cfg.Codex.Skills[1].Path == "" {
+		t.Fatalf("codex.skills = %+v, want string and map skill refs", cfg.Codex.Skills)
+	}
+	if cfg.Codex.StageOverrides["coding"].ReasoningEffort != "medium" {
+		t.Fatalf("coding reasoning_effort = %q, want medium", cfg.Codex.StageOverrides["coding"].ReasoningEffort)
+	}
+	if len(cfg.Codex.StageOverrides["coding"].Skills) != 1 || cfg.Codex.StageOverrides["coding"].Skills[0].Name != "conjit-product-ui" {
+		t.Fatalf("coding skills = %+v, want conjit-product-ui", cfg.Codex.StageOverrides["coding"].Skills)
+	}
+	reviewOverride := cfg.Codex.StageOverrides["review"]
+	if reviewOverride.Model != "claude-opus-4.1" || reviewOverride.ModelProvider != "anthropic" || reviewOverride.ReasoningEffort != "xhigh" {
+		t.Fatalf("review override = %+v, want model/provider/xhigh", reviewOverride)
 	}
 	if cfg.Pipeline.ReviewState != "Reviewing" || cfg.Pipeline.MergeState != "Approved" || cfg.Pipeline.DoneState != "Shipped" {
 		t.Fatalf("pipeline = %+v, want custom states", cfg.Pipeline)
@@ -542,6 +580,80 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			wantError: api.ErrCodexNotFound,
 		},
 		{
+			name: "invalid reasoning effort",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"codex": map[string]interface{}{
+					"reasoning_effort": "maximum",
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
+			name: "invalid stage reasoning effort",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"codex": map[string]interface{}{
+					"stage_overrides": map[string]interface{}{
+						"review": map[string]interface{}{
+							"reasoning_effort": "max",
+						},
+					},
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
+			name: "invalid codex skills shape",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"codex": map[string]interface{}{
+					"skills": "conjit-product-ui",
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
+			name: "active completion overlap allowed for review state",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":          "linear",
+					"api_key":       "key",
+					"project_slug":  "proj",
+					"active_states": []interface{}{"Todo", "In Review"},
+				},
+				"pipeline": map[string]interface{}{
+					"review_state": "In Review",
+				},
+			},
+			wantError: "",
+		},
+		{
+			name: "active completion overlap rejected outside review state",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":              "linear",
+					"api_key":           "key",
+					"project_slug":      "proj",
+					"active_states":     []interface{}{"Todo", "QA"},
+					"completion_states": []interface{}{"QA"},
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
 			name: "git worktree missing repo",
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
@@ -575,6 +687,12 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			def := &api.WorkflowDefinition{Config: tt.config}
 			_, err := ResolveConfig(def, t.TempDir())
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tt.wantError)
 			}

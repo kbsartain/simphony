@@ -28,6 +28,27 @@ type DetailState =
   | { status: 'loading'; identifier: string }
   | { status: 'ready'; detail: IssueDetailResponse }
   | { status: 'error'; identifier: string; message: string }
+type ModelOption = {
+  id: string
+  label: string
+  model: string
+  modelProvider: string
+}
+type SkillStageOption = {
+  id: string
+  label: string
+}
+
+const MODEL_OPTIONS: ModelOption[] = [
+  { id: 'kimi-k2-2.6', label: 'Kimi K2 2.6', model: 'kimi-k2-2.6', modelProvider: 'moonshot' },
+  { id: 'claude-opus-4.7', label: 'Claude Opus 4.7', model: 'claude-opus-4.7', modelProvider: 'anthropic' },
+]
+const SKILL_STAGE_OPTIONS: SkillStageOption[] = [
+  { id: 'coding', label: 'Coding' },
+  { id: 'review', label: 'In Review' },
+  { id: 'merge', label: 'Merge' },
+]
+const REASONING_OPTIONS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 
 function App() {
   const [page, setPage] = useState<Page>('runtime')
@@ -531,6 +552,27 @@ function SettingsView(props: {
     )
   }
 
+  const draftConfig = parseSettingsConfig(props.settingsDraft)
+  const selectedModelID = draftConfig ? getSelectedModelID(draftConfig) : ''
+
+  const changeModel = (optionID: string) => {
+    const config = draftConfig || {}
+    const nextConfig = applyModelSelection(config, optionID)
+    props.onSettingsDraftChange(JSON.stringify(nextConfig, null, 2))
+  }
+  const changeGlobalSkills = (value: string) => {
+    const config = draftConfig || {}
+    props.onSettingsDraftChange(JSON.stringify(applyGlobalSkills(config, value), null, 2))
+  }
+  const changeStageSkills = (stage: string, value: string) => {
+    const config = draftConfig || {}
+    props.onSettingsDraftChange(JSON.stringify(applyStageSkills(config, stage, value), null, 2))
+  }
+  const changeStageField = (stage: string, field: 'model' | 'model_provider' | 'reasoning_effort', value: string) => {
+    const config = draftConfig || {}
+    props.onSettingsDraftChange(JSON.stringify(applyStageField(config, stage, field, value), null, 2))
+  }
+
   return (
     <section className="settings-layout">
       <div className="panel settings-panel">
@@ -551,6 +593,80 @@ function SettingsView(props: {
         <div className="settings-meta">
           <span>{props.settings.workflow_path}</span>
           {props.settings.validation_error && <strong>{props.settings.validation_error}</strong>}
+        </div>
+        <div className="settings-field">
+          <span>Model</span>
+          <div className="settings-control-row">
+            <label className="select-field">
+              <span className="sr-only">Codex model</span>
+              <select value={selectedModelID} onChange={event => changeModel(event.target.value)} disabled={!draftConfig || props.saving}>
+                <option value="">Codex default</option>
+                {MODEL_OPTIONS.map(option => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="model-summary">
+              <strong>{modelLabel(props.settings.resolved_config.codex.model, props.settings.resolved_config.codex.model_provider)}</strong>
+              <span>{props.settings.resolved_config.codex.model_provider || 'default provider'}</span>
+            </div>
+          </div>
+        </div>
+        <div className="settings-field">
+          <span>Default Skills</span>
+          <div className="skill-editor">
+            <textarea
+              className="compact-textarea"
+              value={draftConfig ? skillListToText(getGlobalSkills(draftConfig)) : ''}
+              onChange={event => changeGlobalSkills(event.target.value)}
+              placeholder={'conjit-product-ui\narchitecture-review'}
+              spellCheck={false}
+              disabled={!draftConfig || props.saving}
+            />
+            <p className="field-help">One skill per line. Use a skill name, or name|absolute path when you want to pin a specific SKILL.md.</p>
+          </div>
+        </div>
+        <div className="settings-field">
+          <span>Stage Overrides</span>
+          <div className="stage-skill-grid">
+            {SKILL_STAGE_OPTIONS.map(stage => (
+              <label key={stage.id} className="stage-skill-card">
+                <strong>{stage.label}</strong>
+                <input
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'model') : ''}
+                  onChange={event => changeStageField(stage.id, 'model', event.target.value)}
+                  placeholder="model"
+                  disabled={!draftConfig || props.saving}
+                />
+                <input
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'model_provider') : ''}
+                  onChange={event => changeStageField(stage.id, 'model_provider', event.target.value)}
+                  placeholder="provider"
+                  disabled={!draftConfig || props.saving}
+                />
+                <select
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'reasoning_effort') : ''}
+                  onChange={event => changeStageField(stage.id, 'reasoning_effort', event.target.value)}
+                  disabled={!draftConfig || props.saving}
+                >
+                  {REASONING_OPTIONS.map(option => (
+                    <option key={option || 'default'} value={option}>
+                      {option || 'default reasoning'}
+                    </option>
+                  ))}
+                </select>
+                <textarea
+                  value={draftConfig ? skillListToText(getStageSkills(draftConfig, stage.id)) : ''}
+                  onChange={event => changeStageSkills(stage.id, event.target.value)}
+                  placeholder={stage.id === 'review' ? 'code-review\nsecurity-review' : stage.id === 'coding' ? 'conjit-product-ui' : 'github:yeet'}
+                  spellCheck={false}
+                  disabled={!draftConfig || props.saving}
+                />
+              </label>
+            ))}
+          </div>
         </div>
         <label className="settings-field">
           <span>Front Matter JSON</span>
@@ -590,10 +706,210 @@ function SettingsView(props: {
             <dt>Codex</dt>
             <dd>{props.settings.resolved_config.codex.command}</dd>
           </div>
+          <div>
+            <dt>Model</dt>
+            <dd>{modelLabel(props.settings.resolved_config.codex.model, props.settings.resolved_config.codex.model_provider)}</dd>
+          </div>
+          <div>
+            <dt>Default Skills</dt>
+            <dd>{formatSkillSummary(props.settings.resolved_config.codex.skills)}</dd>
+          </div>
+          <div>
+            <dt>Stage Overrides</dt>
+            <dd>{formatStageOverrideSummary(props.settings.resolved_config.codex.stage_overrides)}</dd>
+          </div>
         </dl>
       </aside>
     </section>
   )
+}
+
+function parseSettingsConfig(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value || '{}')
+    return isPlainObject(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function getSelectedModelID(config: Record<string, unknown>) {
+  const codex = isPlainObject(config.codex) ? config.codex : {}
+  const model = typeof codex.model === 'string' ? codex.model : ''
+  const provider = typeof codex.model_provider === 'string' ? codex.model_provider : ''
+  return MODEL_OPTIONS.find(option => option.model === model && option.modelProvider === provider)?.id || ''
+}
+
+function applyModelSelection(config: Record<string, unknown>, optionID: string) {
+  const nextConfig = { ...config }
+  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
+  const option = MODEL_OPTIONS.find(item => item.id === optionID)
+
+  if (!option) {
+    delete codex.model
+    delete codex.model_provider
+  } else {
+    codex.model = option.model
+    codex.model_provider = option.modelProvider
+  }
+
+  nextConfig.codex = codex
+  return nextConfig
+}
+
+function getGlobalSkills(config: Record<string, unknown>) {
+  const codex = isPlainObject(config.codex) ? config.codex : {}
+  return normalizeSkillRefs(codex.skills)
+}
+
+function getStageSkills(config: Record<string, unknown>, stage: string) {
+  const codex = isPlainObject(config.codex) ? config.codex : {}
+  const overrides = isPlainObject(codex.stage_overrides) ? codex.stage_overrides : {}
+  const stageConfig = isPlainObject(overrides[stage]) ? overrides[stage] : {}
+  return normalizeSkillRefs(stageConfig.skills)
+}
+
+function getStageStringField(config: Record<string, unknown>, stage: string, field: 'model' | 'model_provider' | 'reasoning_effort') {
+  const codex = isPlainObject(config.codex) ? config.codex : {}
+  const overrides = isPlainObject(codex.stage_overrides) ? codex.stage_overrides : {}
+  const stageConfig = isPlainObject(overrides[stage]) ? overrides[stage] : {}
+  return typeof stageConfig[field] === 'string' ? stageConfig[field] : ''
+}
+
+function applyGlobalSkills(config: Record<string, unknown>, value: string) {
+  const nextConfig = { ...config }
+  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
+  const skills = parseSkillList(value)
+  if (skills.length === 0) {
+    delete codex.skills
+  } else {
+    codex.skills = skills
+  }
+  nextConfig.codex = codex
+  return nextConfig
+}
+
+function applyStageField(config: Record<string, unknown>, stage: string, field: 'model' | 'model_provider' | 'reasoning_effort', value: string) {
+  const nextConfig = { ...config }
+  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
+  const overrides = isPlainObject(codex.stage_overrides) ? { ...codex.stage_overrides } : {}
+  const stageConfig = isPlainObject(overrides[stage]) ? { ...overrides[stage] } : {}
+  const trimmedValue = value.trim()
+  if (trimmedValue === '') {
+    delete stageConfig[field]
+  } else {
+    stageConfig[field] = trimmedValue
+  }
+  return saveStageConfig(nextConfig, codex, overrides, stage, stageConfig)
+}
+
+function applyStageSkills(config: Record<string, unknown>, stage: string, value: string) {
+  const nextConfig = { ...config }
+  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
+  const overrides = isPlainObject(codex.stage_overrides) ? { ...codex.stage_overrides } : {}
+  const stageConfig = isPlainObject(overrides[stage]) ? { ...overrides[stage] } : {}
+  const skills = parseSkillList(value)
+  if (skills.length === 0) {
+    delete stageConfig.skills
+  } else {
+    stageConfig.skills = skills
+  }
+  return saveStageConfig(nextConfig, codex, overrides, stage, stageConfig)
+}
+
+function saveStageConfig(
+  nextConfig: Record<string, unknown>,
+  codex: Record<string, unknown>,
+  overrides: Record<string, unknown>,
+  stage: string,
+  stageConfig: Record<string, unknown>,
+) {
+  if (Object.keys(stageConfig).length === 0) {
+    delete overrides[stage]
+  } else {
+    overrides[stage] = stageConfig
+  }
+  if (Object.keys(overrides).length === 0) {
+    delete codex.stage_overrides
+  } else {
+    codex.stage_overrides = overrides
+  }
+  nextConfig.codex = codex
+  return nextConfig
+}
+
+function parseSkillList(value: string) {
+  return value
+    .split(/\r?\n|,/)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .map(item => {
+      const [name, ...pathParts] = item.split('|')
+      const path = pathParts.join('|').trim()
+      return path ? { name: name.trim(), path } : name.trim()
+    })
+    .filter(item => (typeof item === 'string' ? item.length > 0 : item.name.length > 0 || item.path.length > 0))
+}
+
+function normalizeSkillRefs(value: unknown): Array<string | { name: string; path?: string }> {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value
+    .map(item => {
+      if (typeof item === 'string') {
+        return item.trim()
+      }
+      if (!isPlainObject(item)) {
+        return ''
+      }
+      const name = typeof item.name === 'string' ? item.name.trim() : ''
+      const path = typeof item.path === 'string' ? item.path.trim() : ''
+      return path ? { name, path } : name
+    })
+    .filter(item => (typeof item === 'string' ? item.length > 0 : item.name.length > 0 || item.path.length > 0))
+}
+
+function skillListToText(skills: Array<string | { name: string; path?: string }>) {
+  return skills
+    .map(skill => (typeof skill === 'string' ? skill : skill.path ? `${skill.name}|${skill.path}` : skill.name))
+    .join('\n')
+}
+
+function modelLabel(model?: string, provider?: string) {
+  if (!model) {
+    return 'Codex default'
+  }
+  const option = MODEL_OPTIONS.find(item => item.model === model && item.modelProvider === provider)
+  return option?.label || model
+}
+
+function formatSkillSummary(skills?: Array<{ name: string; path?: string }>) {
+  if (!skills || skills.length === 0) {
+    return 'None'
+  }
+  return skills.map(skill => skill.name || skill.path || 'Unnamed').join(', ')
+}
+
+function formatStageOverrideSummary(
+  overrides?: Record<string, { model?: string; model_provider?: string; reasoning_effort?: string; skills?: Array<{ name: string; path?: string }> }>,
+) {
+  if (!overrides) {
+    return 'None'
+  }
+  const summaries = Object.entries(overrides)
+    .map(([stage, override]) => {
+      const skills = override.skills || []
+      const values = [
+        override.model ? `model ${override.model}` : '',
+        override.model_provider ? `provider ${override.model_provider}` : '',
+        override.reasoning_effort ? `reasoning ${override.reasoning_effort}` : '',
+        skills.length > 0 ? `skills ${skills.map(skill => skill.name || skill.path || 'Unnamed').join(', ')}` : '',
+      ].filter(Boolean)
+      return values.length > 0 ? `${stage}: ${values.join('; ')}` : ''
+    })
+    .filter(Boolean)
+  return summaries.length > 0 ? summaries.join(' | ') : 'None'
 }
 
 function CapacityBar(props: { label: string; value: number; total: number }) {

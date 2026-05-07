@@ -534,8 +534,16 @@ func TestMapSandboxPolicy(t *testing.T) {
 func TestBuildParamsIncludeModelSelection(t *testing.T) {
 	workspace := &api.Workspace{Path: t.TempDir()}
 	cfg := &api.CodexConfig{
-		Model:         "gpt-5.4",
-		ModelProvider: "openai",
+		Model:           "gpt-5.4",
+		ModelProvider:   "openai",
+		ReasoningEffort: "high",
+		StageOverrides: map[string]api.CodexStageOverride{
+			"review": {
+				Model:           "claude-opus-4.1",
+				ModelProvider:   "anthropic",
+				ReasoningEffort: "xhigh",
+			},
+		},
 	}
 
 	threadParams := buildThreadStartParams(workspace, cfg, api.Issue{ID: "1"})
@@ -546,9 +554,48 @@ func TestBuildParamsIncludeModelSelection(t *testing.T) {
 		t.Fatalf("thread modelProvider = %v, want openai", threadParams["modelProvider"])
 	}
 
-	turnParams := buildTurnStartParams("thread-1", workspace, cfg, "hello")
+	turnParams := buildTurnStartParams("thread-1", workspace, cfg, "hello", nil, nil)
 	if turnParams["model"] != "gpt-5.4" {
 		t.Fatalf("turn model = %v, want gpt-5.4", turnParams["model"])
+	}
+	if turnParams["effort"] != "high" {
+		t.Fatalf("turn effort = %v, want high", turnParams["effort"])
+	}
+
+	reviewCfg := effectiveCodexConfig(cfg, api.PipelineStage{Kind: "review"})
+	if reviewCfg.Model != "claude-opus-4.1" {
+		t.Fatalf("review model = %q, want claude-opus-4.1", reviewCfg.Model)
+	}
+	if reviewCfg.ModelProvider != "anthropic" {
+		t.Fatalf("review model provider = %q, want anthropic", reviewCfg.ModelProvider)
+	}
+	if reviewCfg.ReasoningEffort != "xhigh" {
+		t.Fatalf("review reasoning = %q, want xhigh", reviewCfg.ReasoningEffort)
+	}
+	reviewTurnParams := buildTurnStartParams("thread-1", workspace, &reviewCfg, "review", nil, nil)
+	if reviewTurnParams["model"] != "claude-opus-4.1" || reviewTurnParams["effort"] != "xhigh" {
+		t.Fatalf("review turn params = %v, want review model and xhigh effort", reviewTurnParams)
+	}
+}
+
+func TestBuildTurnStartParamsIncludesSkills(t *testing.T) {
+	workspace := &api.Workspace{Path: t.TempDir()}
+	cfg := &api.CodexConfig{}
+	skills := []api.CodexSkillRef{{Name: "conjit-product-ui", Path: `C:\skills\conjit-product-ui\SKILL.md`}}
+	params := buildTurnStartParams("thread-1", workspace, cfg, "hello", skills, []string{"missing-skill"})
+	input, ok := params["input"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("input = %T, want []map[string]interface{}", params["input"])
+	}
+	if len(input) != 2 {
+		t.Fatalf("input length = %d, want skill plus text", len(input))
+	}
+	if input[0]["type"] != "skill" || input[0]["name"] != "conjit-product-ui" {
+		t.Fatalf("skill item = %v, want conjit skill", input[0])
+	}
+	text, _ := input[1]["text"].(string)
+	if !strings.Contains(text, "missing-skill") {
+		t.Fatalf("text item = %q, want unresolved skill note", text)
 	}
 }
 
@@ -561,6 +608,18 @@ func TestMergePromptUsesStageInstructions(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Merge this reviewed change.") || !strings.Contains(prompt, "A-1 - Reviewed change") {
 		t.Fatalf("merge prompt = %q, want stage instructions and issue context", prompt)
+	}
+}
+
+func TestReviewPromptUsesStageInstructions(t *testing.T) {
+	runner := NewRunner("coding prompt")
+	issue := api.Issue{Identifier: "A-2", Title: "Change awaiting review", State: "In Review"}
+	prompt, err := runner.turnPrompt(issue, nil, api.PipelineStage{Kind: "review", Instructions: "Review this implementation at high confidence."}, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(prompt, "Review this implementation at high confidence.") || !strings.Contains(prompt, "A-2 - Change awaiting review") {
+		t.Fatalf("review prompt = %q, want stage instructions and issue context", prompt)
 	}
 }
 

@@ -107,6 +107,16 @@ type dynamicToolCallParams struct {
 	Arguments interface{} `json:"arguments"`
 }
 
+type skillsListResult struct {
+	Data []struct {
+		Skills []struct {
+			Name    string `json:"name"`
+			Path    string `json:"path"`
+			Enabled bool   `json:"enabled"`
+		} `json:"skills"`
+	} `json:"data"`
+}
+
 var requestIDCounter int64
 
 func nextRequestID() int {
@@ -126,6 +136,11 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	if workspace == nil || workspace.Path == "" {
 		return fmt.Errorf("%s: workspace path is empty", api.ErrInvalidWorkspaceCWD)
 	}
+	if cfg == nil {
+		return fmt.Errorf("%s: codex config is nil", api.ErrCodexNotFound)
+	}
+	effectiveCfg := effectiveCodexConfig(cfg, stage)
+	cfg = &effectiveCfg
 	if maxTurns <= 0 {
 		maxTurns = 1
 	}
@@ -362,6 +377,8 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 		return err
 	}
 
+	skills, unresolvedSkills := resolveConfiguredSkills(workspace, cfg, sendRequest)
+
 	// 2. Start thread
 	threadParams := buildThreadStartParams(workspace, cfg, issue)
 	threadResultRaw, err := sendRequest("thread/start", threadParams)
@@ -383,7 +400,7 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 			return err
 		}
 
-		turnParams := buildTurnStartParams(threadID, workspace, cfg, turnPrompt)
+		turnParams := buildTurnStartParams(threadID, workspace, cfg, turnPrompt, skills, unresolvedSkills)
 		turnResultRaw, err := sendRequest("turn/start", turnParams)
 		if err != nil {
 			return err
@@ -479,8 +496,11 @@ func buildThreadStartParams(workspace *api.Workspace, cfg *api.CodexConfig, issu
 
 func (r *Runner) turnPrompt(issue api.Issue, attempt *int, stage api.PipelineStage, turnCount int) (string, error) {
 	if turnCount == 1 {
-		if stage.Kind == "merge" {
+		switch stage.Kind {
+		case "merge":
 			return mergePrompt(issue, stage.Instructions), nil
+		case "review":
+			return reviewPrompt(issue, stage.Instructions), nil
 		}
 		r.mu.RLock()
 		template := r.promptTemplate
@@ -493,6 +513,21 @@ func (r *Runner) turnPrompt(issue api.Issue, attempt *int, stage api.PipelineSta
 	}
 
 	return fmt.Sprintf("Continue working on issue %s. Do not restart from the original task prompt; use the existing thread context, inspect the current workspace state, and proceed with the next useful step.", issue.Identifier), nil
+}
+
+func reviewPrompt(issue api.Issue, instructions string) string {
+	var b strings.Builder
+	if strings.TrimSpace(instructions) == "" {
+		instructions = "Perform an internal review of the current workspace changes before human review. Inspect the implementation against the issue, security expectations, architecture guidance, and test coverage. Fix concrete problems you find, run appropriate checks, and leave a concise final summary of what changed and what passed."
+	}
+	fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(instructions))
+	fmt.Fprintf(&b, "Issue: %s - %s\n", issue.Identifier, issue.Title)
+	fmt.Fprintf(&b, "State: %s\n", issue.State)
+	if issue.Description != nil && strings.TrimSpace(*issue.Description) != "" {
+		fmt.Fprintf(&b, "\nDescription:\n%s\n", strings.TrimSpace(*issue.Description))
+	}
+	fmt.Fprint(&b, "\nWork from the current repository state in this workspace. Preserve the implementation intent, but correct defects, security gaps, missing tests, or drift from project conventions before the issue advances.")
+	return b.String()
 }
 
 func mergePrompt(issue api.Issue, instructions string) string {
@@ -702,20 +737,18 @@ func prependWorkspaceToolPaths(env []string, workspacePath string) []string {
 	return env
 }
 
-func buildTurnStartParams(threadID string, workspace *api.Workspace, cfg *api.CodexConfig, prompt string) map[string]interface{} {
+func buildTurnStartParams(threadID string, workspace *api.Workspace, cfg *api.CodexConfig, prompt string, skills []api.CodexSkillRef, unresolvedSkills []string) map[string]interface{} {
 	params := map[string]interface{}{
 		"threadId": threadID,
 		"cwd":      workspace.Path,
-		"input": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": prompt,
-			},
-		},
+		"input":    turnInputItems(prompt, skills, unresolvedSkills),
 	}
 
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
+	}
+	if cfg.ReasoningEffort != "" {
+		params["effort"] = cfg.ReasoningEffort
 	}
 
 	policy := cfg.ApprovalPolicy
@@ -732,6 +765,141 @@ func buildTurnStartParams(threadID string, workspace *api.Workspace, cfg *api.Co
 	}
 
 	return params
+}
+
+func turnInputItems(prompt string, skills []api.CodexSkillRef, unresolvedSkills []string) []map[string]interface{} {
+	input := make([]map[string]interface{}, 0, 1+len(skills))
+	for _, skill := range skills {
+		if strings.TrimSpace(skill.Name) == "" || strings.TrimSpace(skill.Path) == "" {
+			continue
+		}
+		input = append(input, map[string]interface{}{
+			"type": "skill",
+			"name": skill.Name,
+			"path": skill.Path,
+		})
+	}
+	if len(unresolvedSkills) > 0 {
+		prompt = fmt.Sprintf("%s\n\nConfigured skills not resolved by Codex app-server: %s. If an equivalent skill is available, use it; otherwise proceed using the best matching project conventions.", prompt, strings.Join(unresolvedSkills, ", "))
+	}
+	input = append(input, map[string]interface{}{
+		"type": "text",
+		"text": prompt,
+	})
+	return input
+}
+
+func resolveConfiguredSkills(workspace *api.Workspace, cfg *api.CodexConfig, sendRequest func(method string, params interface{}) (json.RawMessage, error)) ([]api.CodexSkillRef, []string) {
+	if cfg == nil || len(cfg.Skills) == 0 {
+		return nil, nil
+	}
+	resolved := make([]api.CodexSkillRef, 0, len(cfg.Skills))
+	unresolved := make([]string, 0)
+	needsLookup := false
+	for _, skill := range cfg.Skills {
+		if strings.TrimSpace(skill.Path) == "" {
+			needsLookup = true
+			break
+		}
+	}
+
+	byName := map[string]api.CodexSkillRef{}
+	if needsLookup {
+		raw, err := sendRequest("skills/list", map[string]interface{}{
+			"cwds": []string{workspace.Path},
+		})
+		if err == nil {
+			var result skillsListResult
+			if json.Unmarshal(raw, &result) == nil {
+				for _, entry := range result.Data {
+					for _, skill := range entry.Skills {
+						if !skill.Enabled || strings.TrimSpace(skill.Name) == "" || strings.TrimSpace(skill.Path) == "" {
+							continue
+						}
+						byName[strings.ToLower(skill.Name)] = api.CodexSkillRef{Name: skill.Name, Path: skill.Path}
+					}
+				}
+			}
+		}
+	}
+
+	seen := make(map[string]struct{}, len(cfg.Skills))
+	for _, skill := range cfg.Skills {
+		skill.Name = strings.TrimSpace(skill.Name)
+		skill.Path = strings.TrimSpace(skill.Path)
+		if skill.Name == "" && skill.Path == "" {
+			continue
+		}
+		if skill.Name == "" {
+			skill.Name = filepath.Base(skill.Path)
+		}
+		if skill.Path == "" {
+			if found, ok := byName[strings.ToLower(skill.Name)]; ok {
+				skill = found
+			}
+		}
+		key := strings.ToLower(skill.Name) + "\x00" + strings.ToLower(skill.Path)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if skill.Path == "" {
+			unresolved = append(unresolved, skill.Name)
+			continue
+		}
+		resolved = append(resolved, skill)
+	}
+	return resolved, unresolved
+}
+
+func effectiveCodexConfig(cfg *api.CodexConfig, stage api.PipelineStage) api.CodexConfig {
+	if cfg == nil {
+		return api.CodexConfig{}
+	}
+	effective := *cfg
+	stageKey := strings.ToLower(strings.TrimSpace(stage.Kind))
+	if stageKey == "" || cfg.StageOverrides == nil {
+		return effective
+	}
+	override, ok := cfg.StageOverrides[stageKey]
+	if !ok {
+		return effective
+	}
+	if override.Model != "" {
+		effective.Model = override.Model
+	}
+	if override.ModelProvider != "" {
+		effective.ModelProvider = override.ModelProvider
+	}
+	if override.ReasoningEffort != "" {
+		effective.ReasoningEffort = override.ReasoningEffort
+	}
+	if len(override.Skills) > 0 {
+		effective.Skills = appendUniqueSkills(effective.Skills, override.Skills...)
+	}
+	return effective
+}
+
+func appendUniqueSkills(base []api.CodexSkillRef, extras ...api.CodexSkillRef) []api.CodexSkillRef {
+	seen := make(map[string]struct{}, len(base)+len(extras))
+	out := make([]api.CodexSkillRef, 0, len(base)+len(extras))
+	for _, skill := range append(base, extras...) {
+		skill.Name = strings.TrimSpace(skill.Name)
+		skill.Path = strings.TrimSpace(skill.Path)
+		if skill.Name == "" && skill.Path == "" {
+			continue
+		}
+		if skill.Name == "" {
+			skill.Name = filepath.Base(skill.Path)
+		}
+		key := strings.ToLower(skill.Name) + "\x00" + strings.ToLower(skill.Path)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, skill)
+	}
+	return out
 }
 
 func mapSandboxPolicy(policy string) interface{} {

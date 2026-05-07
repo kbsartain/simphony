@@ -156,12 +156,27 @@ export interface CodexConfig {
   command: string;
   model?: string;
   model_provider?: string;
+  reasoning_effort?: string;
+  skills?: CodexSkillRef[];
   approval_policy: string;
   thread_sandbox: string;
   turn_sandbox_policy: string;
   turn_timeout_ms: number;
   read_timeout_ms: number;
   stall_timeout_ms: number;
+  stage_overrides?: Record<string, CodexStageOverride>;
+}
+
+export interface CodexStageOverride {
+  model?: string;
+  model_provider?: string;
+  reasoning_effort?: string;
+  skills?: CodexSkillRef[];
+}
+
+export interface CodexSkillRef {
+  name: string;
+  path?: string;
 }
 
 export interface ServerConfig {

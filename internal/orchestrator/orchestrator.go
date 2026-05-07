@@ -443,7 +443,8 @@ func (o *Orchestrator) dispatch(issue api.Issue) {
 	o.state.Claimed[issue.ID] = struct{}{}
 	o.mu.Unlock()
 
-	if runtime.cfg.Tracker.WorkingState != "" && !strings.EqualFold(issue.State, runtime.cfg.Tracker.WorkingState) && !equalState(issue.State, runtime.cfg.Pipeline.MergeState) {
+	stage := o.pipelineStage(issue, runtime.cfg)
+	if runtime.cfg.Tracker.WorkingState != "" && stage.Kind == "coding" && !strings.EqualFold(issue.State, runtime.cfg.Tracker.WorkingState) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		updated, err := runtime.tracker.TransitionIssueState(ctx, issue, runtime.cfg.Tracker.WorkingState)
 		cancel()
@@ -703,6 +704,12 @@ func (o *Orchestrator) continueDecision(ctx context.Context, issueID string) (ap
 }
 
 func (o *Orchestrator) pipelineStage(issue api.Issue, cfg *api.WorkflowConfig) api.PipelineStage {
+	if cfg != nil && equalState(issue.State, cfg.Pipeline.ReviewState) {
+		return api.PipelineStage{
+			Kind:         "review",
+			Instructions: fmt.Sprintf("Perform an internal high-confidence review for issue %s before approval. Inspect the workspace for correctness, security, architecture consistency, and test coverage. Fix concrete issues, run appropriate checks, and summarize the review outcome.", issue.Identifier),
+		}
+	}
 	if cfg != nil && equalState(issue.State, cfg.Pipeline.MergeState) {
 		return api.PipelineStage{
 			Kind:         "merge",
@@ -812,6 +819,10 @@ func (o *Orchestrator) completeIssueAfterRun(runtime runtimeSnapshot, issueID st
 	}
 	if equalState(currentIssue.State, runtime.cfg.Pipeline.MergeState) {
 		o.transitionMergeIssueToDone(ctx, runtime, currentIssue, identifier, entry.WorkspacePath)
+		return
+	}
+	if equalState(currentIssue.State, runtime.cfg.Pipeline.ReviewState) {
+		o.transitionReviewIssueToMerge(ctx, runtime, currentIssue, identifier, entry.WorkspacePath)
 		return
 	}
 
@@ -1062,6 +1073,10 @@ func (o *Orchestrator) handleCompletionTransitionRetry(ctx context.Context, runt
 		o.transitionMergeIssueToDone(ctx, runtime, issue, identifier, "")
 		return
 	}
+	if equalState(issue.State, runtime.cfg.Pipeline.ReviewState) {
+		o.transitionReviewIssueToMerge(ctx, runtime, issue, identifier, "")
+		return
+	}
 
 	updatedIssue, err := runtime.tracker.MoveIssueToFirstAvailableState(ctx, issue.ID, completionStatePreferences(runtime.cfg))
 	if err != nil {
@@ -1088,6 +1103,20 @@ func (o *Orchestrator) transitionMergeIssueToDone(ctx context.Context, runtime r
 		identifier = updatedIssue.Identifier
 	}
 	log.Printf("issue_id=%s issue_identifier=%s action=merge_completion_transition status=success state=%q", issue.ID, identifier, updatedIssue.State)
+	o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, workspacePath)
+}
+
+func (o *Orchestrator) transitionReviewIssueToMerge(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string, workspacePath string) {
+	updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, runtime.cfg.Pipeline.MergeState)
+	if err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=review_completion_transition status=failed error=%v", issue.ID, identifier, err)
+		o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("review completion transition: %v", err), retryKindCompletionTransition)
+		return
+	}
+	if updatedIssue.Identifier != "" {
+		identifier = updatedIssue.Identifier
+	}
+	log.Printf("issue_id=%s issue_identifier=%s action=review_completion_transition status=success state=%q", issue.ID, identifier, updatedIssue.State)
 	o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, workspacePath)
 }
 

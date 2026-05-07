@@ -121,6 +121,24 @@ codex:
   command: codex app-server
   model: gpt-5.4
   model_provider: openai
+  reasoning_effort: high
+  skills:
+    - architecture-standards
+    - name: repo-design-system
+      path: /absolute/path/to/repo-design-system/SKILL.md
+  stage_overrides:
+    coding:
+      reasoning_effort: medium
+      skills:
+        - conjit-product-ui
+    review:
+      model: gpt-5.5
+      reasoning_effort: xhigh
+      skills:
+        - code-review
+        - security-review
+    merge:
+      reasoning_effort: high
   approval_policy: auto
   thread_sandbox: none
   turn_sandbox_policy: none
@@ -131,7 +149,15 @@ codex:
 
 The runner appends `--listen stdio://` when it is not already present. The subprocess is launched with the issue workspace as its current directory.
 
-`model` and `model_provider` are optional. When present, they are passed to Codex app-server for thread and turn startup.
+`model` and `model_provider` are optional. When present, they are passed to Codex app-server for thread and turn startup. Simphony treats these as provider-neutral strings, so non-OpenAI model IDs such as Claude, Gemini, Kimi, GLM, or DeepSeek variants can be configured when the underlying Codex installation has an appropriate provider/router configured.
+
+`reasoning_effort` is optional and is passed to Codex as the per-turn `effort` override. Accepted values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`; `x-high` and `x_high` are normalized to `xhigh`.
+
+`stage_overrides` can override `model`, `model_provider`, and `reasoning_effort` for a pipeline stage. Known stage keys are `coding`, `review`, and `merge`; unknown stage keys are accepted for forward compatibility and ignored until a matching stage exists.
+
+`skills` selects default Codex skills for every stage. `stage_overrides.<stage>.skills` adds stage-specific skills. Skill entries can be simple names, which Simphony resolves through Codex `skills/list` at runtime, or objects with `name` and `path` when you want to pin a specific local `SKILL.md`. Resolved skills are sent as Codex skill input items on each turn; unresolved names are included in the prompt as visible guidance.
+
+By default, `pipeline.review_state` is a handoff state. To make `In Review` an agent-run internal review stage, include the review state in `tracker.active_states`, then configure `codex.stage_overrides.review.reasoning_effort: xhigh` or a review-specific model.
 
 `approval_policy: auto` is mapped to Codex protocol value `never`.
 

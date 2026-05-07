@@ -19,6 +19,7 @@ workspace:
   root: ./simphony_workspaces
 codex:
   command: codex app-server
+  reasoning_effort: medium
 server:
   port: 8080
 ---
@@ -53,6 +54,17 @@ agent:
   max_turns: 10
 codex:
   command: codex app-server
+  reasoning_effort: high
+  skills:
+    - architecture-standards
+  stage_overrides:
+    coding:
+      skills:
+        - conjit-product-ui
+    review:
+      reasoning_effort: xhigh
+      skills:
+        - code-review
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
 server:

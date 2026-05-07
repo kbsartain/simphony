@@ -138,6 +138,9 @@ func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.Workfl
 	if err := resolvePipeline(pipelineMap, cfg); err != nil {
 		return nil, err
 	}
+	if err := validateTrackerStateOverlaps(cfg); err != nil {
+		return nil, err
+	}
 
 	pollingMap := getSubMap(def.Config, "polling")
 	if err := resolvePolling(pollingMap, cfg); err != nil {
@@ -335,9 +338,6 @@ func resolveTracker(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		completionStates = v
 	}
 	completionStates = appendUniqueStrings(completionStates, terminalStates...)
-	if overlap := firstOverlappingString(activeStates, completionStates); overlap != "" {
-		return fmt.Errorf("%s: tracker.completion_states must not overlap tracker.active_states: %q", api.ErrWorkflowParseError, overlap)
-	}
 
 	cfg.Tracker = api.TrackerConfig{
 		Kind:             kind,
@@ -348,6 +348,21 @@ func resolveTracker(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		WorkingState:     workingState,
 		TerminalStates:   terminalStates,
 		CompletionStates: completionStates,
+	}
+	return nil
+}
+
+func validateTrackerStateOverlaps(cfg *api.WorkflowConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	for _, activeState := range cfg.Tracker.ActiveStates {
+		if containsFold(cfg.Tracker.TerminalStates, activeState) {
+			return fmt.Errorf("%s: tracker.active_states must not overlap tracker.terminal_states: %q", api.ErrWorkflowParseError, activeState)
+		}
+		if containsFold(cfg.Tracker.CompletionStates, activeState) && !strings.EqualFold(strings.TrimSpace(activeState), strings.TrimSpace(cfg.Pipeline.ReviewState)) {
+			return fmt.Errorf("%s: tracker.completion_states must not overlap tracker.active_states except pipeline.review_state: %q", api.ErrWorkflowParseError, activeState)
+		}
 	}
 	return nil
 }
@@ -668,6 +683,20 @@ func resolveCodex(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		modelProvider = strings.TrimSpace(v)
 	}
 
+	reasoningEffort := ""
+	if v, ok := getString(m, "reasoning_effort"); ok {
+		var err error
+		reasoningEffort, err = normalizeReasoningEffort(v)
+		if err != nil {
+			return fmt.Errorf("%s: codex.reasoning_effort %w", api.ErrWorkflowParseError, err)
+		}
+	}
+
+	skills, err := getSkillRefs(m, "skills")
+	if err != nil {
+		return fmt.Errorf("%s: codex.skills %w", api.ErrWorkflowParseError, err)
+	}
+
 	approvalPolicy := "auto"
 	if v, ok := getString(m, "approval_policy"); ok && v != "" {
 		approvalPolicy = v
@@ -707,18 +736,153 @@ func resolveCodex(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		return fmt.Errorf("%s: codex.stall_timeout_ms must be non-negative, got %d", api.ErrWorkflowParseError, stallTimeout)
 	}
 
+	stageOverrides, err := resolveCodexStageOverrides(m)
+	if err != nil {
+		return err
+	}
+
 	cfg.Codex = api.CodexConfig{
 		Command:           command,
 		Model:             model,
 		ModelProvider:     modelProvider,
+		ReasoningEffort:   reasoningEffort,
+		Skills:            skills,
 		ApprovalPolicy:    approvalPolicy,
 		ThreadSandbox:     threadSandbox,
 		TurnSandboxPolicy: turnSandboxPolicy,
 		TurnTimeoutMs:     turnTimeout,
 		ReadTimeoutMs:     readTimeout,
 		StallTimeoutMs:    stallTimeout,
+		StageOverrides:    stageOverrides,
 	}
 	return nil
+}
+
+func resolveCodexStageOverrides(m map[string]interface{}) (map[string]api.CodexStageOverride, error) {
+	if m == nil {
+		return nil, nil
+	}
+	raw, ok := m["stage_overrides"]
+	if !ok {
+		return nil, nil
+	}
+	rawMap, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s: codex.stage_overrides must be a map", api.ErrWorkflowParseError)
+	}
+	overrides := make(map[string]api.CodexStageOverride)
+	for stageName, rawStage := range rawMap {
+		stageKey := strings.ToLower(strings.TrimSpace(stageName))
+		if stageKey == "" {
+			continue
+		}
+		stageMap, ok := rawStage.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%s: codex.stage_overrides.%s must be a map", api.ErrWorkflowParseError, stageName)
+		}
+		override := api.CodexStageOverride{}
+		if v, ok := getString(stageMap, "model"); ok {
+			override.Model = strings.TrimSpace(v)
+		}
+		if v, ok := getString(stageMap, "model_provider"); ok {
+			override.ModelProvider = strings.TrimSpace(v)
+		}
+		if v, ok := getString(stageMap, "reasoning_effort"); ok {
+			reasoningEffort, err := normalizeReasoningEffort(v)
+			if err != nil {
+				return nil, fmt.Errorf("%s: codex.stage_overrides.%s.reasoning_effort %w", api.ErrWorkflowParseError, stageName, err)
+			}
+			override.ReasoningEffort = reasoningEffort
+		}
+		skills, err := getSkillRefs(stageMap, "skills")
+		if err != nil {
+			return nil, fmt.Errorf("%s: codex.stage_overrides.%s.skills %w", api.ErrWorkflowParseError, stageName, err)
+		}
+		override.Skills = skills
+		if override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && len(override.Skills) == 0 {
+			continue
+		}
+		overrides[stageKey] = override
+	}
+	if len(overrides) == 0 {
+		return nil, nil
+	}
+	return overrides, nil
+}
+
+func normalizeReasoningEffort(value string) (string, error) {
+	raw := strings.TrimSpace(value)
+	normalized := strings.ToLower(raw)
+	normalized = strings.ReplaceAll(normalized, "-", "")
+	normalized = strings.ReplaceAll(normalized, "_", "")
+	normalized = strings.ReplaceAll(normalized, " ", "")
+	switch normalized {
+	case "":
+		return "", nil
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("must be one of none, minimal, low, medium, high, or xhigh, got %q", raw)
+	}
+}
+
+func getSkillRefs(m map[string]interface{}, key string) ([]api.CodexSkillRef, error) {
+	if m == nil {
+		return nil, nil
+	}
+	raw, ok := m[key]
+	if !ok {
+		return nil, nil
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("must be a list")
+	}
+	skills := make([]api.CodexSkillRef, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		skill, err := skillRefFromValue(item)
+		if err != nil {
+			return nil, err
+		}
+		skill.Name = strings.TrimSpace(skill.Name)
+		skill.Path = strings.TrimSpace(skill.Path)
+		if skill.Name == "" && skill.Path == "" {
+			continue
+		}
+		if skill.Name == "" {
+			skill.Name = filepath.Base(skill.Path)
+		}
+		seenKey := strings.ToLower(skill.Name) + "\x00" + strings.ToLower(filepath.Clean(skill.Path))
+		if _, ok := seen[seenKey]; ok {
+			continue
+		}
+		seen[seenKey] = struct{}{}
+		skills = append(skills, skill)
+	}
+	return skills, nil
+}
+
+func skillRefFromValue(value interface{}) (api.CodexSkillRef, error) {
+	switch v := value.(type) {
+	case string:
+		return api.CodexSkillRef{Name: strings.TrimSpace(v)}, nil
+	case map[string]interface{}:
+		name := ""
+		if rawName, ok := v["name"].(string); ok {
+			name = strings.TrimSpace(rawName)
+		}
+		path := ""
+		if rawPath, ok := v["path"].(string); ok {
+			path = strings.TrimSpace(rawPath)
+		}
+		if name == "" && path == "" {
+			return api.CodexSkillRef{}, fmt.Errorf("entries must include name or path")
+		}
+		return api.CodexSkillRef{Name: name, Path: path}, nil
+	default:
+		return api.CodexSkillRef{}, fmt.Errorf("entries must be strings or maps with name/path")
+	}
 }
 
 func resolveServer(m map[string]interface{}, cfg *api.WorkflowConfig) error {
