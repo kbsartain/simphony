@@ -623,6 +623,18 @@ func TestReviewPromptUsesStageInstructions(t *testing.T) {
 	}
 }
 
+func TestReviewResolutionPromptRequiresDecisionDirective(t *testing.T) {
+	runner := NewRunner("coding prompt")
+	issue := api.Issue{Identifier: "A-3", Title: "PR awaiting code review", State: "Review Resolution"}
+	prompt, err := runner.turnPrompt(issue, nil, api.PipelineStage{Kind: "review_resolution", Instructions: "Resolve PR review comments."}, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(prompt, "Resolve PR review comments.") || !strings.Contains(prompt, "SIMPHONY_REVIEW_DECISION") || !strings.Contains(prompt, "A-3 - PR awaiting code review") {
+		t.Fatalf("review-resolution prompt = %q, want instructions, decision directive, and issue context", prompt)
+	}
+}
+
 // TestMockCodexServer is a dummy test that exists so that `go test` compiles
 // a binary containing the mock server code. It is never executed as a real test.
 func TestMockCodexServer(t *testing.T) {

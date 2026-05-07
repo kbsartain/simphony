@@ -44,16 +44,17 @@ type Orchestrator struct {
 	workspaceMgr *workspace.Manager
 	runner       AgentRunner
 
-	mu            sync.Mutex
-	ticker        *time.Ticker
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
-	workerWg      sync.WaitGroup
-	workerCancels map[string]context.CancelFunc
-	terminalDone  map[string]struct{}
-	completedCh   chan workerResult
-	retryCh       chan string
-	refreshCh     chan struct{}
+	mu             sync.Mutex
+	ticker         *time.Ticker
+	stopCh         chan struct{}
+	wg             sync.WaitGroup
+	workerWg       sync.WaitGroup
+	workerCancels  map[string]context.CancelFunc
+	terminalDone   map[string]struct{}
+	reviewAttempts map[string]int
+	completedCh    chan workerResult
+	retryCh        chan string
+	refreshCh      chan struct{}
 }
 
 // New creates a new Orchestrator. Call Start() to begin polling.
@@ -80,6 +81,7 @@ func (o *Orchestrator) Start() {
 	o.state.MaxConcurrentAgents = o.cfg.Agent.MaxConcurrentAgents
 	o.workerCancels = make(map[string]context.CancelFunc)
 	o.terminalDone = make(map[string]struct{})
+	o.reviewAttempts = make(map[string]int)
 	o.completedCh = make(chan workerResult, 32)
 	o.retryCh = make(chan string, 32)
 	o.refreshCh = make(chan struct{}, 1)
@@ -704,6 +706,19 @@ func (o *Orchestrator) continueDecision(ctx context.Context, issueID string) (ap
 }
 
 func (o *Orchestrator) pipelineStage(issue api.Issue, cfg *api.WorkflowConfig) api.PipelineStage {
+	if cfg != nil && o.reviewResolutionEnabled(cfg) && equalState(issue.State, cfg.Pipeline.ReviewResolutionState) {
+		return api.PipelineStage{
+			Kind: "review_resolution",
+			Instructions: fmt.Sprintf(
+				"Resolve formal PR/code-review feedback for issue %s autonomously. Inspect the PR, unresolved review comments, review decision, and CI/check results using the repository's configured GitHub tooling. Fix actionable feedback, reply to comments when appropriate, rerun relevant checks, and push updates. Require checks green: %t. Require review approval: %t. Unresolved comment policy: %s. Escalate on: %s. End your final response with exactly one directive line: SIMPHONY_REVIEW_DECISION: approved, SIMPHONY_REVIEW_DECISION: retry, or SIMPHONY_REVIEW_DECISION: escalate.",
+				issue.Identifier,
+				cfg.ReviewResolution.RequireChecksGreen,
+				cfg.ReviewResolution.RequireCodeReviewApproval,
+				cfg.ReviewResolution.UnresolvedCommentPolicy,
+				strings.Join(cfg.ReviewResolution.EscalateOn, ", "),
+			),
+		}
+	}
 	if cfg != nil && equalState(issue.State, cfg.Pipeline.ReviewState) {
 		return api.PipelineStage{
 			Kind:         "review",
@@ -717,6 +732,26 @@ func (o *Orchestrator) pipelineStage(issue api.Issue, cfg *api.WorkflowConfig) a
 		}
 	}
 	return api.PipelineStage{Kind: "coding"}
+}
+
+func (o *Orchestrator) reviewResolutionEnabled(cfg *api.WorkflowConfig) bool {
+	return cfg != nil && cfg.ReviewResolution.Enabled && strings.TrimSpace(cfg.Pipeline.ReviewResolutionState) != ""
+}
+
+func reviewResolutionDecision(message string) string {
+	normalized := strings.ToLower(message)
+	for _, line := range strings.Split(normalized, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "simphony_review_decision:") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, "simphony_review_decision:"))
+		switch value {
+		case "approved", "retry", "escalate":
+			return value
+		}
+	}
+	return "approved"
 }
 
 func equalState(a string, b string) bool {
@@ -819,6 +854,10 @@ func (o *Orchestrator) completeIssueAfterRun(runtime runtimeSnapshot, issueID st
 	}
 	if equalState(currentIssue.State, runtime.cfg.Pipeline.MergeState) {
 		o.transitionMergeIssueToDone(ctx, runtime, currentIssue, identifier, entry.WorkspacePath)
+		return
+	}
+	if o.reviewResolutionEnabled(runtime.cfg) && equalState(currentIssue.State, runtime.cfg.Pipeline.ReviewResolutionState) {
+		o.resolveReviewResolutionCompletion(ctx, runtime, currentIssue, identifier, entry)
 		return
 	}
 	if equalState(currentIssue.State, runtime.cfg.Pipeline.ReviewState) {
@@ -1073,6 +1112,10 @@ func (o *Orchestrator) handleCompletionTransitionRetry(ctx context.Context, runt
 		o.transitionMergeIssueToDone(ctx, runtime, issue, identifier, "")
 		return
 	}
+	if o.reviewResolutionEnabled(runtime.cfg) && equalState(issue.State, runtime.cfg.Pipeline.ReviewResolutionState) {
+		o.resolveReviewResolutionCompletion(ctx, runtime, issue, identifier, &api.RunningEntry{Issue: issue})
+		return
+	}
 	if equalState(issue.State, runtime.cfg.Pipeline.ReviewState) {
 		o.transitionReviewIssueToMerge(ctx, runtime, issue, identifier, "")
 		return
@@ -1107,6 +1150,11 @@ func (o *Orchestrator) transitionMergeIssueToDone(ctx context.Context, runtime r
 }
 
 func (o *Orchestrator) transitionReviewIssueToMerge(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string, workspacePath string) {
+	if o.reviewResolutionEnabled(runtime.cfg) {
+		o.transitionReviewIssueToReviewResolution(ctx, runtime, issue, identifier, workspacePath)
+		return
+	}
+
 	updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, runtime.cfg.Pipeline.MergeState)
 	if err != nil {
 		log.Printf("issue_id=%s issue_identifier=%s action=review_completion_transition status=failed error=%v", issue.ID, identifier, err)
@@ -1120,9 +1168,78 @@ func (o *Orchestrator) transitionReviewIssueToMerge(ctx context.Context, runtime
 	o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, workspacePath)
 }
 
+func (o *Orchestrator) transitionReviewIssueToReviewResolution(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string, workspacePath string) {
+	updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, runtime.cfg.Pipeline.ReviewResolutionState)
+	if err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_transition status=failed error=%v", issue.ID, identifier, err)
+		o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("review resolution transition: %v", err), retryKindCompletionTransition)
+		return
+	}
+	if updatedIssue.Identifier != "" {
+		identifier = updatedIssue.Identifier
+	}
+	log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_transition status=success state=%q", issue.ID, identifier, updatedIssue.State)
+	o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, workspacePath)
+}
+
+func (o *Orchestrator) resolveReviewResolutionCompletion(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string, entry *api.RunningEntry) {
+	decision := reviewResolutionDecision(entry.Session.LastCodexMessage)
+	switch decision {
+	case "retry":
+		o.scheduleReviewResolutionRetryOrEscalate(ctx, runtime, issue, identifier)
+	case "escalate":
+		o.transitionReviewResolutionToEscalation(ctx, runtime, issue, identifier, entry.WorkspacePath, "agent requested escalation")
+	default:
+		updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, runtime.cfg.Pipeline.MergeState)
+		if err != nil {
+			log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_completion status=failed error=%v", issue.ID, identifier, err)
+			o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("review resolution completion: %v", err), retryKindCompletionTransition)
+			return
+		}
+		if updatedIssue.Identifier != "" {
+			identifier = updatedIssue.Identifier
+		}
+		log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_completion status=success state=%q decision=%q", issue.ID, identifier, updatedIssue.State, decision)
+		o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, entry.WorkspacePath)
+	}
+}
+
+func (o *Orchestrator) scheduleReviewResolutionRetryOrEscalate(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string) {
+	o.mu.Lock()
+	o.reviewAttempts[issue.ID]++
+	attempt := o.reviewAttempts[issue.ID]
+	o.mu.Unlock()
+	if attempt > runtime.cfg.ReviewResolution.MaxAttempts {
+		o.transitionReviewResolutionToEscalation(ctx, runtime, issue, identifier, "", "max review-resolution attempts exceeded")
+		return
+	}
+	log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_retry status=scheduled attempt=%d max_attempts=%d", issue.ID, identifier, attempt, runtime.cfg.ReviewResolution.MaxAttempts)
+	o.scheduleRetry(issue.ID, identifier, "review resolution requested another pass", retryKindAgent)
+}
+
+func (o *Orchestrator) transitionReviewResolutionToEscalation(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string, workspacePath string, reason string) {
+	targetState := strings.TrimSpace(runtime.cfg.ReviewResolution.EscalationState)
+	if targetState == "" {
+		targetState = runtime.cfg.Pipeline.ReviewState
+	}
+	updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, targetState)
+	if err != nil {
+		log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_escalation status=failed error=%v", issue.ID, identifier, err)
+		o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("review resolution escalation: %v", err), retryKindCompletionTransition)
+		return
+	}
+	if updatedIssue.Identifier != "" {
+		identifier = updatedIssue.Identifier
+	}
+	_ = runtime.tracker.AddIssueComment(ctx, updatedIssue, fmt.Sprintf("**Simphony review-resolution escalation**\n\n%s", reason))
+	log.Printf("issue_id=%s issue_identifier=%s action=review_resolution_escalation status=success state=%q reason=%q", issue.ID, identifier, updatedIssue.State, reason)
+	o.markCompletionTransitioned(runtime, updatedIssue.State, issue.ID, identifier, workspacePath)
+}
+
 func (o *Orchestrator) markCompletionTransitioned(runtime runtimeSnapshot, state string, issueID string, identifier string, workspacePath string) {
 	o.mu.Lock()
 	delete(o.state.RetryAttempts, issueID)
+	delete(o.reviewAttempts, issueID)
 	o.state.Completed[issueID] = struct{}{}
 	delete(o.state.Claimed, issueID)
 	o.mu.Unlock()

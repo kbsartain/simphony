@@ -197,10 +197,20 @@ func TestResolveConfig_ModelAndPipeline(t *testing.T) {
 				"active_states": []interface{}{"Ready", "Coding"},
 			},
 			"pipeline": map[string]interface{}{
-				"review_state":  "Reviewing",
-				"merge_state":   "Approved",
-				"done_state":    "Shipped",
-				"coding_states": []interface{}{"Ready", "Coding"},
+				"review_state":            "Reviewing",
+				"review_resolution_state": "Review Resolution",
+				"merge_state":             "Approved",
+				"done_state":              "Shipped",
+				"coding_states":           []interface{}{"Ready", "Coding"},
+			},
+			"review_resolution": map[string]interface{}{
+				"enabled":                      true,
+				"escalation_state":             "Needs Human",
+				"max_attempts":                 4,
+				"require_checks_green":         true,
+				"require_code_review_approval": true,
+				"unresolved_comment_policy":    "fix_or_explain",
+				"escalate_on":                  []interface{}{"security_risk", "conflicting_reviews"},
 			},
 			"codex": map[string]interface{}{
 				"model":            "gpt-5.4",
@@ -248,11 +258,14 @@ func TestResolveConfig_ModelAndPipeline(t *testing.T) {
 	if reviewOverride.Model != "claude-opus-4.1" || reviewOverride.ModelProvider != "anthropic" || reviewOverride.ReasoningEffort != "xhigh" {
 		t.Fatalf("review override = %+v, want model/provider/xhigh", reviewOverride)
 	}
-	if cfg.Pipeline.ReviewState != "Reviewing" || cfg.Pipeline.MergeState != "Approved" || cfg.Pipeline.DoneState != "Shipped" {
+	if cfg.Pipeline.ReviewState != "Reviewing" || cfg.Pipeline.ReviewResolutionState != "Review Resolution" || cfg.Pipeline.MergeState != "Approved" || cfg.Pipeline.DoneState != "Shipped" {
 		t.Fatalf("pipeline = %+v, want custom states", cfg.Pipeline)
 	}
-	if !slicesEqual(cfg.Tracker.ActiveStates, []string{"Ready", "Coding", "Approved"}) {
-		t.Fatalf("tracker.active_states = %v, want [Ready Coding Approved]", cfg.Tracker.ActiveStates)
+	if !slicesEqual(cfg.Tracker.ActiveStates, []string{"Ready", "Coding", "Approved", "Review Resolution"}) {
+		t.Fatalf("tracker.active_states = %v, want [Ready Coding Approved Review Resolution]", cfg.Tracker.ActiveStates)
+	}
+	if !cfg.ReviewResolution.Enabled || cfg.ReviewResolution.MaxAttempts != 4 || cfg.ReviewResolution.EscalationState != "Needs Human" {
+		t.Fatalf("review_resolution = %+v, want enabled with custom max attempts and escalation state", cfg.ReviewResolution)
 	}
 	if !containsFold(cfg.Tracker.TerminalStates, "Shipped") {
 		t.Fatalf("tracker.terminal_states = %v, want Shipped included", cfg.Tracker.TerminalStates)

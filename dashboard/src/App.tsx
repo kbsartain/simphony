@@ -176,6 +176,7 @@ const MODEL_OPTIONS = PROVIDER_OPTIONS.flatMap(provider => provider.models)
 const SKILL_STAGE_OPTIONS: SkillStageOption[] = [
   { id: 'coding', label: 'Coding' },
   { id: 'review', label: 'In Review' },
+  { id: 'review_resolution', label: 'Review Resolution' },
   { id: 'merge', label: 'Merge' },
 ]
 
@@ -826,7 +827,15 @@ function SettingsView(props: {
                 <textarea
                   value={draftConfig ? skillListToText(getStageSkills(draftConfig, stage.id)) : ''}
                   onChange={event => changeStageSkills(stage.id, event.target.value)}
-                  placeholder={stage.id === 'review' ? 'code-review\nsecurity-review' : stage.id === 'coding' ? 'conjit-product-ui' : 'github:yeet'}
+                  placeholder={
+                    stage.id === 'review'
+                      ? 'code-review\nsecurity-review'
+                      : stage.id === 'review_resolution'
+                        ? 'github:gh-address-comments\ngithub:gh-fix-ci'
+                        : stage.id === 'coding'
+                          ? 'conjit-product-ui'
+                          : 'github:yeet'
+                  }
                   spellCheck={false}
                   disabled={!draftConfig || props.saving}
                 />
