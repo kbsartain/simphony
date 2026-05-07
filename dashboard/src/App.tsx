@@ -33,22 +33,151 @@ type ModelOption = {
   label: string
   model: string
   modelProvider: string
+  reasoning?: ReasoningOption[]
+}
+type ProviderOption = {
+  id: string
+  label: string
+  models: ModelOption[]
+  reasoning: ReasoningOption[]
+}
+type ReasoningOption = {
+  value: string
+  label: string
 }
 type SkillStageOption = {
   id: string
   label: string
 }
 
-const MODEL_OPTIONS: ModelOption[] = [
-  { id: 'kimi-k2-2.6', label: 'Kimi K2 2.6', model: 'kimi-k2-2.6', modelProvider: 'moonshot' },
-  { id: 'claude-opus-4.7', label: 'Claude Opus 4.7', model: 'claude-opus-4.7', modelProvider: 'anthropic' },
+const DEFAULT_REASONING_OPTIONS: ReasoningOption[] = [{ value: '', label: 'Provider default' }]
+const CODEX_REASONING_OPTIONS: ReasoningOption[] = [
+  { value: '', label: 'Provider default' },
+  { value: 'none', label: 'None' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'X-High' },
 ]
+const THINKING_REASONING_OPTIONS: ReasoningOption[] = [
+  { value: '', label: 'Provider default' },
+  { value: 'low', label: 'Thinking budget: low' },
+  { value: 'medium', label: 'Thinking budget: medium' },
+  { value: 'high', label: 'Thinking budget: high' },
+]
+const GEMINI_3_PRO_REASONING_OPTIONS: ReasoningOption[] = [
+  { value: '', label: 'Gemini default' },
+  { value: 'low', label: 'Thinking level: low' },
+  { value: 'high', label: 'Thinking level: high' },
+]
+const GEMINI_25_PRO_REASONING_OPTIONS: ReasoningOption[] = [
+  { value: '', label: 'Dynamic thinking' },
+  { value: 'minimal', label: 'Thinking budget: minimal' },
+  { value: 'low', label: 'Thinking budget: low' },
+  { value: 'medium', label: 'Thinking budget: medium' },
+  { value: 'high', label: 'Thinking budget: high' },
+]
+const GEMINI_25_FLASH_REASONING_OPTIONS: ReasoningOption[] = [
+  { value: '', label: 'Dynamic thinking' },
+  { value: 'none', label: 'Thinking off' },
+  { value: 'minimal', label: 'Thinking budget: minimal' },
+  { value: 'low', label: 'Thinking budget: low' },
+  { value: 'medium', label: 'Thinking budget: medium' },
+  { value: 'high', label: 'Thinking budget: high' },
+]
+const REASONER_MODEL_OPTIONS: ReasoningOption[] = [
+  { value: '', label: 'Model default' },
+  { value: 'high', label: 'Reasoner mode' },
+]
+const PROVIDER_OPTIONS: ProviderOption[] = [
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    reasoning: CODEX_REASONING_OPTIONS,
+    models: [
+      { id: 'openai:gpt-5.5', label: 'GPT-5.5', model: 'gpt-5.5', modelProvider: 'openai' },
+      { id: 'openai:gpt-5.4', label: 'GPT-5.4', model: 'gpt-5.4', modelProvider: 'openai' },
+      { id: 'openai:gpt-5.4-mini', label: 'GPT-5.4 Mini', model: 'gpt-5.4-mini', modelProvider: 'openai' },
+      { id: 'openai:gpt-5.3-codex', label: 'GPT-5.3 Codex', model: 'gpt-5.3-codex', modelProvider: 'openai' },
+    ],
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    reasoning: THINKING_REASONING_OPTIONS,
+    models: [
+      { id: 'anthropic:claude-opus-4.7', label: 'Claude Opus 4.7', model: 'claude-opus-4.7', modelProvider: 'anthropic' },
+      { id: 'anthropic:claude-sonnet-4.6', label: 'Claude Sonnet 4.6', model: 'claude-sonnet-4.6', modelProvider: 'anthropic' },
+    ],
+  },
+  {
+    id: 'google',
+    label: 'Google Gemini',
+    reasoning: THINKING_REASONING_OPTIONS,
+    models: [
+      {
+        id: 'google:gemini-3-pro',
+        label: 'Gemini 3 Pro',
+        model: 'gemini-3-pro',
+        modelProvider: 'google',
+        reasoning: GEMINI_3_PRO_REASONING_OPTIONS,
+      },
+      {
+        id: 'google:gemini-2.5-pro',
+        label: 'Gemini 2.5 Pro',
+        model: 'gemini-2.5-pro',
+        modelProvider: 'google',
+        reasoning: GEMINI_25_PRO_REASONING_OPTIONS,
+      },
+      {
+        id: 'google:gemini-2.5-flash',
+        label: 'Gemini 2.5 Flash',
+        model: 'gemini-2.5-flash',
+        modelProvider: 'google',
+        reasoning: GEMINI_25_FLASH_REASONING_OPTIONS,
+      },
+    ],
+  },
+  {
+    id: 'moonshot',
+    label: 'Moonshot',
+    reasoning: THINKING_REASONING_OPTIONS,
+    models: [{ id: 'moonshot:kimi-k2-2.6', label: 'Kimi K2 2.6', model: 'kimi-k2-2.6', modelProvider: 'moonshot' }],
+  },
+  {
+    id: 'zai',
+    label: 'Z.ai',
+    reasoning: THINKING_REASONING_OPTIONS,
+    models: [
+      { id: 'zai:glm-5.1', label: 'GLM 5.1', model: 'glm-5.1', modelProvider: 'zai' },
+      { id: 'zai:glm-4.7', label: 'GLM 4.7', model: 'glm-4.7', modelProvider: 'zai' },
+    ],
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    reasoning: DEFAULT_REASONING_OPTIONS,
+    models: [
+      { id: 'deepseek:deepseek-v4-pro', label: 'DeepSeek V4 Pro', model: 'deepseek-v4-pro', modelProvider: 'deepseek' },
+      { id: 'deepseek:deepseek-v4-flash', label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash', modelProvider: 'deepseek' },
+      { id: 'deepseek:deepseek-chat', label: 'DeepSeek Chat (legacy)', model: 'deepseek-chat', modelProvider: 'deepseek' },
+      {
+        id: 'deepseek:deepseek-reasoner',
+        label: 'DeepSeek Reasoner (legacy)',
+        model: 'deepseek-reasoner',
+        modelProvider: 'deepseek',
+        reasoning: REASONER_MODEL_OPTIONS,
+      },
+    ],
+  },
+]
+const MODEL_OPTIONS = PROVIDER_OPTIONS.flatMap(provider => provider.models)
 const SKILL_STAGE_OPTIONS: SkillStageOption[] = [
   { id: 'coding', label: 'Coding' },
   { id: 'review', label: 'In Review' },
   { id: 'merge', label: 'Merge' },
 ]
-const REASONING_OPTIONS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 
 function App() {
   const [page, setPage] = useState<Page>('runtime')
@@ -553,11 +682,18 @@ function SettingsView(props: {
   }
 
   const draftConfig = parseSettingsConfig(props.settingsDraft)
+  const selectedProviderID = draftConfig ? getSelectedProviderID(draftConfig) : ''
   const selectedModelID = draftConfig ? getSelectedModelID(draftConfig) : ''
+  const globalModels = modelOptionsForProvider(selectedProviderID, draftConfig ? getCodexStringField(draftConfig, 'model') : '')
 
+  const changeProvider = (providerID: string) => {
+    const config = draftConfig || {}
+    const nextConfig = applyProviderSelection(config, providerID)
+    props.onSettingsDraftChange(JSON.stringify(nextConfig, null, 2))
+  }
   const changeModel = (optionID: string) => {
     const config = draftConfig || {}
-    const nextConfig = applyModelSelection(config, optionID)
+    const nextConfig = applyModelSelection(config, selectedProviderID, getCodexStringField(config, 'model'), optionID)
     props.onSettingsDraftChange(JSON.stringify(nextConfig, null, 2))
   }
   const changeGlobalSkills = (value: string) => {
@@ -598,10 +734,21 @@ function SettingsView(props: {
           <span>Model</span>
           <div className="settings-control-row">
             <label className="select-field">
-              <span className="sr-only">Codex model</span>
+              <span className="sr-only">Model provider</span>
+              <select value={selectedProviderID} onChange={event => changeProvider(event.target.value)} disabled={!draftConfig || props.saving}>
+                <option value="">Codex default provider</option>
+                {providerOptionsWithCurrent(selectedProviderID).map(option => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="select-field">
+              <span className="sr-only">Provider model</span>
               <select value={selectedModelID} onChange={event => changeModel(event.target.value)} disabled={!draftConfig || props.saving}>
-                <option value="">Codex default</option>
-                {MODEL_OPTIONS.map(option => (
+                <option value="">Provider default model</option>
+                {globalModels.map(option => (
                   <option key={option.id} value={option.id}>
                     {option.label}
                   </option>
@@ -634,26 +781,45 @@ function SettingsView(props: {
             {SKILL_STAGE_OPTIONS.map(stage => (
               <label key={stage.id} className="stage-skill-card">
                 <strong>{stage.label}</strong>
-                <input
-                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'model') : ''}
-                  onChange={event => changeStageField(stage.id, 'model', event.target.value)}
-                  placeholder="model"
-                  disabled={!draftConfig || props.saving}
-                />
-                <input
-                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'model_provider') : ''}
+                <select
+                  value={draftConfig ? getStageProviderID(draftConfig, stage.id) : ''}
                   onChange={event => changeStageField(stage.id, 'model_provider', event.target.value)}
-                  placeholder="provider"
                   disabled={!draftConfig || props.saving}
-                />
+                >
+                  <option value="">Default provider</option>
+                  {providerOptionsWithCurrent(draftConfig ? getStageProviderID(draftConfig, stage.id) : '').map(option => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={draftConfig ? getStageModelID(draftConfig, stage.id) : ''}
+                  onChange={event => changeStageField(stage.id, 'model', event.target.value)}
+                  disabled={!draftConfig || props.saving}
+                >
+                  <option value="">Default model</option>
+                  {modelOptionsForProvider(
+                    draftConfig ? getStageProviderID(draftConfig, stage.id) : '',
+                    draftConfig ? getStageStringField(draftConfig, stage.id, 'model') : '',
+                  ).map(option => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
                 <select
                   value={draftConfig ? getStageStringField(draftConfig, stage.id, 'reasoning_effort') : ''}
                   onChange={event => changeStageField(stage.id, 'reasoning_effort', event.target.value)}
                   disabled={!draftConfig || props.saving}
                 >
-                  {REASONING_OPTIONS.map(option => (
-                    <option key={option || 'default'} value={option}>
-                      {option || 'default reasoning'}
+                  {reasoningOptionsForSelection(
+                    draftConfig ? getStageStringField(draftConfig, stage.id, 'model') : '',
+                    draftConfig ? getStageProviderID(draftConfig, stage.id) : '',
+                    draftConfig ? getStageStringField(draftConfig, stage.id, 'reasoning_effort') : '',
+                  ).map(option => (
+                    <option key={option.value || 'default'} value={option.value}>
+                      {option.label}
                     </option>
                   ))}
                 </select>
@@ -733,21 +899,55 @@ function parseSettingsConfig(value: string): Record<string, unknown> | null {
   }
 }
 
+function getSelectedProviderID(config: Record<string, unknown>) {
+  const codex = isPlainObject(config.codex) ? config.codex : {}
+  const model = typeof codex.model === 'string' ? codex.model : ''
+  const provider = typeof codex.model_provider === 'string' ? codex.model_provider : ''
+  return selectedProviderID(model, provider)
+}
+
 function getSelectedModelID(config: Record<string, unknown>) {
   const codex = isPlainObject(config.codex) ? config.codex : {}
   const model = typeof codex.model === 'string' ? codex.model : ''
   const provider = typeof codex.model_provider === 'string' ? codex.model_provider : ''
-  return MODEL_OPTIONS.find(option => option.model === model && option.modelProvider === provider)?.id || ''
+  return selectedModelID(model, provider)
 }
 
-function applyModelSelection(config: Record<string, unknown>, optionID: string) {
+function getCodexStringField(config: Record<string, unknown>, field: 'model' | 'model_provider' | 'reasoning_effort') {
+  const codex = isPlainObject(config.codex) ? config.codex : {}
+  return typeof codex[field] === 'string' ? codex[field] : ''
+}
+
+function applyProviderSelection(config: Record<string, unknown>, providerID: string) {
   const nextConfig = { ...config }
   const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
-  const option = MODEL_OPTIONS.find(item => item.id === optionID)
+  const provider = PROVIDER_OPTIONS.find(item => item.id === providerID)
+
+  if (!provider) {
+    delete codex.model_provider
+    delete codex.model
+  } else {
+    codex.model_provider = provider.id
+    const currentModel = typeof codex.model === 'string' ? codex.model : ''
+    if (currentModel && !provider.models.some(option => option.model === currentModel)) {
+      delete codex.model
+    }
+  }
+
+  nextConfig.codex = codex
+  return nextConfig
+}
+
+function applyModelSelection(config: Record<string, unknown>, providerID: string, currentModel: string, optionID: string) {
+  const nextConfig = { ...config }
+  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
+  const option = modelOptionsForProvider(providerID, currentModel).find(item => item.id === optionID)
 
   if (!option) {
     delete codex.model
-    delete codex.model_provider
+    if (!providerID) {
+      delete codex.model_provider
+    }
   } else {
     codex.model = option.model
     codex.model_provider = option.modelProvider
@@ -776,6 +976,14 @@ function getStageStringField(config: Record<string, unknown>, stage: string, fie
   return typeof stageConfig[field] === 'string' ? stageConfig[field] : ''
 }
 
+function getStageProviderID(config: Record<string, unknown>, stage: string) {
+  return selectedProviderID(getStageStringField(config, stage, 'model'), getStageStringField(config, stage, 'model_provider'))
+}
+
+function getStageModelID(config: Record<string, unknown>, stage: string) {
+  return selectedModelID(getStageStringField(config, stage, 'model'), getStageStringField(config, stage, 'model_provider'))
+}
+
 function applyGlobalSkills(config: Record<string, unknown>, value: string) {
   const nextConfig = { ...config }
   const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
@@ -795,10 +1003,35 @@ function applyStageField(config: Record<string, unknown>, stage: string, field: 
   const overrides = isPlainObject(codex.stage_overrides) ? { ...codex.stage_overrides } : {}
   const stageConfig = isPlainObject(overrides[stage]) ? { ...overrides[stage] } : {}
   const trimmedValue = value.trim()
-  if (trimmedValue === '') {
-    delete stageConfig[field]
+
+  if (field === 'model_provider') {
+    const provider = PROVIDER_OPTIONS.find(item => item.id === trimmedValue)
+    if (!provider) {
+      delete stageConfig.model_provider
+      delete stageConfig.model
+    } else {
+      stageConfig.model_provider = provider.id
+      const currentModel = typeof stageConfig.model === 'string' ? stageConfig.model : ''
+      if (currentModel && !provider.models.some(option => option.model === currentModel)) {
+        delete stageConfig.model
+      }
+    }
+  } else if (field === 'model') {
+    const currentProvider = typeof stageConfig.model_provider === 'string' ? stageConfig.model_provider : ''
+    const currentModel = typeof stageConfig.model === 'string' ? stageConfig.model : ''
+    const option = modelOptionsForProvider(currentProvider, currentModel).find(item => item.id === trimmedValue)
+    if (!option) {
+      delete stageConfig.model
+    } else {
+      stageConfig.model = option.model
+      stageConfig.model_provider = option.modelProvider
+    }
   } else {
-    stageConfig[field] = trimmedValue
+    if (trimmedValue === '') {
+      delete stageConfig[field]
+    } else {
+      stageConfig[field] = trimmedValue
+    }
   }
   return saveStageConfig(nextConfig, codex, overrides, stage, stageConfig)
 }
@@ -874,6 +1107,48 @@ function skillListToText(skills: Array<string | { name: string; path?: string }>
   return skills
     .map(skill => (typeof skill === 'string' ? skill : skill.path ? `${skill.name}|${skill.path}` : skill.name))
     .join('\n')
+}
+
+function providerOptionsWithCurrent(providerID: string) {
+  if (!providerID || PROVIDER_OPTIONS.some(option => option.id === providerID)) {
+    return PROVIDER_OPTIONS
+  }
+  return [{ id: providerID, label: `${providerID} (custom)`, models: [], reasoning: DEFAULT_REASONING_OPTIONS }, ...PROVIDER_OPTIONS]
+}
+
+function modelOptionsForProvider(providerID: string, currentModel: string) {
+  const provider = PROVIDER_OPTIONS.find(option => option.id === providerID)
+  const options = provider ? provider.models : MODEL_OPTIONS
+  if (!currentModel || options.some(option => option.model === currentModel)) {
+    return options
+  }
+  const customProvider = providerID || 'custom'
+  return [{ id: `${customProvider}:${currentModel}`, label: `${currentModel} (custom)`, model: currentModel, modelProvider: customProvider }, ...options]
+}
+
+function selectedProviderID(model: string, provider: string) {
+  if (provider) {
+    return provider
+  }
+  return MODEL_OPTIONS.find(option => option.model === model)?.modelProvider || ''
+}
+
+function selectedModelID(model: string, provider: string) {
+  if (!model) {
+    return ''
+  }
+  const option = MODEL_OPTIONS.find(item => item.model === model && (!provider || item.modelProvider === provider))
+  return option?.id || `${provider || 'custom'}:${model}`
+}
+
+function reasoningOptionsForSelection(model: string, provider: string, currentValue: string) {
+  const option = MODEL_OPTIONS.find(item => item.model === model && (!provider || item.modelProvider === provider))
+  const providerOption = PROVIDER_OPTIONS.find(item => item.id === (provider || option?.modelProvider))
+  const options = option?.reasoning || providerOption?.reasoning || DEFAULT_REASONING_OPTIONS
+  if (!currentValue || options.some(item => item.value === currentValue)) {
+    return options
+  }
+  return [{ value: currentValue, label: `${currentValue} (custom)` }, ...options]
 }
 
 function modelLabel(model?: string, provider?: string) {
