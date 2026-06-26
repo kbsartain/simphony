@@ -452,6 +452,19 @@ func TestOrchestrator_SortOrder(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_SortOrder_PreservesIssueSequence(t *testing.T) {
+	orch := New(defaultConfig(), nil, nil, nil)
+	issues := []api.Issue{
+		{ID: "1", Identifier: "CON-102", Title: "Urgent newer issue", State: "In Review", Priority: intPtr(1), CreatedAt: timePtr(time.Now().Add(-1 * time.Hour))},
+		{ID: "2", Identifier: "CON-96", Title: "Older sequence issue", State: "In Review", Priority: intPtr(3), CreatedAt: timePtr(time.Now())},
+	}
+
+	sorted := orch.sortIssues(issues)
+	if sorted[0].Identifier != "CON-96" {
+		t.Fatalf("first sorted issue = %s, want CON-96", sorted[0].Identifier)
+	}
+}
+
 func TestOrchestrator_RetryBackoff(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{
@@ -865,6 +878,43 @@ func TestOrchestrator_BlockerRule_NonTerminalBlocker(t *testing.T) {
 	}
 	if runner.runs[0].Identifier != "A-2" {
 		t.Fatalf("expected A-2 to dispatch, got %s", runner.runs[0].Identifier)
+	}
+}
+
+func TestOrchestrator_BlockerRule_AppliesToReviewAndMergeStates(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "Blocked Review", State: "In Review", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
+			{ID: "2", Identifier: "A-2", Title: "Unblocked Review", State: "In Review", BlockedBy: []api.Blocker{{State: strPtr("Done")}}},
+			{ID: "3", Identifier: "A-3", Title: "Blocked Merge", State: "Approved", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
+			{ID: "4", Identifier: "A-4", Title: "Unblocked Merge", State: "Approved", BlockedBy: []api.Blocker{{State: strPtr("Done")}}},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{delay: 500 * time.Millisecond}
+	cfg := defaultConfig()
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "In Review", "Approved"}
+	cfg.Agent.MaxConcurrentAgents = 10
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.runs) != 2 {
+		t.Fatalf("expected 2 dispatches for unblocked review/merge issues, got %d", len(runner.runs))
+	}
+	dispatched := map[string]bool{}
+	for _, run := range runner.runs {
+		dispatched[run.Identifier] = true
+	}
+	for _, want := range []string{"A-2", "A-4"} {
+		if !dispatched[want] {
+			t.Fatalf("expected %s to dispatch, got %#v", want, dispatched)
+		}
 	}
 }
 

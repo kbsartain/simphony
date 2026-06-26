@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +17,7 @@ import (
 
 // AgentRunner is the interface for launching coding-agent sessions.
 type AgentRunner interface {
-	Run(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.CodexConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error
+	Run(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.AgentRuntimeConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error
 }
 
 type workerResult struct {
@@ -190,7 +191,7 @@ func (o *Orchestrator) reconcile() {
 	// Part A: Stall detection.
 	type stallInfo struct{ id, identifier string }
 	var stalls []stallInfo
-	if runtime.cfg.Codex.StallTimeoutMs > 0 {
+	if runtime.cfg.AgentRuntime.StallTimeoutMs > 0 {
 		for id, running := range o.state.Running {
 			var elapsedMs int64
 			if running.Session.LastCodexTimestamp != nil {
@@ -198,8 +199,8 @@ func (o *Orchestrator) reconcile() {
 			} else {
 				elapsedMs = time.Since(running.StartedAt).Milliseconds()
 			}
-			if elapsedMs > int64(runtime.cfg.Codex.StallTimeoutMs) {
-				log.Printf("issue_id=%s issue_identifier=%s action=stall_detected elapsed_ms=%d stall_timeout_ms=%d", id, running.Issue.Identifier, elapsedMs, runtime.cfg.Codex.StallTimeoutMs)
+			if elapsedMs > int64(runtime.cfg.AgentRuntime.StallTimeoutMs) {
+				log.Printf("issue_id=%s issue_identifier=%s action=stall_detected provider=%s elapsed_ms=%d stall_timeout_ms=%d", id, running.Issue.Identifier, runtime.cfg.AgentRuntime.Provider, elapsedMs, runtime.cfg.AgentRuntime.StallTimeoutMs)
 				o.terminateWorkerLocked(id)
 				o.removeRunningLocked(id)
 				stalls = append(stalls, stallInfo{id: id, identifier: running.Issue.Identifier})
@@ -364,23 +365,25 @@ func (o *Orchestrator) filterEligible(candidates []api.Issue) []api.Issue {
 			continue
 		}
 
-		// Blocker rule for Todo.
-		if strings.ToLower(issue.State) == "todo" {
-			blocked := false
-			for _, b := range issue.BlockedBy {
-				if b.State != nil && !o.isTerminalWithConfig(cfg, strings.ToLower(*b.State)) {
-					blocked = true
-					break
-				}
-			}
-			if blocked {
-				continue
-			}
+		if o.hasOpenBlocker(cfg, issue) {
+			continue
 		}
 
 		eligible = append(eligible, issue)
 	}
 	return eligible
+}
+
+func (o *Orchestrator) hasOpenBlocker(cfg *api.WorkflowConfig, issue api.Issue) bool {
+	for _, b := range issue.BlockedBy {
+		if b.State == nil || strings.TrimSpace(*b.State) == "" {
+			return true
+		}
+		if !o.isTerminalWithConfig(cfg, strings.ToLower(*b.State)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) canDispatch() bool {
@@ -410,6 +413,12 @@ func (o *Orchestrator) perStateSlots(state string) int {
 
 func (o *Orchestrator) sortIssues(issues []api.Issue) []api.Issue {
 	sort.SliceStable(issues, func(i, j int) bool {
+		prefixI, seqI, okI := issueSequence(issues[i].Identifier)
+		prefixJ, seqJ, okJ := issueSequence(issues[j].Identifier)
+		if okI && okJ && prefixI == prefixJ && seqI != seqJ {
+			return seqI < seqJ
+		}
+
 		// Priority ascending (null sorts last).
 		pi, pj := issues[i].Priority, issues[j].Priority
 		if pi != nil && pj == nil {
@@ -432,6 +441,19 @@ func (o *Orchestrator) sortIssues(issues []api.Issue) []api.Issue {
 		return issues[i].Identifier < issues[j].Identifier
 	})
 	return issues
+}
+
+func issueSequence(identifier string) (string, int, bool) {
+	identifier = strings.TrimSpace(identifier)
+	idx := strings.LastIndex(identifier, "-")
+	if idx <= 0 || idx == len(identifier)-1 {
+		return "", 0, false
+	}
+	seq, err := strconv.Atoi(identifier[idx+1:])
+	if err != nil {
+		return "", 0, false
+	}
+	return strings.ToUpper(identifier[:idx]), seq, true
 }
 
 func (o *Orchestrator) dispatch(issue api.Issue) {
@@ -559,7 +581,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue api.Issue, workspace
 	}
 
 	stage := o.pipelineStage(issue, runtime.cfg)
-	err := runtime.runner.Run(ctx, issue, workspace, nil, &runtime.cfg.Codex, stage, runtime.cfg.Agent.MaxTurns, shouldContinue, eventCallback)
+	err := runtime.runner.Run(ctx, issue, workspace, nil, &runtime.cfg.AgentRuntime, stage, runtime.cfg.Agent.MaxTurns, shouldContinue, eventCallback)
 
 	// after_run hook (logged but ignored).
 	if runtime.cfg.Hooks.AfterRun != nil {

@@ -171,6 +171,16 @@ func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.Workfl
 		return nil, err
 	}
 
+	claudeMap := getSubMap(def.Config, "claude")
+	if err := resolveClaude(claudeMap, cfg); err != nil {
+		return nil, err
+	}
+
+	agentRuntimeMap := getSubMap(def.Config, "agent_runtime")
+	if err := resolveAgentRuntime(agentRuntimeMap, cfg); err != nil {
+		return nil, err
+	}
+
 	serverMap := getSubMap(def.Config, "server")
 	if err := resolveServer(serverMap, cfg); err != nil {
 		return nil, err
@@ -279,6 +289,33 @@ func getStringSlice(m map[string]interface{}, key string) ([]string, bool) {
 		if s, ok := item.(string); ok {
 			result = append(result, s)
 		}
+	}
+	return result, true
+}
+
+func getStringMap(m map[string]interface{}, key string) (map[string]string, bool) {
+	if m == nil {
+		return nil, false
+	}
+	raw, ok := m[key]
+	if !ok {
+		return nil, false
+	}
+	rawMap, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	result := make(map[string]string, len(rawMap))
+	for k, v := range rawMap {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		result[k] = ResolveEnvVar(strings.TrimSpace(s))
 	}
 	return result, true
 }
@@ -726,100 +763,187 @@ func toInt(v interface{}) (int, bool) {
 }
 
 func resolveCodex(m map[string]interface{}, cfg *api.WorkflowConfig) error {
-	command := "codex app-server"
-	if v, ok := getString(m, "command"); ok {
-		command = v
+	runtime := defaultRuntimeConfig("codex")
+	if err := applyRuntimeCommon(m, &runtime, "codex"); err != nil {
+		return err
 	}
-	if command == "" {
+	if runtime.Command == "" {
 		return fmt.Errorf("%s: codex.command must be non-empty", api.ErrCodexNotFound)
 	}
-
-	model := ""
-	if v, ok := getString(m, "model"); ok {
-		model = strings.TrimSpace(v)
-	}
-
-	modelProvider := ""
-	if v, ok := getString(m, "model_provider"); ok {
-		modelProvider = strings.TrimSpace(v)
-	}
-
-	reasoningEffort := ""
-	if v, ok := getString(m, "reasoning_effort"); ok {
-		var err error
-		reasoningEffort, err = normalizeReasoningEffort(v)
-		if err != nil {
-			return fmt.Errorf("%s: codex.reasoning_effort %w", api.ErrWorkflowParseError, err)
-		}
-	}
-
 	skills, err := getSkillRefs(m, "skills")
 	if err != nil {
 		return fmt.Errorf("%s: codex.skills %w", api.ErrWorkflowParseError, err)
 	}
-
-	approvalPolicy := "auto"
-	if v, ok := getString(m, "approval_policy"); ok && v != "" {
-		approvalPolicy = v
+	if len(skills) > 0 {
+		runtime.Skills = skills
 	}
-
-	threadSandbox := "none"
-	if v, ok := getString(m, "thread_sandbox"); ok && v != "" {
-		threadSandbox = v
-	}
-
-	turnSandboxPolicy := "none"
-	if v, ok := getString(m, "turn_sandbox_policy"); ok && v != "" {
-		turnSandboxPolicy = v
-	}
-
-	turnTimeout := 3600000
-	if v, ok := getInt(m, "turn_timeout_ms"); ok {
-		turnTimeout = v
-	}
-	if turnTimeout <= 0 {
-		return fmt.Errorf("%s: codex.turn_timeout_ms must be positive, got %d", api.ErrWorkflowParseError, turnTimeout)
-	}
-
-	readTimeout := 5000
-	if v, ok := getInt(m, "read_timeout_ms"); ok {
-		readTimeout = v
-	}
-	if readTimeout <= 0 {
-		return fmt.Errorf("%s: codex.read_timeout_ms must be positive, got %d", api.ErrWorkflowParseError, readTimeout)
-	}
-
-	stallTimeout := 300000
-	if v, ok := getInt(m, "stall_timeout_ms"); ok {
-		stallTimeout = v
-	}
-	if stallTimeout < 0 {
-		return fmt.Errorf("%s: codex.stall_timeout_ms must be non-negative, got %d", api.ErrWorkflowParseError, stallTimeout)
-	}
-
 	stageOverrides, err := resolveCodexStageOverrides(m)
 	if err != nil {
 		return err
 	}
+	runtime.StageOverrides = stageOverrides
+	cfg.Codex = runtime
+	return nil
+}
 
-	cfg.Codex = api.CodexConfig{
-		Command:           command,
-		Model:             model,
-		ModelProvider:     modelProvider,
-		ReasoningEffort:   reasoningEffort,
-		Skills:            skills,
-		ApprovalPolicy:    approvalPolicy,
-		ThreadSandbox:     threadSandbox,
-		TurnSandboxPolicy: turnSandboxPolicy,
-		TurnTimeoutMs:     turnTimeout,
-		ReadTimeoutMs:     readTimeout,
-		StallTimeoutMs:    stallTimeout,
-		StageOverrides:    stageOverrides,
+func resolveClaude(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	runtime := defaultRuntimeConfig("claude")
+	if err := applyRuntimeCommon(m, &runtime, "claude"); err != nil {
+		return err
+	}
+	if v, ok := getString(m, "permission_mode"); ok && strings.TrimSpace(v) != "" {
+		runtime.PermissionMode = strings.TrimSpace(v)
+	}
+	if v, ok := getStringSlice(m, "allowed_tools"); ok {
+		runtime.AllowedTools = v
+	}
+	if v, ok := getStringSlice(m, "disallowed_tools"); ok {
+		runtime.DisallowedTools = v
+	}
+	if v, ok := getStringSlice(m, "setting_sources"); ok {
+		runtime.SettingSources = v
+	}
+	cfg.Claude = runtime
+	return nil
+}
+
+func resolveAgentRuntime(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	provider := "codex"
+	if v, ok := getString(m, "provider"); ok && strings.TrimSpace(v) != "" {
+		provider = strings.ToLower(strings.TrimSpace(v))
+	}
+	switch provider {
+	case "codex":
+		cfg.AgentRuntime = cfg.Codex
+	case "claude":
+		cfg.AgentRuntime = cfg.Claude
+	default:
+		return fmt.Errorf("%s: agent_runtime.provider must be codex or claude, got %q", api.ErrWorkflowParseError, provider)
+	}
+	cfg.AgentRuntime.Provider = provider
+	if err := applyRuntimeCommon(m, &cfg.AgentRuntime, "agent_runtime"); err != nil {
+		return err
+	}
+	if provider == "claude" {
+		if v, ok := getString(m, "permission_mode"); ok && strings.TrimSpace(v) != "" {
+			cfg.AgentRuntime.PermissionMode = strings.TrimSpace(v)
+		}
+		if v, ok := getStringSlice(m, "allowed_tools"); ok {
+			cfg.AgentRuntime.AllowedTools = v
+		}
+		if v, ok := getStringSlice(m, "disallowed_tools"); ok {
+			cfg.AgentRuntime.DisallowedTools = v
+		}
+		if v, ok := getStringSlice(m, "setting_sources"); ok {
+			cfg.AgentRuntime.SettingSources = v
+		}
+	}
+	stageOverrides, err := resolveAgentStageOverrides(m, "agent_runtime")
+	if err != nil {
+		return err
+	}
+	if stageOverrides != nil {
+		cfg.AgentRuntime.StageOverrides = stageOverrides
+	}
+	return nil
+}
+
+func defaultRuntimeConfig(provider string) api.AgentRuntimeConfig {
+	runtime := api.AgentRuntimeConfig{
+		Provider:          provider,
+		ApprovalPolicy:    "auto",
+		ThreadSandbox:     "none",
+		TurnSandboxPolicy: "none",
+		TurnTimeoutMs:     3600000,
+		ReadTimeoutMs:     5000,
+		StallTimeoutMs:    300000,
+	}
+	switch provider {
+	case "codex":
+		runtime.Command = "codex app-server"
+	case "claude":
+		runtime.PermissionMode = "acceptEdits"
+	}
+	return runtime
+}
+
+func applyRuntimeCommon(m map[string]interface{}, runtime *api.AgentRuntimeConfig, section string) error {
+	if runtime == nil {
+		return nil
+	}
+	if v, ok := getString(m, "provider"); ok && strings.TrimSpace(v) != "" {
+		runtime.Provider = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, ok := getString(m, "command"); ok {
+		runtime.Command = strings.TrimSpace(v)
+	}
+	if v, ok := getString(m, "model"); ok {
+		runtime.Model = strings.TrimSpace(v)
+	}
+	if v, ok := getString(m, "model_provider"); ok {
+		runtime.ModelProvider = strings.TrimSpace(v)
+	}
+	if v, ok := getString(m, "reasoning_effort"); ok {
+		reasoningEffort, err := normalizeReasoningEffort(v)
+		if err != nil {
+			return fmt.Errorf("%s: %s.reasoning_effort %w", api.ErrWorkflowParseError, section, err)
+		}
+		runtime.ReasoningEffort = reasoningEffort
+	}
+	if v, ok := getString(m, "endpoint_url"); ok {
+		runtime.EndpointURL = strings.TrimSpace(ResolveEnvVar(v))
+	}
+	if v, ok := getString(m, "api_key"); ok {
+		runtime.APIKey = ResolveEnvVar(strings.TrimSpace(v))
+		runtime.APIKeyConfigured = strings.TrimSpace(v) != ""
+	}
+	if v, ok := getString(m, "auth_token"); ok {
+		runtime.AuthToken = ResolveEnvVar(strings.TrimSpace(v))
+		runtime.AuthTokenConfigured = strings.TrimSpace(v) != ""
+	}
+	if env, ok := getStringMap(m, "env"); ok {
+		if runtime.Env == nil {
+			runtime.Env = make(map[string]string, len(env))
+		}
+		for k, v := range env {
+			runtime.Env[k] = v
+		}
+	}
+	if v, ok := getString(m, "approval_policy"); ok && v != "" {
+		runtime.ApprovalPolicy = strings.TrimSpace(v)
+	}
+	if v, ok := getString(m, "thread_sandbox"); ok && v != "" {
+		runtime.ThreadSandbox = strings.TrimSpace(v)
+	}
+	if v, ok := getString(m, "turn_sandbox_policy"); ok && v != "" {
+		runtime.TurnSandboxPolicy = strings.TrimSpace(v)
+	}
+	if v, ok := getInt(m, "turn_timeout_ms"); ok {
+		runtime.TurnTimeoutMs = v
+	}
+	if runtime.TurnTimeoutMs <= 0 {
+		return fmt.Errorf("%s: %s.turn_timeout_ms must be positive, got %d", api.ErrWorkflowParseError, section, runtime.TurnTimeoutMs)
+	}
+	if v, ok := getInt(m, "read_timeout_ms"); ok {
+		runtime.ReadTimeoutMs = v
+	}
+	if runtime.ReadTimeoutMs <= 0 {
+		return fmt.Errorf("%s: %s.read_timeout_ms must be positive, got %d", api.ErrWorkflowParseError, section, runtime.ReadTimeoutMs)
+	}
+	if v, ok := getInt(m, "stall_timeout_ms"); ok {
+		runtime.StallTimeoutMs = v
+	}
+	if runtime.StallTimeoutMs < 0 {
+		return fmt.Errorf("%s: %s.stall_timeout_ms must be non-negative, got %d", api.ErrWorkflowParseError, section, runtime.StallTimeoutMs)
 	}
 	return nil
 }
 
 func resolveCodexStageOverrides(m map[string]interface{}) (map[string]api.CodexStageOverride, error) {
+	return resolveAgentStageOverrides(m, "codex")
+}
+
+func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[string]api.AgentStageOverride, error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -829,9 +953,9 @@ func resolveCodexStageOverrides(m map[string]interface{}) (map[string]api.CodexS
 	}
 	rawMap, ok := raw.(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("%s: codex.stage_overrides must be a map", api.ErrWorkflowParseError)
+		return nil, fmt.Errorf("%s: %s.stage_overrides must be a map", api.ErrWorkflowParseError, section)
 	}
-	overrides := make(map[string]api.CodexStageOverride)
+	overrides := make(map[string]api.AgentStageOverride)
 	for stageName, rawStage := range rawMap {
 		stageKey := strings.ToLower(strings.TrimSpace(stageName))
 		if stageKey == "" {
@@ -839,9 +963,9 @@ func resolveCodexStageOverrides(m map[string]interface{}) (map[string]api.CodexS
 		}
 		stageMap, ok := rawStage.(map[string]interface{})
 		if !ok {
-			return nil, fmt.Errorf("%s: codex.stage_overrides.%s must be a map", api.ErrWorkflowParseError, stageName)
+			return nil, fmt.Errorf("%s: %s.stage_overrides.%s must be a map", api.ErrWorkflowParseError, section, stageName)
 		}
-		override := api.CodexStageOverride{}
+		override := api.AgentStageOverride{}
 		if v, ok := getString(stageMap, "model"); ok {
 			override.Model = strings.TrimSpace(v)
 		}
@@ -851,13 +975,13 @@ func resolveCodexStageOverrides(m map[string]interface{}) (map[string]api.CodexS
 		if v, ok := getString(stageMap, "reasoning_effort"); ok {
 			reasoningEffort, err := normalizeReasoningEffort(v)
 			if err != nil {
-				return nil, fmt.Errorf("%s: codex.stage_overrides.%s.reasoning_effort %w", api.ErrWorkflowParseError, stageName, err)
+				return nil, fmt.Errorf("%s: %s.stage_overrides.%s.reasoning_effort %w", api.ErrWorkflowParseError, section, stageName, err)
 			}
 			override.ReasoningEffort = reasoningEffort
 		}
 		skills, err := getSkillRefs(stageMap, "skills")
 		if err != nil {
-			return nil, fmt.Errorf("%s: codex.stage_overrides.%s.skills %w", api.ErrWorkflowParseError, stageName, err)
+			return nil, fmt.Errorf("%s: %s.stage_overrides.%s.skills %w", api.ErrWorkflowParseError, section, stageName, err)
 		}
 		override.Skills = skills
 		if override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && len(override.Skills) == 0 {

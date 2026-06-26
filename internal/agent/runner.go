@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	_ "embed"
+
 	"github.com/kbsartain/simphony/internal/prompt"
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -119,6 +121,9 @@ type skillsListResult struct {
 
 var requestIDCounter int64
 
+//go:embed shims/claude-agent-shim.mjs
+var claudeShimSource []byte
+
 func nextRequestID() int {
 	return int(atomic.AddInt64(&requestIDCounter, 1))
 }
@@ -132,15 +137,18 @@ func (r *Runner) SetPromptTemplate(template string) {
 
 // Run launches a Codex app-server subprocess, initializes a thread, starts a
 // turn, and blocks until the turn completes or an error occurs.
-func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.CodexConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error {
+func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.AgentRuntimeConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error {
 	if workspace == nil || workspace.Path == "" {
 		return fmt.Errorf("%s: workspace path is empty", api.ErrInvalidWorkspaceCWD)
 	}
 	if cfg == nil {
-		return fmt.Errorf("%s: codex config is nil", api.ErrCodexNotFound)
+		return fmt.Errorf("%s: agent runtime config is nil", api.ErrCodexNotFound)
 	}
 	effectiveCfg := effectiveCodexConfig(cfg, stage)
 	cfg = &effectiveCfg
+	if strings.EqualFold(cfg.Provider, "claude") {
+		return r.runClaude(ctx, issue, workspace, attempt, cfg, stage, maxTurns, shouldContinue, eventCallback)
+	}
 	if maxTurns <= 0 {
 		maxTurns = 1
 	}
@@ -158,7 +166,7 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	cmd := shellCommandContext(ctx, command)
 	cmd.Dir = workspace.Path
 	cmd.Stderr = os.Stderr
-	if err := configureSubprocessEnv(cmd, workspace.Path); err != nil {
+	if err := configureSubprocessEnv(cmd, workspace.Path, cfg); err != nil {
 		return err
 	}
 
@@ -465,6 +473,238 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	return nil
 }
 
+type claudeShimRequest struct {
+	CWD             string   `json:"cwd"`
+	Prompt          string   `json:"prompt"`
+	Model           string   `json:"model,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	PermissionMode  string   `json:"permission_mode,omitempty"`
+	AllowedTools    []string `json:"allowed_tools,omitempty"`
+	DisallowedTools []string `json:"disallowed_tools,omitempty"`
+	SettingSources  []string `json:"setting_sources,omitempty"`
+	ResumeSessionID string   `json:"resume_session_id,omitempty"`
+	TurnCount       int      `json:"turn_count"`
+}
+
+type claudeShimEvent struct {
+	Event     string                 `json:"event"`
+	Timestamp string                 `json:"timestamp,omitempty"`
+	Usage     map[string]interface{} `json:"usage,omitempty"`
+	Payload   map[string]interface{} `json:"payload,omitempty"`
+	Error     string                 `json:"error,omitempty"`
+}
+
+func (r *Runner) runClaude(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.AgentRuntimeConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error {
+	if maxTurns <= 0 {
+		maxTurns = 1
+	}
+	sessionID := ""
+	for turnCount := 1; turnCount <= maxTurns; turnCount++ {
+		turnPrompt, err := r.turnPrompt(issue, attempt, stage, turnCount)
+		if err != nil {
+			return err
+		}
+		nextSessionID, err := r.runClaudeTurn(ctx, workspace, cfg, turnPrompt, sessionID, turnCount, eventCallback)
+		if err != nil {
+			return err
+		}
+		if nextSessionID != "" {
+			sessionID = nextSessionID
+		}
+
+		if turnCount == maxTurns && shouldContinue != nil {
+			eventCallback(api.AgentEvent{
+				Event:     "max_turns_reached",
+				Timestamp: time.Now(),
+				Payload: map[string]interface{}{
+					"turn_count": turnCount,
+					"provider":   "claude",
+				},
+			})
+			return fmt.Errorf("%s: reached %d turns", api.ErrMaxTurnsReached, maxTurns)
+		}
+		if shouldContinue == nil {
+			return nil
+		}
+
+		decision, err := shouldContinue()
+		if err != nil {
+			return fmt.Errorf("%s: continuation state check failed: %w", api.ErrResponseError, err)
+		}
+		if !decision.Continue {
+			eventCallback(api.AgentEvent{
+				Event:     "continuation_stopped",
+				Timestamp: time.Now(),
+				Payload: map[string]interface{}{
+					"reason":      decision.Reason,
+					"issue_state": decision.Issue.State,
+					"provider":    "claude",
+				},
+			})
+			return nil
+		}
+		issue = decision.Issue
+	}
+	return nil
+}
+
+func (r *Runner) runClaudeTurn(ctx context.Context, workspace *api.Workspace, cfg *api.AgentRuntimeConfig, prompt string, resumeSessionID string, turnCount int, eventCallback func(api.AgentEvent)) (string, error) {
+	command := strings.TrimSpace(cfg.Command)
+	if command == "" {
+		shimPath, err := writeEmbeddedClaudeShim(workspace.Path)
+		if err != nil {
+			return "", err
+		}
+		command = "node " + quoteCommandArg(shimPath)
+	}
+
+	turnTimeout := time.Duration(cfg.TurnTimeoutMs) * time.Millisecond
+	if turnTimeout <= 0 {
+		turnTimeout = 3600 * time.Second
+	}
+	turnCtx, cancel := context.WithTimeout(ctx, turnTimeout)
+	defer cancel()
+
+	cmd := shellCommandContext(turnCtx, command)
+	cmd.Dir = workspace.Path
+	cmd.Stderr = os.Stderr
+	if err := configureSubprocessEnv(cmd, workspace.Path, cfg); err != nil {
+		return "", err
+	}
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return "", fmt.Errorf("%s: failed to create claude shim stdin pipe: %w", api.ErrCodexNotFound, err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("%s: failed to create claude shim stdout pipe: %w", api.ErrCodexNotFound, err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("%s: failed to start claude shim: %w", api.ErrCodexNotFound, err)
+	}
+	waited := false
+	defer func() {
+		if !waited && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+
+	if cmd.Process != nil {
+		pid := fmt.Sprintf("%d", cmd.Process.Pid)
+		eventCallback(api.AgentEvent{
+			Event:     "process_started",
+			Timestamp: time.Now(),
+			CodexPID:  &pid,
+			Payload: map[string]interface{}{
+				"provider": "claude",
+			},
+		})
+	}
+
+	req := claudeShimRequest{
+		CWD:             workspace.Path,
+		Prompt:          prompt,
+		Model:           cfg.Model,
+		ReasoningEffort: cfg.ReasoningEffort,
+		PermissionMode:  cfg.PermissionMode,
+		AllowedTools:    cfg.AllowedTools,
+		DisallowedTools: cfg.DisallowedTools,
+		SettingSources:  cfg.SettingSources,
+		ResumeSessionID: resumeSessionID,
+		TurnCount:       turnCount,
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+	if _, err := stdin.Write(append(data, '\n')); err != nil {
+		return "", fmt.Errorf("%s: failed to write claude shim request: %w", api.ErrResponseError, err)
+	}
+	_ = stdin.Close()
+
+	scanner := bufio.NewScanner(stdout)
+	const maxCapacity = 10 * 1024 * 1024
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, maxCapacity)
+
+	sessionID := resumeSessionID
+	completed := false
+	for scanner.Scan() {
+		var shimEvent claudeShimEvent
+		if err := json.Unmarshal(scanner.Bytes(), &shimEvent); err != nil {
+			log.Printf("action=claude_runner warning=json_parse error=%v", err)
+			continue
+		}
+		if shimEvent.Event == "" {
+			continue
+		}
+		if shimEvent.Event == "error" {
+			if shimEvent.Error != "" {
+				return sessionID, fmt.Errorf("%s: claude shim error: %s", api.ErrTurnFailed, shimEvent.Error)
+			}
+			return sessionID, fmt.Errorf("%s: claude shim error", api.ErrTurnFailed)
+		}
+		if shimEvent.Payload == nil {
+			shimEvent.Payload = map[string]interface{}{}
+		}
+		shimEvent.Payload["provider"] = "claude"
+		if _, ok := shimEvent.Payload["turn_count"]; !ok {
+			shimEvent.Payload["turn_count"] = turnCount
+		}
+		if sid, ok := shimEvent.Payload["session_id"].(string); ok && strings.TrimSpace(sid) != "" {
+			sessionID = sid
+		}
+		ts := time.Now()
+		if shimEvent.Timestamp != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, shimEvent.Timestamp); err == nil {
+				ts = parsed
+			}
+		}
+		eventCallback(api.AgentEvent{
+			Event:     shimEvent.Event,
+			Timestamp: ts,
+			Usage:     shimEvent.Usage,
+			Payload:   shimEvent.Payload,
+		})
+		if shimEvent.Event == "turn/completed" {
+			completed = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return sessionID, fmt.Errorf("%s: read error during claude turn: %w", api.ErrResponseTimeout, err)
+	}
+	if err := cmd.Wait(); err != nil {
+		waited = true
+		if turnCtx.Err() == context.DeadlineExceeded {
+			return sessionID, fmt.Errorf("%s: claude turn exceeded %d ms", api.ErrTurnTimeout, cfg.TurnTimeoutMs)
+		}
+		if ctx.Err() != nil {
+			return sessionID, ctx.Err()
+		}
+		return sessionID, fmt.Errorf("%s: claude shim exited: %w", api.ErrPortExit, err)
+	}
+	waited = true
+	if !completed {
+		return sessionID, fmt.Errorf("%s: claude shim exited before turn completion", api.ErrPortExit)
+	}
+	return sessionID, nil
+}
+
+func writeEmbeddedClaudeShim(workspacePath string) (string, error) {
+	configDir := filepath.Join(workspacePath, ".simphony")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return "", fmt.Errorf("%s: create claude shim dir: %w", api.ErrInvalidWorkspaceCWD, err)
+	}
+	shimPath := filepath.Join(configDir, "claude-agent-shim.mjs")
+	if err := os.WriteFile(shimPath, claudeShimSource, 0644); err != nil {
+		return "", fmt.Errorf("%s: write claude shim: %w", api.ErrInvalidWorkspaceCWD, err)
+	}
+	return shimPath, nil
+}
+
 func buildThreadStartParams(workspace *api.Workspace, cfg *api.CodexConfig, issue api.Issue) map[string]interface{} {
 	params := map[string]interface{}{
 		"cwd": workspace.Path,
@@ -671,7 +911,14 @@ func shellCommandContext(ctx context.Context, command string) *exec.Cmd {
 	return exec.CommandContext(ctx, "bash", "-lc", command)
 }
 
-func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string) error {
+func quoteCommandArg(arg string) string {
+	if runtime.GOOS == "windows" {
+		return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+}
+
+func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentRuntimeConfig) error {
 	env := os.Environ()
 
 	gitConfigPath, err := writeGitSafeDirectoryConfig(workspacePath)
@@ -684,9 +931,45 @@ func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string) error {
 		env = prependPath(env, filepath.Dir(rgPath))
 	}
 	env = prependWorkspaceToolPaths(env, workspacePath)
+	env = applyRuntimeEnv(env, cfg)
 
 	cmd.Env = env
 	return nil
+}
+
+func applyRuntimeEnv(env []string, cfg *api.AgentRuntimeConfig) []string {
+	if cfg == nil {
+		return env
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
+	case "claude":
+		if cfg.APIKey != "" {
+			env = setEnv(env, "ANTHROPIC_API_KEY", cfg.APIKey)
+		}
+		if cfg.EndpointURL != "" {
+			env = setEnv(env, "ANTHROPIC_BASE_URL", cfg.EndpointURL)
+		}
+		if cfg.AuthToken != "" {
+			env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", cfg.AuthToken)
+		}
+	default:
+		if cfg.APIKey != "" {
+			env = setEnv(env, "OPENAI_API_KEY", cfg.APIKey)
+		}
+		if cfg.EndpointURL != "" {
+			env = setEnv(env, "OPENAI_BASE_URL", cfg.EndpointURL)
+		}
+		if cfg.AuthToken != "" {
+			env = setEnv(env, "OPENAI_AUTH_TOKEN", cfg.AuthToken)
+		}
+	}
+	for key, value := range cfg.Env {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		env = setEnv(env, key, value)
+	}
+	return env
 }
 
 func writeGitSafeDirectoryConfig(workspacePath string) (string, error) {

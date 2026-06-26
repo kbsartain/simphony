@@ -686,6 +686,7 @@ function SettingsView(props: {
   const selectedProviderID = draftConfig ? getSelectedProviderID(draftConfig) : ''
   const selectedModelID = draftConfig ? getSelectedModelID(draftConfig) : ''
   const globalModels = modelOptionsForProvider(selectedProviderID, draftConfig ? getCodexStringField(draftConfig, 'model') : '')
+  const resolvedRuntime = props.settings.resolved_config.agent_runtime || props.settings.resolved_config.codex
 
   const changeProvider = (providerID: string) => {
     const config = draftConfig || {}
@@ -757,8 +758,8 @@ function SettingsView(props: {
               </select>
             </label>
             <div className="model-summary">
-              <strong>{modelLabel(props.settings.resolved_config.codex.model, props.settings.resolved_config.codex.model_provider)}</strong>
-              <span>{props.settings.resolved_config.codex.model_provider || 'default provider'}</span>
+              <strong>{modelLabel(resolvedRuntime.model, resolvedRuntime.model_provider)}</strong>
+              <span>{resolvedRuntime.provider || resolvedRuntime.model_provider || 'default provider'}</span>
             </div>
           </div>
         </div>
@@ -878,12 +879,16 @@ function SettingsView(props: {
             <dd>{props.settings.resolved_config.workspace.mode}</dd>
           </div>
           <div>
-            <dt>Codex</dt>
-            <dd>{props.settings.resolved_config.codex.command}</dd>
+            <dt>Agent</dt>
+            <dd>{resolvedRuntime.provider || 'codex'}</dd>
+          </div>
+          <div>
+            <dt>Command</dt>
+            <dd>{resolvedRuntime.command || 'embedded shim'}</dd>
           </div>
           <div>
             <dt>Model</dt>
-            <dd>{modelLabel(props.settings.resolved_config.codex.model, props.settings.resolved_config.codex.model_provider)}</dd>
+            <dd>{modelLabel(resolvedRuntime.model, resolvedRuntime.model_provider)}</dd>
           </div>
           <div>
             <dt>Default Skills</dt>

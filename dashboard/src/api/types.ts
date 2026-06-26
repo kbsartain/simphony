@@ -163,12 +163,21 @@ export interface AgentConfig {
   max_retry_backoff_ms: number;
 }
 
-export interface CodexConfig {
+export interface AgentRuntimeConfig {
+  provider: string;
   command: string;
   model?: string;
   model_provider?: string;
   reasoning_effort?: string;
+  endpoint_url?: string;
+  api_key_configured?: boolean;
+  auth_token_configured?: boolean;
+  env?: Record<string, string>;
   skills?: CodexSkillRef[];
+  allowed_tools?: string[];
+  disallowed_tools?: string[];
+  permission_mode?: string;
+  setting_sources?: string[];
   approval_policy: string;
   thread_sandbox: string;
   turn_sandbox_policy: string;
@@ -177,6 +186,9 @@ export interface CodexConfig {
   stall_timeout_ms: number;
   stage_overrides?: Record<string, CodexStageOverride>;
 }
+
+export type CodexConfig = AgentRuntimeConfig;
+export type ClaudeConfig = AgentRuntimeConfig;
 
 export interface CodexStageOverride {
   model?: string;
@@ -202,7 +214,9 @@ export interface WorkflowConfig {
   workspace: WorkspaceConfig;
   hooks: HooksConfig;
   agent: AgentConfig;
+  agent_runtime: AgentRuntimeConfig;
   codex: CodexConfig;
+  claude?: ClaudeConfig;
   server?: ServerConfig;
 }
 

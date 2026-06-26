@@ -3,9 +3,9 @@
 [![CI](https://github.com/kbsartain/simphony/actions/workflows/ci.yml/badge.svg)](https://github.com/kbsartain/simphony/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Simphony is a Go implementation of the [OpenAI Symphony specification](https://github.com/openai/symphony/blob/main/SPEC.md). It is a long-running automation service that watches an issue tracker, creates an isolated workspace for each eligible issue, runs Codex against that issue, and exposes runtime state through an optional HTTP API and React dashboard.
+Simphony is a Go implementation of the [OpenAI Symphony specification](https://github.com/openai/symphony/blob/main/SPEC.md). It is a long-running automation service that watches an issue tracker, creates an isolated workspace for each eligible issue, runs a coding agent against that issue, and exposes runtime state through an optional HTTP API and React dashboard.
 
-The project is currently focused on Linear as the tracker backend and Codex app-server as the agent runtime.
+The project is currently focused on Linear as the tracker backend, with Codex app-server as the default agent runtime and an optional Claude Code Agent SDK runtime.
 
 Simphony is intended for teams that want a configurable, unattended bridge between issue tracking and coding-agent execution. Treat `WORKFLOW.md` as local runtime configuration; the reusable starter templates live in [workflow examples](docs/workflow-examples.md).
 
@@ -14,7 +14,7 @@ Simphony is intended for teams that want a configurable, unattended bridge betwe
 - Polls Linear for issues in configured active states.
 - Filters issues that are already running, already claimed, completed, blocked, or outside the active state set.
 - Creates one filesystem workspace per issue.
-- Runs Codex app-server over stdio from inside the issue workspace.
+- Runs the selected coding agent from inside the issue workspace.
 - Moves successful coding runs to review, then runs approved merge-stage issues through a separate merge prompt.
 - Retries failed runs with exponential backoff.
 - Reconciles running work against tracker state and removes workspaces for terminal issues.
@@ -25,7 +25,7 @@ Simphony is intended for teams that want a configurable, unattended bridge betwe
 
 ```text
 cmd/simphony/          CLI entry point
-internal/agent/        Codex app-server stdio runner
+internal/agent/        Agent runtime runners and shims
 internal/config/       WORKFLOW.md loading, defaults, validation, hot reload
 internal/orchestrator/ Scheduler, dispatch, retry, reconciliation, state snapshots
 internal/prompt/       Liquid-style issue prompt rendering
@@ -43,9 +43,9 @@ docs/                  Project documentation
 - Go 1.25 or newer.
 - Node.js and npm for the dashboard.
 - A Linear API key for tracker access.
-- Codex CLI with app-server support.
+- Codex CLI with app-server support, or Node.js with the Claude Code Agent SDK for `agent_runtime.provider: claude`.
 
-Install Codex according to the official OpenAI instructions for your platform, then make sure the configured command can run `app-server --listen stdio://`.
+Install Codex according to the official OpenAI instructions for your platform, then make sure the configured command can run `app-server --listen stdio://`. For Claude, install a supported Claude Agent SDK package where Node can resolve it, or configure `claude.command` to call your own wrapper.
 
 See [.env.example](.env.example) for the environment variables Simphony commonly needs. The file is a reference only; Simphony does not load dotenv files automatically.
 
@@ -73,9 +73,10 @@ $env:LINEAR_API_KEY = "replace-with-your-linear-api-key"
 2. Edit `WORKFLOW.md`:
 
 - Set `tracker.project_slug` to your Linear project slug.
-- Set `codex.command` to `codex app-server` if `codex` is on `PATH`, or to the full executable path plus `app-server` if needed.
-- Optionally set `codex.model` and `codex.model_provider` to force a specific Codex model selection.
-- Add workspace hooks such as `hooks.after_create` to clone or otherwise prepare the repository Codex should edit.
+- Use the default `agent_runtime.provider: codex`, or set `agent_runtime.provider: claude` to use the Claude Code Agent SDK shim.
+- Set `codex.command` to `codex app-server` if `codex` is on `PATH`, or configure `claude.command` if you use a custom Claude wrapper.
+- Optionally set `agent_runtime.model`, `agent_runtime.endpoint_url`, and `agent_runtime.api_key` to select a model or compatible gateway.
+- Add workspace hooks such as `hooks.after_create` to clone or otherwise prepare the repository the agent should edit.
 - Adjust `tracker.active_states`, `pipeline.review_state`, `pipeline.merge_state`, workspace hooks, and concurrency limits for your workflow.
 
 3. Run:
@@ -104,12 +105,31 @@ If `server.port` is configured, the API listens on `http://localhost:<port>`.
 
 Simphony treats normal coding work and approved merge work as separate pipeline stages:
 
-- Coding issues come from `pipeline.coding_states` and move to `pipeline.review_state` after a successful Codex turn.
+- Coding issues come from `pipeline.coding_states` and move to `pipeline.review_state` after a successful agent turn.
 - If `review_resolution.enabled` is true, reviewed issues move through `pipeline.review_resolution_state`, where an autonomous agent resolves PR review comments, CI failures, and approval readiness before moving to `pipeline.merge_state`.
 - Reviewed or review-resolved issues should be moved to `pipeline.merge_state`; Simphony dispatches them with merge-focused instructions.
 - Successful merge-stage runs move to `pipeline.done_state` and the issue workspace is removed when that state is terminal.
 
 The merge state is automatically included in tracker active states, the review-resolution state is included when enabled, and the done state is automatically included in terminal states.
+
+## Agent Runtime Selection
+
+Existing workflows can continue using only `codex:`. To switch providers explicitly, add `agent_runtime.provider`:
+
+```yaml
+agent_runtime:
+  provider: codex
+  model: gpt-5.4
+```
+
+```yaml
+agent_runtime:
+  provider: claude
+  model: claude-sonnet-4
+  api_key: $ANTHROPIC_API_KEY
+```
+
+`agent_runtime.endpoint_url` and `agent_runtime.api_key` support OpenAI-compatible and Anthropic-compatible gateways. For Codex, they are passed as `OPENAI_BASE_URL` and `OPENAI_API_KEY`; for Claude, they are passed as `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`.
 
 ## Codex Model Selection
 
@@ -231,11 +251,11 @@ Simphony is released under the [MIT License](LICENSE).
 
 ## Project Status
 
-Simphony is an early implementation. The main backend paths are covered by tests, but tracker access and Codex execution require real credentials and local runtime configuration. Review command, sandbox, and hook settings before running it against a repository with write access.
+Simphony is an early implementation. The main backend paths are covered by tests, but tracker access and agent execution require real credentials and local runtime configuration. Review command, sandbox, and hook settings before running it against a repository with write access.
 
 Current limitations:
 
 - Linear is the only tracker adapter.
 - Runtime state is in memory only.
-- Codex user-input requests are rejected because Simphony runs unattended.
+- Agent user-input requests are rejected because Simphony runs unattended.
 - The dashboard is intentionally minimal and focused on operational status.

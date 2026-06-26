@@ -40,7 +40,9 @@ type WorkflowConfig struct {
 	Workspace        WorkspaceConfig        `json:"workspace"`
 	Hooks            HooksConfig            `json:"hooks"`
 	Agent            AgentConfig            `json:"agent"`
+	AgentRuntime     AgentRuntimeConfig     `json:"agent_runtime"`
 	Codex            CodexConfig            `json:"codex"`
+	Claude           ClaudeConfig           `json:"claude,omitempty"`
 	Server           *ServerConfig          `json:"server,omitempty"`
 }
 
@@ -114,35 +116,59 @@ type AgentConfig struct {
 	MaxConcurrentAgentsByState map[string]int `json:"max_concurrent_agents_by_state"`
 }
 
-// CodexConfig configures the Codex app-server client.
-type CodexConfig struct {
-	Command           string                        `json:"command"`
-	Model             string                        `json:"model,omitempty"`
-	ModelProvider     string                        `json:"model_provider,omitempty"`
-	ReasoningEffort   string                        `json:"reasoning_effort,omitempty"`
-	Skills            []CodexSkillRef               `json:"skills,omitempty"`
-	ApprovalPolicy    string                        `json:"approval_policy"`
-	ThreadSandbox     string                        `json:"thread_sandbox"`
-	TurnSandboxPolicy string                        `json:"turn_sandbox_policy"`
-	TurnTimeoutMs     int                           `json:"turn_timeout_ms"`
-	ReadTimeoutMs     int                           `json:"read_timeout_ms"`
-	StallTimeoutMs    int                           `json:"stall_timeout_ms"`
-	StageOverrides    map[string]CodexStageOverride `json:"stage_overrides,omitempty"`
+// AgentRuntimeConfig selects and configures the coding-agent provider.
+type AgentRuntimeConfig struct {
+	Provider            string                        `json:"provider"`
+	Command             string                        `json:"command"`
+	Model               string                        `json:"model,omitempty"`
+	ModelProvider       string                        `json:"model_provider,omitempty"`
+	ReasoningEffort     string                        `json:"reasoning_effort,omitempty"`
+	EndpointURL         string                        `json:"endpoint_url,omitempty"`
+	APIKeyConfigured    bool                          `json:"api_key_configured,omitempty"`
+	AuthTokenConfigured bool                          `json:"auth_token_configured,omitempty"`
+	APIKey              string                        `json:"-"`
+	AuthToken           string                        `json:"-"`
+	Env                 map[string]string             `json:"env,omitempty"`
+	Skills              []AgentSkillRef               `json:"skills,omitempty"`
+	AllowedTools        []string                      `json:"allowed_tools,omitempty"`
+	DisallowedTools     []string                      `json:"disallowed_tools,omitempty"`
+	PermissionMode      string                        `json:"permission_mode,omitempty"`
+	SettingSources      []string                      `json:"setting_sources,omitempty"`
+	ApprovalPolicy      string                        `json:"approval_policy"`
+	ThreadSandbox       string                        `json:"thread_sandbox"`
+	TurnSandboxPolicy   string                        `json:"turn_sandbox_policy"`
+	TurnTimeoutMs       int                           `json:"turn_timeout_ms"`
+	ReadTimeoutMs       int                           `json:"read_timeout_ms"`
+	StallTimeoutMs      int                           `json:"stall_timeout_ms"`
+	StageOverrides      map[string]AgentStageOverride `json:"stage_overrides,omitempty"`
 }
 
-// CodexStageOverride overrides selected Codex settings for a pipeline stage.
-type CodexStageOverride struct {
+// AgentStageOverride overrides selected runtime settings for a pipeline stage.
+type AgentStageOverride struct {
 	Model           string          `json:"model,omitempty"`
 	ModelProvider   string          `json:"model_provider,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-	Skills          []CodexSkillRef `json:"skills,omitempty"`
+	Skills          []AgentSkillRef `json:"skills,omitempty"`
 }
 
-// CodexSkillRef selects a Codex skill by name and, when known, absolute path.
-type CodexSkillRef struct {
+// AgentSkillRef selects an agent skill by name and, when known, absolute path.
+type AgentSkillRef struct {
 	Name string `json:"name"`
 	Path string `json:"path,omitempty"`
 }
+
+// CodexConfig configures the Codex app-server client. It aliases the generic
+// runtime config so existing API consumers and workflow tests remain compatible.
+type CodexConfig = AgentRuntimeConfig
+
+// CodexStageOverride overrides selected Codex settings for a pipeline stage.
+type CodexStageOverride = AgentStageOverride
+
+// CodexSkillRef selects a Codex skill by name and, when known, absolute path.
+type CodexSkillRef = AgentSkillRef
+
+// ClaudeConfig configures the Claude Code Agent SDK shim.
+type ClaudeConfig = AgentRuntimeConfig
 
 // ServerConfig configures the optional HTTP server extension.
 type ServerConfig struct {

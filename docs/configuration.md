@@ -1,6 +1,6 @@
 # Configuration
 
-Simphony is configured by `WORKFLOW.md`. The file has YAML front matter for runtime settings and a Markdown prompt template body for Codex.
+Simphony is configured by `WORKFLOW.md`. The file has YAML front matter for runtime settings and a Markdown prompt template body for the selected coding agent.
 
 ```markdown
 ---
@@ -88,7 +88,7 @@ The review-resolution agent must end with one of these directive lines:
 - `SIMPHONY_REVIEW_DECISION: retry` schedules another autonomous pass, capped by `max_attempts`.
 - `SIMPHONY_REVIEW_DECISION: escalate` moves the issue to `escalation_state` and posts a Linear comment.
 
-Use `codex.stage_overrides.review_resolution` to select a high-reasoning model and GitHub/code-review skills for this stage.
+Use `agent_runtime.stage_overrides.review_resolution` for provider-neutral model/reasoning overrides, or `codex.stage_overrides.review_resolution` for Codex-specific skill selection.
 
 ## Polling
 
@@ -123,7 +123,7 @@ hooks:
 
 Hooks run with the workspace as the current directory. `after_create` and `before_run` failures stop the attempt and schedule a retry. `after_run` and `before_remove` failures are logged and ignored.
 
-In most workflows, `after_create` should clone the repository or copy a prepared checkout into the empty issue workspace before Codex starts.
+In most workflows, `after_create` should clone the repository or copy a prepared checkout into the empty issue workspace before the coding agent starts.
 
 On Windows, hooks run through `cmd /C`. On POSIX systems, hooks run through `bash -lc`.
 
@@ -138,10 +138,51 @@ agent:
     In Progress: 2
 ```
 
-- `max_concurrent_agents` limits total running Codex sessions.
-- `max_turns` limits continuation turns on a single Codex thread.
+- `max_concurrent_agents` limits total running coding-agent sessions.
+- `max_turns` limits continuation turns on a single agent session.
 - `max_retry_backoff_ms` caps exponential retry delays.
 - `max_concurrent_agents_by_state` optionally limits concurrency for specific tracker states.
+
+## Agent Runtime
+
+```yaml
+agent_runtime:
+  provider: codex
+  model: gpt-5.4
+  model_provider: openai
+  reasoning_effort: high
+  endpoint_url: $OPENAI_BASE_URL
+  api_key: $OPENAI_API_KEY
+  env:
+    OPENAI_ORG_ID: $OPENAI_ORG_ID
+```
+
+`agent_runtime.provider` selects the agent SDK used for future runs. Supported values are:
+
+- `codex` uses Codex app-server over stdio. This is the default and remains compatible with existing `codex:` workflows.
+- `claude` uses the embedded Claude Code Agent SDK shim.
+
+Common fields in `agent_runtime` override provider-specific defaults from `codex:` or `claude:`. This lets a workflow switch SDKs by changing one selector while keeping shared model, endpoint, token, timeout, and stage settings in one place.
+
+`endpoint_url`, `api_key`, `auth_token`, and `env` values beginning with `$` are resolved from environment variables. Secrets are passed only to the agent subprocess environment and are omitted from the resolved API JSON. For `provider: codex`, `api_key` maps to `OPENAI_API_KEY` and `endpoint_url` maps to `OPENAI_BASE_URL`. For `provider: claude`, `api_key` maps to `ANTHROPIC_API_KEY` and `endpoint_url` maps to `ANTHROPIC_BASE_URL`.
+
+Use these fields for OpenAI-compatible or Anthropic-compatible gateways:
+
+```yaml
+agent_runtime:
+  provider: codex
+  model: qwen-coder
+  endpoint_url: https://openai-compatible.example/v1
+  api_key: $ROUTER_API_KEY
+```
+
+```yaml
+agent_runtime:
+  provider: claude
+  model: claude-sonnet-4
+  endpoint_url: https://anthropic-compatible.example
+  api_key: $ANTHROPIC_COMPATIBLE_API_KEY
+```
 
 ## Codex
 
@@ -182,6 +223,8 @@ codex:
   stall_timeout_ms: 300000
 ```
 
+`codex:` is the provider-specific configuration for `agent_runtime.provider: codex`. If `agent_runtime` is omitted, Simphony behaves as if `agent_runtime.provider: codex` was set and uses this block directly.
+
 The runner appends `--listen stdio://` when it is not already present. The subprocess is launched with the issue workspace as its current directory.
 
 `model` and `model_provider` are optional. When present, they are passed to Codex app-server for thread and turn startup. Simphony treats these as provider-neutral strings, so non-OpenAI model IDs such as Claude, Gemini, Kimi, GLM, or DeepSeek variants can be configured when the underlying Codex installation has an appropriate provider/router configured.
@@ -205,6 +248,34 @@ Supported `turn_sandbox_policy` values are:
 - `workspace-write`
 - `danger-full-access`
 
+## Claude
+
+```yaml
+agent_runtime:
+  provider: claude
+  model: claude-sonnet-4
+  api_key: $ANTHROPIC_API_KEY
+
+claude:
+  permission_mode: acceptEdits
+  allowed_tools:
+    - Read
+    - Edit
+    - Write
+    - Bash
+    - Glob
+    - Grep
+  setting_sources:
+    - project
+    - local
+```
+
+`claude:` is the provider-specific configuration for `agent_runtime.provider: claude`. Simphony writes an embedded Node.js shim into the issue workspace and launches it unless `claude.command` or `agent_runtime.command` is set. The shim loads the Claude Agent SDK from the workspace or wrapper environment, runs one turn, emits Simphony-normalized JSON events, and resumes the prior Claude session for continuation turns.
+
+Install a supported Claude SDK package where Node can resolve it, or set `SIMPHONY_CLAUDE_SDK_PACKAGE` to the package name your environment uses. The embedded shim tries `@anthropic-ai/claude-agent-sdk` first and falls back to `@anthropic-ai/claude-code`.
+
+Set `claude.command` when you want to provide your own wrapper. The wrapper must read one JSON request from stdin and emit newline-delimited JSON events with `event`, optional `payload`, and optional `usage` fields.
+
 ## Server
 
 ```yaml
@@ -216,7 +287,7 @@ When `server.port` is set, Simphony starts the HTTP API. If `dashboard/dist` exi
 
 ## Prompt Template
 
-The Markdown body of `WORKFLOW.md` is rendered for the first Codex turn. It can reference normalized issue fields:
+The Markdown body of `WORKFLOW.md` is rendered for the first agent turn. It can reference normalized issue fields:
 
 - `issue.id`
 - `issue.identifier`

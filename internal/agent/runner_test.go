@@ -30,7 +30,63 @@ func TestMain(m *testing.M) {
 		runMockCodexServer()
 		os.Exit(0)
 	}
+	if os.Getenv("SIMPHONY_MOCK_CLAUDE") == "1" {
+		runMockClaudeShim()
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
+}
+
+func runMockClaudeShim() {
+	var req claudeShimRequest
+	if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
+		log.Printf("mock claude decode error: %v", err)
+		os.Exit(1)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	sessionID := req.ResumeSessionID
+	if sessionID == "" {
+		sessionID = "claude-session-123"
+	}
+	_ = enc.Encode(claudeShimEvent{
+		Event: "session_started",
+		Payload: map[string]interface{}{
+			"session_id": sessionID,
+			"thread_id":  sessionID,
+			"turn_id":    fmt.Sprintf("turn-%d", req.TurnCount),
+			"turn_count": req.TurnCount,
+		},
+	})
+	_ = enc.Encode(claudeShimEvent{
+		Event: "thread/tokenUsage/updated",
+		Usage: map[string]interface{}{
+			"input_tokens":  12,
+			"output_tokens": 8,
+			"total_tokens":  20,
+		},
+		Payload: map[string]interface{}{
+			"session_id": sessionID,
+			"turn_count": req.TurnCount,
+		},
+	})
+	_ = enc.Encode(claudeShimEvent{
+		Event: "item/completed",
+		Payload: map[string]interface{}{
+			"session_id": sessionID,
+			"item": map[string]interface{}{
+				"type": "agentMessage",
+				"text": "Claude completed the turn.",
+			},
+		},
+	})
+	_ = enc.Encode(claudeShimEvent{
+		Event: "turn/completed",
+		Payload: map[string]interface{}{
+			"session_id": sessionID,
+			"status":     "completed",
+			"turn_count": req.TurnCount,
+		},
+	})
 }
 
 func runMockCodexServer() {
@@ -224,6 +280,13 @@ func mockEnv(mode mockMode) []string {
 	}
 }
 
+func mockClaudeEnv() []string {
+	return []string{
+		"SIMPHONY_MOCK_CLAUDE=1",
+		"SIMPHONY_MOCK_CODEX=",
+	}
+}
+
 func TestRunnerSuccessfulSession(t *testing.T) {
 	// Set up environment so that the mock server runs.
 	for _, e := range mockEnv(mockModeNormal) {
@@ -345,6 +408,68 @@ func TestRunnerContinuationUsesSameThread(t *testing.T) {
 	}
 	if sessionStarts != 2 {
 		t.Fatalf("expected 2 turns on same thread, got %d", sessionStarts)
+	}
+}
+
+func TestRunnerClaudeShimSession(t *testing.T) {
+	for _, e := range mockClaudeEnv() {
+		os.Setenv(strings.SplitN(e, "=", 2)[0], strings.SplitN(e, "=", 2)[1])
+	}
+
+	runner := NewRunner("You are working on issue {{ issue.identifier }}: {{ issue.title }}")
+	workspace := &api.Workspace{Path: t.TempDir()}
+	issue := api.Issue{
+		ID:         "issue-claude",
+		Identifier: "TEST-CLAUDE",
+		Title:      "Claude Issue",
+		State:      "In Progress",
+	}
+	cfg := api.AgentRuntimeConfig{
+		Provider:       "claude",
+		Command:        mockCommand(mockModeNormal),
+		Model:          "claude-sonnet",
+		PermissionMode: "acceptEdits",
+		TurnTimeoutMs:  30000,
+		ReadTimeoutMs:  5000,
+	}
+
+	var events []api.AgentEvent
+	mu := sync.Mutex{}
+	eventCallback := func(e api.AgentEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 1, nil, eventCallback)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var hasSessionStarted, hasMessage, hasUsage bool
+	for _, e := range events {
+		switch e.Event {
+		case "session_started":
+			hasSessionStarted = true
+			if e.Payload["session_id"] != "claude-session-123" {
+				t.Fatalf("session_id = %v, want claude-session-123", e.Payload["session_id"])
+			}
+			if e.Payload["provider"] != "claude" {
+				t.Fatalf("provider = %v, want claude", e.Payload["provider"])
+			}
+		case "item/completed":
+			hasMessage = true
+		case "thread/tokenUsage/updated":
+			hasUsage = e.Usage != nil
+		}
+	}
+	if !hasSessionStarted || !hasMessage || !hasUsage {
+		t.Fatalf("events missing session/message/usage: session=%t message=%t usage=%t events=%+v", hasSessionStarted, hasMessage, hasUsage, events)
 	}
 }
 

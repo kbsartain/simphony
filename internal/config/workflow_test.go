@@ -131,6 +131,12 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	if cfg.Codex.Command != "codex app-server" {
 		t.Errorf("codex.command = %q, want default", cfg.Codex.Command)
 	}
+	if cfg.AgentRuntime.Provider != "codex" {
+		t.Errorf("agent_runtime.provider = %q, want codex", cfg.AgentRuntime.Provider)
+	}
+	if cfg.AgentRuntime.Command != "codex app-server" {
+		t.Errorf("agent_runtime.command = %q, want default codex command", cfg.AgentRuntime.Command)
+	}
 	if cfg.Codex.ApprovalPolicy != "auto" {
 		t.Errorf("codex.approval_policy = %q, want auto", cfg.Codex.ApprovalPolicy)
 	}
@@ -161,6 +167,65 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 
 	if cfg.Server != nil {
 		t.Errorf("server = %v, want nil", cfg.Server)
+	}
+}
+
+func TestResolveConfig_ClaudeAgentRuntime(t *testing.T) {
+	t.Setenv("TEST_ANTHROPIC_KEY", "resolved-anthropic-key")
+	t.Setenv("TEST_ANTHROPIC_BASE_URL", "https://anthropic-compatible.example/v1")
+
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "key",
+				"project_slug": "proj",
+			},
+			"agent_runtime": map[string]interface{}{
+				"provider":        "claude",
+				"model":           "claude-sonnet-4",
+				"endpoint_url":    "$TEST_ANTHROPIC_BASE_URL",
+				"api_key":         "$TEST_ANTHROPIC_KEY",
+				"permission_mode": "acceptEdits",
+				"allowed_tools":   []interface{}{"Read", "Edit", "Bash"},
+				"env": map[string]interface{}{
+					"ANTHROPIC_SMALL_FAST_MODEL": "claude-haiku",
+				},
+			},
+			"claude": map[string]interface{}{
+				"command":         "node ./simphony-claude-shim.mjs",
+				"setting_sources": []interface{}{"project", "local"},
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AgentRuntime.Provider != "claude" {
+		t.Fatalf("provider = %q, want claude", cfg.AgentRuntime.Provider)
+	}
+	if cfg.AgentRuntime.Command != "node ./simphony-claude-shim.mjs" {
+		t.Fatalf("command = %q, want claude command", cfg.AgentRuntime.Command)
+	}
+	if cfg.AgentRuntime.EndpointURL != "https://anthropic-compatible.example/v1" {
+		t.Fatalf("endpoint_url = %q, want env-resolved endpoint", cfg.AgentRuntime.EndpointURL)
+	}
+	if cfg.AgentRuntime.APIKey != "resolved-anthropic-key" || !cfg.AgentRuntime.APIKeyConfigured {
+		t.Fatalf("api_key was not resolved/configured")
+	}
+	if cfg.AgentRuntime.PermissionMode != "acceptEdits" {
+		t.Fatalf("permission_mode = %q, want acceptEdits", cfg.AgentRuntime.PermissionMode)
+	}
+	if !slicesEqual(cfg.AgentRuntime.AllowedTools, []string{"Read", "Edit", "Bash"}) {
+		t.Fatalf("allowed_tools = %v, want Read/Edit/Bash", cfg.AgentRuntime.AllowedTools)
+	}
+	if !slicesEqual(cfg.AgentRuntime.SettingSources, []string{"project", "local"}) {
+		t.Fatalf("setting_sources = %v, want project/local", cfg.AgentRuntime.SettingSources)
+	}
+	if cfg.AgentRuntime.Env["ANTHROPIC_SMALL_FAST_MODEL"] != "claude-haiku" {
+		t.Fatalf("env override not preserved: %v", cfg.AgentRuntime.Env)
 	}
 }
 
@@ -634,6 +699,20 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 				},
 				"codex": map[string]interface{}{
 					"skills": "conjit-product-ui",
+				},
+			},
+			wantError: api.ErrWorkflowParseError,
+		},
+		{
+			name: "invalid agent runtime provider",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{
+					"kind":         "linear",
+					"api_key":      "key",
+					"project_slug": "proj",
+				},
+				"agent_runtime": map[string]interface{}{
+					"provider": "unknown",
 				},
 			},
 			wantError: api.ErrWorkflowParseError,
