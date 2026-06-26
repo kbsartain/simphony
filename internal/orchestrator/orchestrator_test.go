@@ -522,12 +522,19 @@ func TestOrchestrator_PreRunFailureKeepsClaimDuringBackoff(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	time.Sleep(100 * time.Millisecond)
-
-	orch.mu.Lock()
-	_, claimed := orch.state.Claimed["1"]
-	retryCount := len(orch.state.RetryAttempts)
-	orch.mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	var claimed bool
+	var retryCount int
+	for time.Now().Before(deadline) {
+		orch.mu.Lock()
+		_, claimed = orch.state.Claimed["1"]
+		retryCount = len(orch.state.RetryAttempts)
+		orch.mu.Unlock()
+		if claimed && retryCount == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	if !claimed {
 		t.Fatal("expected claim to remain while pre-run failure is in backoff")
