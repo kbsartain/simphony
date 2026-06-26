@@ -5,9 +5,17 @@ import {
   RetrySnapshot,
   RunningSnapshot,
   SettingsResponse,
+  SettingsValidationResponse,
   StateSnapshot,
 } from './api/types'
-import { fetchIssueDetail, fetchSettings, fetchState, requestRefresh as requestRefreshAPI, saveSettings } from './api/client'
+import {
+  fetchIssueDetail,
+  fetchSettings,
+  fetchState,
+  requestRefresh as requestRefreshAPI,
+  saveSettings,
+  validateTrackerSettings,
+} from './api/client'
 import './App.css'
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
@@ -191,6 +199,8 @@ function App() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
+  const [validatingTracker, setValidatingTracker] = useState(false)
+  const [trackerValidation, setTrackerValidation] = useState<SettingsValidationResponse | null>(null)
   const [refreshResult, setRefreshResult] = useState<RefreshResponse | null>(null)
   const [filter, setFilter] = useState<QueueFilter>('all')
   const [query, setQuery] = useState('')
@@ -221,6 +231,7 @@ function App() {
     setSettings(data)
     setSettingsDraft(JSON.stringify(data.config || {}, null, 2))
     setPromptDraft(data.prompt_template || '')
+    setTrackerValidation(null)
     setError(null)
   }, [])
 
@@ -268,12 +279,33 @@ function App() {
       setSettings(data)
       setSettingsDraft(JSON.stringify(data.config || {}, null, 2))
       setPromptDraft(data.prompt_template || '')
+      setTrackerValidation(null)
       setNotice('Settings saved')
       setError(null)
     } catch (err) {
       setError(normalizeError(err))
     } finally {
       setSavingSettings(false)
+    }
+  }
+
+  const validateLinearSettings = async () => {
+    setValidatingTracker(true)
+    setTrackerValidation(null)
+    setNotice(null)
+    try {
+      const config = JSON.parse(settingsDraft || '{}') as Record<string, unknown>
+      if (!isPlainObject(config)) {
+        throw new Error('Workflow config must be a JSON object.')
+      }
+      const result = await validateTrackerSettings({ config, prompt_template: promptDraft })
+      setTrackerValidation(result)
+      setNotice('Linear settings validated')
+      setError(null)
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setValidatingTracker(false)
     }
   }
 
@@ -552,10 +584,13 @@ function App() {
           settingsDraft={settingsDraft}
           promptDraft={promptDraft}
           saving={savingSettings}
+          validatingTracker={validatingTracker}
+          trackerValidation={trackerValidation}
           onSettingsDraftChange={setSettingsDraft}
           onPromptDraftChange={setPromptDraft}
           onReload={() => loadSettings().catch(err => setError(normalizeError(err)))}
           onSave={saveWorkflowSettings}
+          onValidateTracker={validateLinearSettings}
         />
       )}
     </main>
@@ -664,10 +699,13 @@ function SettingsView(props: {
   settingsDraft: string
   promptDraft: string
   saving: boolean
+  validatingTracker: boolean
+  trackerValidation: SettingsValidationResponse | null
   onSettingsDraftChange: (value: string) => void
   onPromptDraftChange: (value: string) => void
   onReload: () => void
   onSave: () => void
+  onValidateTracker: () => void
 }) {
   if (!props.settings) {
     return (
@@ -687,7 +725,20 @@ function SettingsView(props: {
   const selectedModelID = draftConfig ? getSelectedModelID(draftConfig) : ''
   const globalModels = modelOptionsForProvider(selectedProviderID, draftConfig ? getCodexStringField(draftConfig, 'model') : '')
   const resolvedRuntime = props.settings.resolved_config.agent_runtime || props.settings.resolved_config.codex
+  const trackerValidation = props.trackerValidation
 
+  const changeTrackerField = (field: 'endpoint' | 'api_key' | 'project_slug' | 'working_state', value: string) => {
+    const config = draftConfig || {}
+    props.onSettingsDraftChange(JSON.stringify(applyTrackerStringField(config, field, value), null, 2))
+  }
+  const changeTrackerList = (field: 'active_states' | 'completion_states' | 'terminal_states', value: string) => {
+    const config = draftConfig || {}
+    props.onSettingsDraftChange(JSON.stringify(applyTrackerListField(config, field, value), null, 2))
+  }
+  const changePipelineField = (field: 'review_state' | 'review_resolution_state' | 'merge_state' | 'done_state', value: string) => {
+    const config = draftConfig || {}
+    props.onSettingsDraftChange(JSON.stringify(applyPipelineStringField(config, field, value), null, 2))
+  }
   const changeProvider = (providerID: string) => {
     const config = draftConfig || {}
     const nextConfig = applyProviderSelection(config, providerID)
@@ -732,6 +783,138 @@ function SettingsView(props: {
           <span>{props.settings.workflow_path}</span>
           {props.settings.validation_error && <strong>{props.settings.validation_error}</strong>}
         </div>
+        <div className="settings-section-heading">
+          <div>
+            <p className="eyebrow">Linear</p>
+            <h3>Project and workflow</h3>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={props.onValidateTracker}
+            disabled={!draftConfig || props.saving || props.validatingTracker}
+          >
+            {props.validatingTracker ? 'Testing' : 'Test connection'}
+          </button>
+        </div>
+        <div className="settings-grid">
+          <label className="form-field">
+            <span>Project slug</span>
+            <input
+              value={draftConfig ? getTrackerStringField(draftConfig, 'project_slug') : ''}
+              onChange={event => changeTrackerField('project_slug', event.target.value)}
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>API key</span>
+            <input
+              value={draftConfig ? getTrackerStringField(draftConfig, 'api_key') : ''}
+              onChange={event => changeTrackerField('api_key', event.target.value)}
+              placeholder="$LINEAR_API_KEY"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Endpoint</span>
+            <input
+              value={draftConfig ? getTrackerStringField(draftConfig, 'endpoint') : ''}
+              onChange={event => changeTrackerField('endpoint', event.target.value)}
+              placeholder="https://api.linear.app/graphql"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Working state</span>
+            <input
+              value={draftConfig ? getTrackerStringField(draftConfig, 'working_state') : ''}
+              onChange={event => changeTrackerField('working_state', event.target.value)}
+              placeholder="In Progress"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+        </div>
+        <div className="settings-grid three-up">
+          <label className="form-field">
+            <span>Active states</span>
+            <textarea
+              className="list-textarea"
+              value={draftConfig ? stringListToText(getTrackerStringList(draftConfig, 'active_states')) : ''}
+              onChange={event => changeTrackerList('active_states', event.target.value)}
+              placeholder={'Todo\nIn Progress\nApproved'}
+              spellCheck={false}
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Completion states</span>
+            <textarea
+              className="list-textarea"
+              value={draftConfig ? stringListToText(getTrackerStringList(draftConfig, 'completion_states')) : ''}
+              onChange={event => changeTrackerList('completion_states', event.target.value)}
+              placeholder={'In Review\nDone'}
+              spellCheck={false}
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Terminal states</span>
+            <textarea
+              className="list-textarea"
+              value={draftConfig ? stringListToText(getTrackerStringList(draftConfig, 'terminal_states')) : ''}
+              onChange={event => changeTrackerList('terminal_states', event.target.value)}
+              placeholder={'Done\nCanceled'}
+              spellCheck={false}
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+        </div>
+        <div className="settings-grid four-up">
+          <label className="form-field">
+            <span>Review</span>
+            <input
+              value={draftConfig ? getPipelineStringField(draftConfig, 'review_state') : ''}
+              onChange={event => changePipelineField('review_state', event.target.value)}
+              placeholder="In Review"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Review resolution</span>
+            <input
+              value={draftConfig ? getPipelineStringField(draftConfig, 'review_resolution_state') : ''}
+              onChange={event => changePipelineField('review_resolution_state', event.target.value)}
+              placeholder="Review Resolution"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Merge</span>
+            <input
+              value={draftConfig ? getPipelineStringField(draftConfig, 'merge_state') : ''}
+              onChange={event => changePipelineField('merge_state', event.target.value)}
+              placeholder="Approved"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Done</span>
+            <input
+              value={draftConfig ? getPipelineStringField(draftConfig, 'done_state') : ''}
+              onChange={event => changePipelineField('done_state', event.target.value)}
+              placeholder="Done"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+        </div>
+        {trackerValidation && (
+          <div className="validation-result" role="status">
+            <strong>{trackerValidation.message || 'Linear settings validated'}</strong>
+            <span>
+              {trackerValidation.project_slug || 'Project'} · {trackerValidation.candidate_count.toLocaleString()} candidate issues
+            </span>
+          </div>
+        )}
         <div className="settings-field">
           <span>Model</span>
           <div className="settings-control-row">
@@ -911,6 +1094,71 @@ function parseSettingsConfig(value: string): Record<string, unknown> | null {
   } catch {
     return null
   }
+}
+
+function getTrackerStringField(config: Record<string, unknown>, field: 'endpoint' | 'api_key' | 'project_slug' | 'working_state') {
+  const tracker = isPlainObject(config.tracker) ? config.tracker : {}
+  return typeof tracker[field] === 'string' ? tracker[field] : ''
+}
+
+function getTrackerStringList(config: Record<string, unknown>, field: 'active_states' | 'completion_states' | 'terminal_states') {
+  const tracker = isPlainObject(config.tracker) ? config.tracker : {}
+  return normalizeStringList(tracker[field])
+}
+
+function getPipelineStringField(
+  config: Record<string, unknown>,
+  field: 'review_state' | 'review_resolution_state' | 'merge_state' | 'done_state',
+) {
+  const pipeline = isPlainObject(config.pipeline) ? config.pipeline : {}
+  return typeof pipeline[field] === 'string' ? pipeline[field] : ''
+}
+
+function applyTrackerStringField(
+  config: Record<string, unknown>,
+  field: 'endpoint' | 'api_key' | 'project_slug' | 'working_state',
+  value: string,
+) {
+  const nextConfig = { ...config }
+  const tracker = isPlainObject(nextConfig.tracker) ? { ...nextConfig.tracker } : {}
+  const trimmedValue = value.trim()
+  if (trimmedValue === '') {
+    delete tracker[field]
+  } else {
+    tracker[field] = trimmedValue
+  }
+  nextConfig.tracker = tracker
+  return nextConfig
+}
+
+function applyTrackerListField(config: Record<string, unknown>, field: 'active_states' | 'completion_states' | 'terminal_states', value: string) {
+  const nextConfig = { ...config }
+  const tracker = isPlainObject(nextConfig.tracker) ? { ...nextConfig.tracker } : {}
+  const values = parseStringList(value)
+  if (values.length === 0) {
+    delete tracker[field]
+  } else {
+    tracker[field] = values
+  }
+  nextConfig.tracker = tracker
+  return nextConfig
+}
+
+function applyPipelineStringField(
+  config: Record<string, unknown>,
+  field: 'review_state' | 'review_resolution_state' | 'merge_state' | 'done_state',
+  value: string,
+) {
+  const nextConfig = { ...config }
+  const pipeline = isPlainObject(nextConfig.pipeline) ? { ...nextConfig.pipeline } : {}
+  const trimmedValue = value.trim()
+  if (trimmedValue === '') {
+    delete pipeline[field]
+  } else {
+    pipeline[field] = trimmedValue
+  }
+  nextConfig.pipeline = pipeline
+  return nextConfig
 }
 
 function getSelectedProviderID(config: Record<string, unknown>) {
@@ -1096,6 +1344,24 @@ function parseSkillList(value: string) {
       return path ? { name: name.trim(), path } : name.trim()
     })
     .filter(item => (typeof item === 'string' ? item.length > 0 : item.name.length > 0 || item.path.length > 0))
+}
+
+function parseStringList(value: string) {
+  return value
+    .split(/\r?\n|,/)
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function normalizeStringList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.map(item => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+}
+
+function stringListToText(values: string[]) {
+  return values.join('\n')
 }
 
 function normalizeSkillRefs(value: unknown): Array<string | { name: string; path?: string }> {

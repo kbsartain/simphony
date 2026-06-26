@@ -154,6 +154,40 @@ Queues an immediate orchestrator tick. `GET` is also accepted for convenience.
 
 If a refresh is already pending, `queued` is `false` and `coalesced` is `true`.
 
+## Get Settings
+
+```http
+GET /api/v1/settings
+```
+
+Returns the editable `WORKFLOW.md` front matter, the resolved runtime configuration, and the prompt template. Literal secret values are masked as `********`; environment references such as `$LINEAR_API_KEY` are returned as references.
+
+## Update Settings
+
+```http
+PUT /api/v1/settings
+```
+
+Validates, applies, and saves updated workflow settings. If a masked secret value is submitted unchanged, Simphony preserves the current value from `WORKFLOW.md`.
+
+## Validate Linear Settings
+
+```http
+POST /api/v1/settings/validate-tracker
+```
+
+Validates the submitted tracker settings against Linear without saving them. The server resolves the workflow config, creates a Linear client, and fetches candidate issues for the configured project and active states.
+
+```json
+{
+  "ok": true,
+  "project_slug": "your-linear-project-slug",
+  "active_states": ["Todo", "In Progress", "Approved"],
+  "candidate_count": 3,
+  "message": "Linear settings validated"
+}
+```
+
 ## Errors
 
 Errors use a consistent wrapper:

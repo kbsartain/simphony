@@ -6,6 +6,7 @@ import {
   RunningSnapshot,
   SettingsResponse,
   SettingsUpdateRequest,
+  SettingsValidationResponse,
   StateSnapshot,
 } from './types'
 
@@ -28,6 +29,14 @@ export async function fetchSettings(): Promise<SettingsResponse> {
 export async function saveSettings(request: SettingsUpdateRequest): Promise<SettingsResponse> {
   return fetchJSON<SettingsResponse>('/api/v1/settings', {
     method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+}
+
+export async function validateTrackerSettings(request: SettingsUpdateRequest): Promise<SettingsValidationResponse> {
+  return fetchJSON<SettingsValidationResponse>('/api/v1/settings/validate-tracker', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   })

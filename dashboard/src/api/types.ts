@@ -232,3 +232,11 @@ export interface SettingsUpdateRequest {
   config: Record<string, unknown>;
   prompt_template?: string;
 }
+
+export interface SettingsValidationResponse {
+  ok: boolean;
+  project_slug?: string;
+  active_states?: string[];
+  candidate_count: number;
+  message?: string;
+}

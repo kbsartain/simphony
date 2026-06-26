@@ -438,6 +438,105 @@ Prompt body
 	}
 }
 
+func TestSettingsGetMasksLiteralEditableSecrets(t *testing.T) {
+	workflowPath := writeWorkflowForSettingsTest(t, `---
+tracker:
+  kind: linear
+  api_key: literal-linear-secret
+  project_slug: proj
+agent_runtime:
+  provider: codex
+  api_key: literal-agent-secret
+  auth_token: literal-agent-token
+---
+
+Prompt body
+`)
+
+	srv := NewWithSettings(&fakeOrchestrator{}, 8080, workflowPath, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings", nil)
+	rec := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got api.SettingsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	trackerConfig := got.Config["tracker"].(map[string]interface{})
+	if trackerConfig["api_key"] != settingsSecretMask {
+		t.Fatalf("tracker api_key = %v, want mask", trackerConfig["api_key"])
+	}
+	runtimeConfig := got.Config["agent_runtime"].(map[string]interface{})
+	if runtimeConfig["api_key"] != settingsSecretMask || runtimeConfig["auth_token"] != settingsSecretMask {
+		t.Fatalf("runtime secrets = %v, want masks", runtimeConfig)
+	}
+	if strings.Contains(rec.Body.String(), "literal-linear-secret") || strings.Contains(rec.Body.String(), "literal-agent-secret") {
+		t.Fatal("response leaked literal secret")
+	}
+}
+
+func TestSettingsPutPreservesMaskedSecrets(t *testing.T) {
+	workflowPath := writeWorkflowForSettingsTest(t, `---
+tracker:
+  kind: linear
+  api_key: literal-linear-secret
+  project_slug: old-proj
+agent_runtime:
+  provider: codex
+  api_key: literal-agent-secret
+---
+
+Prompt body
+`)
+
+	srv := NewWithSettings(&fakeOrchestrator{}, 8080, workflowPath, nil)
+	reqPayload := api.SettingsUpdateRequest{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      settingsSecretMask,
+				"project_slug": "new-proj",
+			},
+			"agent_runtime": map[string]interface{}{
+				"provider": "codex",
+				"api_key":  settingsSecretMask,
+			},
+		},
+	}
+	body, err := json.Marshal(reqPayload)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	saved, err := config.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("load saved workflow: %v", err)
+	}
+	trackerConfig := saved.Config["tracker"].(map[string]interface{})
+	if trackerConfig["api_key"] != "literal-linear-secret" || trackerConfig["project_slug"] != "new-proj" {
+		t.Fatalf("saved tracker = %v, want preserved secret and new project", trackerConfig)
+	}
+	runtimeConfig := saved.Config["agent_runtime"].(map[string]interface{})
+	if runtimeConfig["api_key"] != "literal-agent-secret" {
+		t.Fatalf("saved agent_runtime = %v, want preserved secret", runtimeConfig)
+	}
+	if strings.Contains(rec.Body.String(), "literal-linear-secret") || strings.Contains(rec.Body.String(), "literal-agent-secret") {
+		t.Fatal("response leaked literal secret")
+	}
+}
+
 func TestSettingsPutValidatesBeforeSaving(t *testing.T) {
 	workflowPath := writeWorkflowForSettingsTest(t, `---
 tracker:

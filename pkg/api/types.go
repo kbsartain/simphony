@@ -385,3 +385,12 @@ type SettingsUpdateRequest struct {
 	Config         map[string]interface{} `json:"config"`
 	PromptTemplate *string                `json:"prompt_template"`
 }
+
+// SettingsValidationResponse reports the result of validating editable settings.
+type SettingsValidationResponse struct {
+	OK             bool     `json:"ok"`
+	ProjectSlug    string   `json:"project_slug,omitempty"`
+	ActiveStates   []string `json:"active_states,omitempty"`
+	CandidateCount int      `json:"candidate_count"`
+	Message        string   `json:"message,omitempty"`
+}

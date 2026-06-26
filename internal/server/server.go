@@ -15,8 +15,11 @@ import (
 	"time"
 
 	"github.com/kbsartain/simphony/internal/config"
+	"github.com/kbsartain/simphony/internal/tracker"
 	"github.com/kbsartain/simphony/pkg/api"
 )
+
+const settingsSecretMask = "********"
 
 // Orchestrator is the subset of orchestrator.Orchestrator methods used by the HTTP server.
 type Orchestrator interface {
@@ -71,6 +74,7 @@ func NewWithSettings(orch Orchestrator, port int, workflowPath string, applier S
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/state", s.withCORS(s.handleState))
 	s.mux.HandleFunc("/api/v1/refresh", s.withCORS(s.handleRefresh))
+	s.mux.HandleFunc("/api/v1/settings/validate-tracker", s.withCORS(s.handleValidateTrackerSettings))
 	s.mux.HandleFunc("/api/v1/settings", s.withCORS(s.handleSettings))
 	s.mux.HandleFunc("/api/v1/", s.withCORS(s.handleAPIv1)) // catch-all for /api/v1/{issue_identifier}
 	s.mux.HandleFunc("/api/", s.withCORS(s.handleAPINotFound))
@@ -226,7 +230,7 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter) {
 
 	s.writeJSON(w, http.StatusOK, api.SettingsResponse{
 		WorkflowPath:    s.workflowPath,
-		Config:          def.Config,
+		Config:          sanitizeSettingsConfigForResponse(def.Config),
 		ResolvedConfig:  settingsConfigForResponse(cfg),
 		PromptTemplate:  def.PromptTemplate,
 		ValidationError: validationError,
@@ -264,7 +268,7 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		promptTemplate = *req.PromptTemplate
 	}
 	def := &api.WorkflowDefinition{
-		Config:         req.Config,
+		Config:         mergeMaskedSecrets(req.Config, current.Config),
 		PromptTemplate: promptTemplate,
 	}
 	cfg, err := config.ResolveConfig(def, s.workflowDir)
@@ -297,9 +301,89 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 
 	s.writeJSON(w, http.StatusOK, api.SettingsResponse{
 		WorkflowPath:   s.workflowPath,
-		Config:         def.Config,
+		Config:         sanitizeSettingsConfigForResponse(def.Config),
 		ResolvedConfig: settingsConfigForResponse(cfg),
 		PromptTemplate: def.PromptTemplate,
+	})
+}
+
+func (s *Server) handleValidateTrackerSettings(w http.ResponseWriter, r *http.Request) {
+	if s.workflowPath == "" {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "not_found", Message: "Settings API is not configured"},
+		})
+		return
+	}
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+
+	var req api.SettingsUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "bad_request", Message: fmt.Sprintf("Invalid JSON: %v", err)},
+		})
+		return
+	}
+	if req.Config == nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "bad_request", Message: "config is required"},
+		})
+		return
+	}
+
+	s.settingsMu.Lock()
+	current, err := config.LoadWorkflow(s.workflowPath)
+	s.settingsMu.Unlock()
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, api.APIErrorResponse{
+			Error: api.APIError{Code: "settings_load_error", Message: err.Error()},
+		})
+		return
+	}
+
+	def := &api.WorkflowDefinition{
+		Config:         mergeMaskedSecrets(req.Config, current.Config),
+		PromptTemplate: current.PromptTemplate,
+	}
+	if req.PromptTemplate != nil {
+		def.PromptTemplate = *req.PromptTemplate
+	}
+	cfg, err := config.ResolveConfig(def, s.workflowDir)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "settings_validation_error", Message: err.Error()},
+		})
+		return
+	}
+
+	client, err := tracker.NewLinearClient(cfg.Tracker)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "settings_validation_error", Message: err.Error()},
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	issues, err := client.FetchCandidateIssues(ctx)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadGateway, api.APIErrorResponse{
+			Error: api.APIError{Code: "linear_validation_error", Message: err.Error()},
+		})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, api.SettingsValidationResponse{
+		OK:             true,
+		ProjectSlug:    cfg.Tracker.ProjectSlug,
+		ActiveStates:   cfg.Tracker.ActiveStates,
+		CandidateCount: len(issues),
+		Message:        "Linear settings validated",
 	})
 }
 
@@ -309,9 +393,204 @@ func settingsConfigForResponse(cfg *api.WorkflowConfig) api.WorkflowConfig {
 	}
 	safe := *cfg
 	if safe.Tracker.APIKey != "" {
-		safe.Tracker.APIKey = "********"
+		safe.Tracker.APIKey = settingsSecretMask
 	}
+	safe.AgentRuntime = runtimeConfigForResponse(safe.AgentRuntime)
+	safe.Codex = runtimeConfigForResponse(safe.Codex)
+	safe.Claude = runtimeConfigForResponse(safe.Claude)
 	return safe
+}
+
+func runtimeConfigForResponse(runtime api.AgentRuntimeConfig) api.AgentRuntimeConfig {
+	runtime.APIKey = ""
+	runtime.AuthToken = ""
+	if len(runtime.Env) > 0 {
+		runtime.Env = maskEnvMap(runtime.Env)
+	}
+	return runtime
+}
+
+func sanitizeSettingsConfigForResponse(configMap map[string]interface{}) map[string]interface{} {
+	cloned := cloneConfigMap(configMap)
+	maskNestedString(cloned, []string{"tracker", "api_key"})
+	for _, section := range []string{"agent_runtime", "codex", "claude"} {
+		maskNestedString(cloned, []string{section, "api_key"})
+		maskNestedString(cloned, []string{section, "auth_token"})
+		maskNestedEnv(cloned, []string{section, "env"})
+	}
+	return cloned
+}
+
+func mergeMaskedSecrets(next map[string]interface{}, current map[string]interface{}) map[string]interface{} {
+	merged := cloneConfigMap(next)
+	for _, path := range [][]string{
+		{"tracker", "api_key"},
+		{"agent_runtime", "api_key"},
+		{"agent_runtime", "auth_token"},
+		{"codex", "api_key"},
+		{"codex", "auth_token"},
+		{"claude", "api_key"},
+		{"claude", "auth_token"},
+	} {
+		if nestedString(merged, path) == settingsSecretMask {
+			if currentValue := nestedString(current, path); currentValue != "" {
+				setNestedString(merged, path, currentValue)
+			}
+		}
+	}
+	for _, path := range [][]string{
+		{"agent_runtime", "env"},
+		{"codex", "env"},
+		{"claude", "env"},
+	} {
+		mergeMaskedEnvValues(merged, current, path)
+	}
+	return merged
+}
+
+func mergeMaskedEnvValues(next map[string]interface{}, current map[string]interface{}, path []string) {
+	nextEnv := nestedMap(next, path)
+	currentEnv := nestedMap(current, path)
+	if nextEnv == nil || currentEnv == nil {
+		return
+	}
+	for key, nextValue := range nextEnv {
+		if nextValue != settingsSecretMask {
+			continue
+		}
+		if currentValue, ok := currentEnv[key].(string); ok && currentValue != "" {
+			nextEnv[key] = currentValue
+		}
+	}
+}
+
+func maskNestedEnv(configMap map[string]interface{}, path []string) {
+	if len(path) == 0 || configMap == nil {
+		return
+	}
+	current := configMap
+	for _, key := range path[:len(path)-1] {
+		next, ok := current[key].(map[string]interface{})
+		if !ok {
+			return
+		}
+		current = next
+	}
+	envMap, ok := current[path[len(path)-1]].(map[string]interface{})
+	if !ok {
+		return
+	}
+	for key, rawValue := range envMap {
+		value, ok := rawValue.(string)
+		if !ok {
+			continue
+		}
+		if isSecretEnvName(key) && strings.TrimSpace(value) != "" && !strings.HasPrefix(strings.TrimSpace(value), "$") {
+			envMap[key] = settingsSecretMask
+		}
+	}
+}
+
+func maskEnvMap(env map[string]string) map[string]string {
+	masked := make(map[string]string, len(env))
+	for key, value := range env {
+		if isSecretEnvName(key) && strings.TrimSpace(value) != "" {
+			masked[key] = settingsSecretMask
+			continue
+		}
+		masked[key] = value
+	}
+	return masked
+}
+
+func isSecretEnvName(key string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(key))
+	for _, marker := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneConfigMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return map[string]interface{}{}
+	}
+	dst := make(map[string]interface{}, len(src))
+	for key, value := range src {
+		dst[key] = cloneConfigValue(value)
+	}
+	return dst
+}
+
+func cloneConfigValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return cloneConfigMap(v)
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = cloneConfigValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func maskNestedString(configMap map[string]interface{}, path []string) {
+	value := strings.TrimSpace(nestedString(configMap, path))
+	if value != "" && !strings.HasPrefix(value, "$") {
+		setNestedString(configMap, path, settingsSecretMask)
+	}
+}
+
+func nestedString(configMap map[string]interface{}, path []string) string {
+	if len(path) == 0 || configMap == nil {
+		return ""
+	}
+	current := configMap
+	for _, key := range path[:len(path)-1] {
+		next, ok := current[key].(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		current = next
+	}
+	value, _ := current[path[len(path)-1]].(string)
+	return value
+}
+
+func nestedMap(configMap map[string]interface{}, path []string) map[string]interface{} {
+	if len(path) == 0 || configMap == nil {
+		return nil
+	}
+	current := configMap
+	for _, key := range path {
+		next, ok := current[key].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		current = next
+	}
+	return current
+}
+
+func setNestedString(configMap map[string]interface{}, path []string, value string) {
+	if len(path) == 0 {
+		return
+	}
+	current := configMap
+	for _, key := range path[:len(path)-1] {
+		next, ok := current[key].(map[string]interface{})
+		if !ok {
+			next = map[string]interface{}{}
+			current[key] = next
+		}
+		current = next
+	}
+	current[path[len(path)-1]] = value
 }
 
 func (s *Server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
