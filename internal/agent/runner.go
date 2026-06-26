@@ -499,6 +499,8 @@ func (r *Runner) turnPrompt(issue api.Issue, attempt *int, stage api.PipelineSta
 		switch stage.Kind {
 		case "merge":
 			return mergePrompt(issue, stage.Instructions), nil
+		case "review_resolution":
+			return reviewResolutionPrompt(issue, stage.Instructions), nil
 		case "review":
 			return reviewPrompt(issue, stage.Instructions), nil
 		}
@@ -527,6 +529,22 @@ func reviewPrompt(issue api.Issue, instructions string) string {
 		fmt.Fprintf(&b, "\nDescription:\n%s\n", strings.TrimSpace(*issue.Description))
 	}
 	fmt.Fprint(&b, "\nWork from the current repository state in this workspace. Preserve the implementation intent, but correct defects, security gaps, missing tests, or drift from project conventions before the issue advances.")
+	return b.String()
+}
+
+func reviewResolutionPrompt(issue api.Issue, instructions string) string {
+	var b strings.Builder
+	if strings.TrimSpace(instructions) == "" {
+		instructions = "Resolve formal PR/code-review feedback for this issue. Inspect the pull request, unresolved review comments, review decision, and CI/check results. Fix actionable issues, push updates, reply to review comments when appropriate, and escalate only when policy requires it. End your final response with exactly one directive line: SIMPHONY_REVIEW_DECISION: approved, SIMPHONY_REVIEW_DECISION: retry, or SIMPHONY_REVIEW_DECISION: escalate."
+	}
+	fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(instructions))
+	fmt.Fprintf(&b, "Issue: %s - %s\n", issue.Identifier, issue.Title)
+	fmt.Fprintf(&b, "State: %s\n", issue.State)
+	if issue.Description != nil && strings.TrimSpace(*issue.Description) != "" {
+		fmt.Fprintf(&b, "\nDescription:\n%s\n", strings.TrimSpace(*issue.Description))
+	}
+	fmt.Fprint(&b, "\nWork from the current repository state in this workspace. Prefer the GitHub CLI or configured repository tooling to inspect the active PR and review comments. If all required review and CI conditions are satisfied, use the approved directive. If more review/checks are pending and another autonomous pass should be scheduled, use the retry directive. If policy requires human judgment, use the escalate directive and explain the blocker briefly.")
+	fmt.Fprint(&b, "\n\nEnd your final response with exactly one directive line: SIMPHONY_REVIEW_DECISION: approved, SIMPHONY_REVIEW_DECISION: retry, or SIMPHONY_REVIEW_DECISION: escalate.")
 	return b.String()
 }
 

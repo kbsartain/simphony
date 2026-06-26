@@ -138,6 +138,10 @@ func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.Workfl
 	if err := resolvePipeline(pipelineMap, cfg); err != nil {
 		return nil, err
 	}
+	reviewResolutionMap := getSubMap(def.Config, "review_resolution")
+	if err := resolveReviewResolution(reviewResolutionMap, cfg); err != nil {
+		return nil, err
+	}
 	if err := validateTrackerStateOverlaps(cfg); err != nil {
 		return nil, err
 	}
@@ -360,8 +364,10 @@ func validateTrackerStateOverlaps(cfg *api.WorkflowConfig) error {
 		if containsFold(cfg.Tracker.TerminalStates, activeState) {
 			return fmt.Errorf("%s: tracker.active_states must not overlap tracker.terminal_states: %q", api.ErrWorkflowParseError, activeState)
 		}
-		if containsFold(cfg.Tracker.CompletionStates, activeState) && !strings.EqualFold(strings.TrimSpace(activeState), strings.TrimSpace(cfg.Pipeline.ReviewState)) {
-			return fmt.Errorf("%s: tracker.completion_states must not overlap tracker.active_states except pipeline.review_state: %q", api.ErrWorkflowParseError, activeState)
+		if containsFold(cfg.Tracker.CompletionStates, activeState) &&
+			!strings.EqualFold(strings.TrimSpace(activeState), strings.TrimSpace(cfg.Pipeline.ReviewState)) &&
+			!strings.EqualFold(strings.TrimSpace(activeState), strings.TrimSpace(cfg.Pipeline.ReviewResolutionState)) {
+			return fmt.Errorf("%s: tracker.completion_states must not overlap tracker.active_states except pipeline.review_state or pipeline.review_resolution_state: %q", api.ErrWorkflowParseError, activeState)
 		}
 	}
 	return nil
@@ -371,6 +377,11 @@ func resolvePipeline(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	reviewState := "In Review"
 	if v, ok := getString(m, "review_state"); ok && strings.TrimSpace(v) != "" {
 		reviewState = strings.TrimSpace(v)
+	}
+
+	reviewResolutionState := "Review Resolution"
+	if v, ok := getString(m, "review_resolution_state"); ok && strings.TrimSpace(v) != "" {
+		reviewResolutionState = strings.TrimSpace(v)
 	}
 
 	mergeState := "Approved"
@@ -388,7 +399,7 @@ func resolvePipeline(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		codingStates = appendUniqueStrings(v)
 	} else {
 		for _, state := range cfg.Tracker.ActiveStates {
-			if strings.EqualFold(state, reviewState) || strings.EqualFold(state, mergeState) {
+			if strings.EqualFold(state, reviewState) || strings.EqualFold(state, reviewResolutionState) || strings.EqualFold(state, mergeState) {
 				continue
 			}
 			codingStates = append(codingStates, state)
@@ -400,13 +411,63 @@ func resolvePipeline(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	}
 
 	cfg.Pipeline = api.PipelineConfig{
-		ReviewState:  reviewState,
-		MergeState:   mergeState,
-		DoneState:    doneState,
-		CodingStates: codingStates,
+		ReviewState:           reviewState,
+		ReviewResolutionState: reviewResolutionState,
+		MergeState:            mergeState,
+		DoneState:             doneState,
+		CodingStates:          codingStates,
 	}
 	cfg.Tracker.ActiveStates = appendUniqueStrings(cfg.Tracker.ActiveStates, mergeState)
 	cfg.Tracker.TerminalStates = appendUniqueStrings(cfg.Tracker.TerminalStates, doneState)
+	return nil
+}
+
+func resolveReviewResolution(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	reviewResolution := api.ReviewResolutionConfig{
+		Enabled:                   false,
+		EscalationState:           cfg.Pipeline.ReviewState,
+		MaxAttempts:               3,
+		RequireChecksGreen:        true,
+		RequireCodeReviewApproval: true,
+		UnresolvedCommentPolicy:   "fix_or_explain",
+		EscalateOn: []string{
+			"security_risk",
+			"schema_migration_risk",
+			"destructive_data_change",
+			"conflicting_reviews",
+			"max_attempts_exceeded",
+		},
+	}
+	if v, ok := getBool(m, "enabled"); ok {
+		reviewResolution.Enabled = v
+	}
+	if v, ok := getString(m, "escalation_state"); ok && strings.TrimSpace(v) != "" {
+		reviewResolution.EscalationState = strings.TrimSpace(v)
+	}
+	if v, ok := getInt(m, "max_attempts"); ok {
+		reviewResolution.MaxAttempts = v
+	}
+	if reviewResolution.MaxAttempts <= 0 {
+		return fmt.Errorf("%s: review_resolution.max_attempts must be positive, got %d", api.ErrWorkflowParseError, reviewResolution.MaxAttempts)
+	}
+	if v, ok := getBool(m, "require_checks_green"); ok {
+		reviewResolution.RequireChecksGreen = v
+	}
+	if v, ok := getBool(m, "require_code_review_approval"); ok {
+		reviewResolution.RequireCodeReviewApproval = v
+	}
+	if v, ok := getString(m, "unresolved_comment_policy"); ok && strings.TrimSpace(v) != "" {
+		reviewResolution.UnresolvedCommentPolicy = strings.TrimSpace(v)
+	}
+	if v, ok := getStringSlice(m, "escalate_on"); ok && len(v) > 0 {
+		reviewResolution.EscalateOn = appendUniqueStrings(v)
+	}
+
+	cfg.ReviewResolution = reviewResolution
+	if reviewResolution.Enabled {
+		cfg.Tracker.ActiveStates = appendUniqueStrings(cfg.Tracker.ActiveStates, cfg.Pipeline.ReviewResolutionState)
+		cfg.Tracker.CompletionStates = appendUniqueStrings([]string{cfg.Pipeline.ReviewResolutionState}, cfg.Tracker.CompletionStates...)
+	}
 	return nil
 }
 

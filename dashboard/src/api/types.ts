@@ -119,9 +119,20 @@ export interface TrackerConfig {
 
 export interface PipelineConfig {
   review_state: string;
+  review_resolution_state?: string;
   merge_state: string;
   done_state: string;
   coding_states: string[];
+}
+
+export interface ReviewResolutionConfig {
+  enabled: boolean;
+  escalation_state?: string;
+  max_attempts: number;
+  require_checks_green: boolean;
+  require_code_review_approval: boolean;
+  unresolved_comment_policy: string;
+  escalate_on: string[];
 }
 
 export interface PollingConfig {
@@ -186,6 +197,7 @@ export interface ServerConfig {
 export interface WorkflowConfig {
   tracker: TrackerConfig;
   pipeline: PipelineConfig;
+  review_resolution: ReviewResolutionConfig;
   polling: PollingConfig;
   workspace: WorkspaceConfig;
   hooks: HooksConfig;

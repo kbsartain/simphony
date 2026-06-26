@@ -774,7 +774,7 @@ h3 {
 
 .settings-control-row {
   display: grid;
-  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  grid-template-columns: minmax(160px, 220px) minmax(220px, 320px) minmax(0, 1fr);
   gap: 12px;
   align-items: center;
 }

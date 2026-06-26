@@ -33,14 +33,15 @@ type WorkflowDefinition struct {
 
 // WorkflowConfig holds typed runtime values derived from WorkflowDefinition.Config.
 type WorkflowConfig struct {
-	Tracker   TrackerConfig   `json:"tracker"`
-	Pipeline  PipelineConfig  `json:"pipeline"`
-	Polling   PollingConfig   `json:"polling"`
-	Workspace WorkspaceConfig `json:"workspace"`
-	Hooks     HooksConfig     `json:"hooks"`
-	Agent     AgentConfig     `json:"agent"`
-	Codex     CodexConfig     `json:"codex"`
-	Server    *ServerConfig   `json:"server,omitempty"`
+	Tracker          TrackerConfig          `json:"tracker"`
+	Pipeline         PipelineConfig         `json:"pipeline"`
+	ReviewResolution ReviewResolutionConfig `json:"review_resolution"`
+	Polling          PollingConfig          `json:"polling"`
+	Workspace        WorkspaceConfig        `json:"workspace"`
+	Hooks            HooksConfig            `json:"hooks"`
+	Agent            AgentConfig            `json:"agent"`
+	Codex            CodexConfig            `json:"codex"`
+	Server           *ServerConfig          `json:"server,omitempty"`
 }
 
 // TrackerConfig configures the issue tracker integration.
@@ -57,10 +58,22 @@ type TrackerConfig struct {
 
 // PipelineConfig configures the issue states used for coding, review, merge, and completion.
 type PipelineConfig struct {
-	ReviewState  string   `json:"review_state"`
-	MergeState   string   `json:"merge_state"`
-	DoneState    string   `json:"done_state"`
-	CodingStates []string `json:"coding_states"`
+	ReviewState           string   `json:"review_state"`
+	ReviewResolutionState string   `json:"review_resolution_state,omitempty"`
+	MergeState            string   `json:"merge_state"`
+	DoneState             string   `json:"done_state"`
+	CodingStates          []string `json:"coding_states"`
+}
+
+// ReviewResolutionConfig controls the optional autonomous PR review-resolution stage.
+type ReviewResolutionConfig struct {
+	Enabled                   bool     `json:"enabled"`
+	EscalationState           string   `json:"escalation_state,omitempty"`
+	MaxAttempts               int      `json:"max_attempts"`
+	RequireChecksGreen        bool     `json:"require_checks_green"`
+	RequireCodeReviewApproval bool     `json:"require_code_review_approval"`
+	UnresolvedCommentPolicy   string   `json:"unresolved_comment_policy"`
+	EscalateOn                []string `json:"escalate_on"`
 }
 
 // PipelineStage describes the kind of work the agent should perform for a dispatched issue.

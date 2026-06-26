@@ -50,6 +50,7 @@ See [Linear setup](linear.md) for project slug selection, issue filtering, and b
 ```yaml
 pipeline:
   review_state: In Review
+  review_resolution_state: Review Resolution
   merge_state: Approved
   done_state: Done
   coding_states:
@@ -57,9 +58,37 @@ pipeline:
     - In Progress
 ```
 
-Successful coding-stage runs move to `review_state`. Issues moved to `merge_state` are dispatched with merge-focused instructions, and successful merge-stage runs move to `done_state`.
+Successful coding-stage runs move to `review_state`. When autonomous review resolution is enabled, successful review-stage runs move to `review_resolution_state`; otherwise they move directly to `merge_state`. Issues moved to `merge_state` are dispatched with merge-focused instructions, and successful merge-stage runs move to `done_state`.
 
-If `coding_states` is omitted, Simphony uses the tracker active states except the review and merge states.
+If `coding_states` is omitted, Simphony uses the tracker active states except the review, review-resolution, and merge states.
+
+## Review Resolution
+
+```yaml
+review_resolution:
+  enabled: true
+  escalation_state: In Review
+  max_attempts: 3
+  require_checks_green: true
+  require_code_review_approval: true
+  unresolved_comment_policy: fix_or_explain
+  escalate_on:
+    - security_risk
+    - schema_migration_risk
+    - destructive_data_change
+    - conflicting_reviews
+    - max_attempts_exceeded
+```
+
+`review_resolution` enables an autonomous post-review stage for formal PR/code-review feedback. Simphony dispatches issues in `pipeline.review_resolution_state` with a review-resolution prompt that tells the agent to inspect the PR, unresolved comments, review decision, and CI/check results using the repository's configured GitHub tooling, then fix, respond, retry, or escalate.
+
+The review-resolution agent must end with one of these directive lines:
+
+- `SIMPHONY_REVIEW_DECISION: approved` moves the issue to `pipeline.merge_state`.
+- `SIMPHONY_REVIEW_DECISION: retry` schedules another autonomous pass, capped by `max_attempts`.
+- `SIMPHONY_REVIEW_DECISION: escalate` moves the issue to `escalation_state` and posts a Linear comment.
+
+Use `codex.stage_overrides.review_resolution` to select a high-reasoning model and GitHub/code-review skills for this stage.
 
 ## Polling
 
@@ -137,6 +166,12 @@ codex:
       skills:
         - code-review
         - security-review
+    review_resolution:
+      model: gpt-5.5
+      reasoning_effort: xhigh
+      skills:
+        - github:gh-address-comments
+        - github:gh-fix-ci
     merge:
       reasoning_effort: high
   approval_policy: auto
@@ -153,7 +188,7 @@ The runner appends `--listen stdio://` when it is not already present. The subpr
 
 `reasoning_effort` is optional and is passed to Codex as the per-turn `effort` override. Accepted values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`; `x-high` and `x_high` are normalized to `xhigh`.
 
-`stage_overrides` can override `model`, `model_provider`, and `reasoning_effort` for a pipeline stage. Known stage keys are `coding`, `review`, and `merge`; unknown stage keys are accepted for forward compatibility and ignored until a matching stage exists.
+`stage_overrides` can override `model`, `model_provider`, and `reasoning_effort` for a pipeline stage. Known stage keys are `coding`, `review`, `review_resolution`, and `merge`; unknown stage keys are accepted for forward compatibility and ignored until a matching stage exists.
 
 `skills` selects default Codex skills for every stage. `stage_overrides.<stage>.skills` adds stage-specific skills. Skill entries can be simple names, which Simphony resolves through Codex `skills/list` at runtime, or objects with `name` and `path` when you want to pin a specific local `SKILL.md`. Resolved skills are sent as Codex skill input items on each turn; unresolved names are included in the prompt as visible guidance.
 
