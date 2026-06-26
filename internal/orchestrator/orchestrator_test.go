@@ -522,12 +522,19 @@ func TestOrchestrator_PreRunFailureKeepsClaimDuringBackoff(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	time.Sleep(100 * time.Millisecond)
-
-	orch.mu.Lock()
-	_, claimed := orch.state.Claimed["1"]
-	retryCount := len(orch.state.RetryAttempts)
-	orch.mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	var claimed bool
+	var retryCount int
+	for time.Now().Before(deadline) {
+		orch.mu.Lock()
+		_, claimed = orch.state.Claimed["1"]
+		retryCount = len(orch.state.RetryAttempts)
+		orch.mu.Unlock()
+		if claimed && retryCount == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	if !claimed {
 		t.Fatal("expected claim to remain while pre-run failure is in backoff")
@@ -993,6 +1000,169 @@ func TestOrchestrator_ReviewStageMovesToMerge(t *testing.T) {
 	if len(stages) != 1 || stages[0].Kind != "review" {
 		t.Fatalf("runner stages = %v, want one review stage", stages)
 	}
+}
+
+func TestOrchestrator_ReviewStageMovesToReviewResolutionWhenEnabled(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "In Review"},
+		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "In Review"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1}
+	cfg := defaultConfig()
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "In Review", "Review Resolution", "Approved"}
+	cfg.Pipeline.ReviewResolutionState = "Review Resolution"
+	cfg.ReviewResolution.Enabled = true
+	cfg.ReviewResolution.MaxAttempts = 3
+	cfg.Agent.MaxConcurrentAgents = 1
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	tracker.mu.Lock()
+	prefs := append([][]string(nil), tracker.movePreferences...)
+	tracker.mu.Unlock()
+	if len(prefs) != 1 || len(prefs[0]) != 1 || prefs[0][0] != "Review Resolution" {
+		t.Fatalf("move preferences = %v, want [[Review Resolution]]", prefs)
+	}
+}
+
+func TestOrchestrator_ReviewResolutionApprovedMovesToMerge(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Review Resolution"},
+		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "Review Resolution"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1, agentMessage: "Review feedback resolved.\n\nSIMPHONY_REVIEW_DECISION: approved"}
+	cfg := defaultConfig()
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "In Review", "Review Resolution", "Approved"}
+	cfg.Pipeline.ReviewResolutionState = "Review Resolution"
+	cfg.ReviewResolution.Enabled = true
+	cfg.ReviewResolution.MaxAttempts = 3
+	cfg.Agent.MaxConcurrentAgents = 1
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	tracker.mu.Lock()
+	prefs := append([][]string(nil), tracker.movePreferences...)
+	comments := append([]string(nil), tracker.comments...)
+	tracker.mu.Unlock()
+	if len(prefs) != 1 || len(prefs[0]) != 1 || prefs[0][0] != "Approved" {
+		t.Fatalf("move preferences = %v, want [[Approved]]", prefs)
+	}
+	if !hasCommentContaining(comments, "Simphony review resolution started") || !hasCommentContaining(comments, "Simphony review resolution approved") {
+		t.Fatalf("comments = %v, want review-resolution start and approved status comments", comments)
+	}
+
+	runner.mu.Lock()
+	stages := append([]api.PipelineStage(nil), runner.stages...)
+	runner.mu.Unlock()
+	if len(stages) != 1 || stages[0].Kind != "review_resolution" || !strings.Contains(stages[0].Instructions, "SIMPHONY_REVIEW_DECISION") {
+		t.Fatalf("runner stages = %v, want review_resolution with directive guidance", stages)
+	}
+}
+
+func TestOrchestrator_ReviewResolutionRetryDoesNotApprove(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Review Resolution"},
+		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "Review Resolution"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1, agentMessage: "Still waiting for checks.\n\nSIMPHONY_REVIEW_DECISION: retry"}
+	cfg := defaultConfig()
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "In Review", "Review Resolution", "Approved"}
+	cfg.Pipeline.ReviewResolutionState = "Review Resolution"
+	cfg.ReviewResolution.Enabled = true
+	cfg.ReviewResolution.MaxAttempts = 3
+	cfg.Agent.MaxConcurrentAgents = 1
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	tracker.mu.Lock()
+	moveCount := len(tracker.movePreferences)
+	comments := append([]string(nil), tracker.comments...)
+	tracker.mu.Unlock()
+	if moveCount != 0 {
+		t.Fatalf("move count = %d, want 0 while review-resolution requested retry", moveCount)
+	}
+	if !hasCommentContaining(comments, "Simphony review resolution started") || !hasCommentContaining(comments, "Simphony review resolution retry scheduled") {
+		t.Fatalf("comments = %v, want review-resolution start and retry status comments", comments)
+	}
+	orch.mu.Lock()
+	retry := orch.state.RetryAttempts["1"]
+	orch.mu.Unlock()
+	if retry == nil || retry.Kind != retryKindAgent {
+		t.Fatalf("retry = %#v, want agent retry", retry)
+	}
+}
+
+func TestOrchestrator_ReviewResolutionEscalates(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Review Resolution"},
+		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "Review Resolution"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1, agentMessage: "Security decision needs human judgment.\n\nSIMPHONY_REVIEW_DECISION: escalate"}
+	cfg := defaultConfig()
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "In Review", "Review Resolution", "Approved"}
+	cfg.Pipeline.ReviewResolutionState = "Review Resolution"
+	cfg.ReviewResolution.Enabled = true
+	cfg.ReviewResolution.EscalationState = "Needs Human"
+	cfg.ReviewResolution.MaxAttempts = 3
+	cfg.Agent.MaxConcurrentAgents = 1
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	tracker.mu.Lock()
+	prefs := append([][]string(nil), tracker.movePreferences...)
+	comments := append([]string(nil), tracker.comments...)
+	tracker.mu.Unlock()
+	if len(prefs) != 1 || len(prefs[0]) != 1 || prefs[0][0] != "Needs Human" {
+		t.Fatalf("move preferences = %v, want [[Needs Human]]", prefs)
+	}
+	if !hasCommentContaining(comments, "Simphony review resolution started") || !hasCommentContaining(comments, "Simphony review resolution escalated") {
+		t.Fatalf("comments = %v, want escalation comment", comments)
+	}
+}
+
+func hasCommentContaining(comments []string, needle string) bool {
+	for _, comment := range comments {
+		if strings.Contains(comment, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestOrchestrator_MaxTurnsReachedMarksCompleted(t *testing.T) {

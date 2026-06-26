@@ -105,10 +105,11 @@ If `server.port` is configured, the API listens on `http://localhost:<port>`.
 Simphony treats normal coding work and approved merge work as separate pipeline stages:
 
 - Coding issues come from `pipeline.coding_states` and move to `pipeline.review_state` after a successful Codex turn.
-- Reviewed issues should be moved to `pipeline.merge_state`; Simphony dispatches them with merge-focused instructions.
+- If `review_resolution.enabled` is true, reviewed issues move through `pipeline.review_resolution_state`, where an autonomous agent resolves PR review comments, CI failures, and approval readiness before moving to `pipeline.merge_state`.
+- Reviewed or review-resolved issues should be moved to `pipeline.merge_state`; Simphony dispatches them with merge-focused instructions.
 - Successful merge-stage runs move to `pipeline.done_state` and the issue workspace is removed when that state is terminal.
 
-The merge state is automatically included in tracker active states, and the done state is automatically included in terminal states.
+The merge state is automatically included in tracker active states, the review-resolution state is included when enabled, and the done state is automatically included in terminal states.
 
 ## Codex Model Selection
 
@@ -133,6 +134,12 @@ codex:
       skills:
         - code-review
         - security-review
+    review_resolution:
+      model: gpt-5.5
+      reasoning_effort: xhigh
+      skills:
+        - github:gh-address-comments
+        - github:gh-fix-ci
     merge:
       reasoning_effort: high
 ```
@@ -140,6 +147,22 @@ codex:
 The model and provider fields are free-form strings. That lets a workflow select configured alternatives such as Claude, Gemini, Kimi, GLM, or DeepSeek through whatever provider/router your Codex installation supports.
 
 `codex.skills` and `codex.stage_overrides.<stage>.skills` let you attach default skills by stage. Skill names are resolved through Codex at runtime when possible; use `{ name, path }` entries to pin a specific local skill file.
+
+Enable autonomous PR review handling with:
+
+```yaml
+pipeline:
+  review_resolution_state: Review Resolution
+
+review_resolution:
+  enabled: true
+  max_attempts: 3
+  require_checks_green: true
+  require_code_review_approval: true
+  unresolved_comment_policy: fix_or_explain
+```
+
+The review-resolution agent must finish with `SIMPHONY_REVIEW_DECISION: approved`, `retry`, or `escalate`. Approved advances to the merge state, retry schedules another autonomous pass, and escalate moves the issue to `review_resolution.escalation_state`.
 
 ## Dashboard
 
