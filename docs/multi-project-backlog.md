@@ -205,7 +205,7 @@ Status:
 - Done: `MP-6.5`; validation emits warnings when multiple enabled projects reference the same Linear endpoint/project slug.
 - Done: `MP-6.3`; agent subprocesses scrub inherited OpenAI, Anthropic, and Linear provider/tracker values before applying the selected project's runtime config and explicit env.
 - Done: `MP-6.6`; registry servers bind to `127.0.0.1` by default and non-loopback binds require `security.allow_remote_dashboard: true`.
-- Partial: `MP-6.4`; API settings responses are masked, with broader log/audit hardening still worth a dedicated pass.
+- Done: `MP-6.4`; settings and registry API responses mask secrets, dashboard state uses masked values/configured flags, Linear upstream errors redact echoed API keys, and orchestrator logs scrub configured tracker/runtime/env secrets.
 - Done: `MP-6.7`; configuration and operations docs cover workspace isolation, local binding, and the explicit remote dashboard/API opt-in.
 
 Acceptance:

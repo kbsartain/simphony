@@ -56,6 +56,7 @@ type Orchestrator struct {
 	logMu          sync.RWMutex
 	logProjectID   string
 	logProjectName string
+	logSecrets     []string
 
 	mu             sync.Mutex
 	ticker         *time.Ticker
@@ -75,13 +76,15 @@ type Orchestrator struct {
 
 // New creates a new Orchestrator. Call Start() to begin polling.
 func New(cfg *api.WorkflowConfig, tracker api.Tracker, workspaceMgr *workspace.Manager, runner AgentRunner) *Orchestrator {
-	return &Orchestrator{
+	o := &Orchestrator{
 		cfg:          cfg,
 		tracker:      tracker,
 		workspaceMgr: workspaceMgr,
 		runner:       runner,
 		stopCh:       make(chan struct{}),
 	}
+	o.SetLogSecrets(logSecretsFromConfig(cfg))
+	return o
 }
 
 // SetDispatchLimiter configures an optional shared dispatch limiter.
@@ -99,17 +102,34 @@ func (o *Orchestrator) SetLogContext(projectID string, projectName string) {
 	o.logProjectName = strings.TrimSpace(projectName)
 }
 
+// SetLogSecrets configures known secret values redacted from orchestrator logs.
+func (o *Orchestrator) SetLogSecrets(secrets []string) {
+	o.logMu.Lock()
+	defer o.logMu.Unlock()
+	o.logSecrets = normalizeLogSecrets(secrets)
+}
+
 func (o *Orchestrator) logf(format string, args ...interface{}) {
-	if prefix := o.logPrefix(); prefix != "" {
-		format = prefix + " " + format
+	message := fmt.Sprintf(format, args...)
+
+	o.logMu.RLock()
+	prefix := o.logPrefixLocked()
+	secrets := append([]string(nil), o.logSecrets...)
+	o.logMu.RUnlock()
+
+	if prefix != "" {
+		message = prefix + " " + message
 	}
-	log.Printf(format, args...)
+	log.Print(redactLogMessage(message, secrets))
 }
 
 func (o *Orchestrator) logPrefix() string {
 	o.logMu.RLock()
 	defer o.logMu.RUnlock()
+	return o.logPrefixLocked()
+}
 
+func (o *Orchestrator) logPrefixLocked() string {
 	parts := make([]string, 0, 2)
 	if o.logProjectID != "" {
 		parts = append(parts, fmt.Sprintf("project_id=%s", o.logProjectID))
@@ -118,6 +138,63 @@ func (o *Orchestrator) logPrefix() string {
 		parts = append(parts, fmt.Sprintf("project_name=%q", o.logProjectName))
 	}
 	return strings.Join(parts, " ")
+}
+
+func (o *Orchestrator) redactLogMessage(message string) string {
+	o.logMu.RLock()
+	secrets := append([]string(nil), o.logSecrets...)
+	o.logMu.RUnlock()
+	return redactLogMessage(message, secrets)
+}
+
+func redactLogMessage(message string, secrets []string) string {
+	for _, secret := range secrets {
+		message = strings.ReplaceAll(message, secret, "********")
+	}
+	return message
+}
+
+func normalizeLogSecrets(secrets []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if len(secret) < 4 {
+			continue
+		}
+		if _, exists := seen[secret]; exists {
+			continue
+		}
+		seen[secret] = struct{}{}
+		out = append(out, secret)
+	}
+	return out
+}
+
+func logSecretsFromConfig(cfg *api.WorkflowConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	secrets := []string{cfg.Tracker.APIKey}
+	for _, runtime := range []api.AgentRuntimeConfig{cfg.AgentRuntime, cfg.Codex, cfg.Claude} {
+		secrets = append(secrets, runtime.APIKey, runtime.AuthToken)
+		for key, value := range runtime.Env {
+			if isSecretLogEnvName(key) {
+				secrets = append(secrets, value)
+			}
+		}
+	}
+	return secrets
+}
+
+func isSecretLogEnvName(key string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(key))
+	for _, marker := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Start initializes state, performs startup cleanup, and begins the poll loop.
@@ -1609,8 +1686,6 @@ func (o *Orchestrator) Refresh() api.RefreshResponse {
 // for future operations without restarting in-flight workers.
 func (o *Orchestrator) UpdateConfig(cfg *api.WorkflowConfig) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
-
 	o.cfg = cfg
 	o.state.PollIntervalMs = cfg.Polling.IntervalMs
 	o.state.MaxConcurrentAgents = cfg.Agent.MaxConcurrentAgents
@@ -1618,14 +1693,14 @@ func (o *Orchestrator) UpdateConfig(cfg *api.WorkflowConfig) {
 	if o.ticker != nil && cfg.Polling.IntervalMs > 0 {
 		o.ticker.Reset(time.Duration(cfg.Polling.IntervalMs) * time.Millisecond)
 	}
+	o.mu.Unlock()
+	o.SetLogSecrets(logSecretsFromConfig(cfg))
 }
 
 // UpdateRuntime applies a reloaded config and replaces dependencies derived
 // from that config for future scheduler operations.
 func (o *Orchestrator) UpdateRuntime(cfg *api.WorkflowConfig, tracker api.Tracker, workspaceMgr *workspace.Manager) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
-
 	o.cfg = cfg
 	o.tracker = tracker
 	o.workspaceMgr = workspaceMgr
@@ -1635,6 +1710,8 @@ func (o *Orchestrator) UpdateRuntime(cfg *api.WorkflowConfig, tracker api.Tracke
 	if o.ticker != nil && cfg.Polling.IntervalMs > 0 {
 		o.ticker.Reset(time.Duration(cfg.Polling.IntervalMs) * time.Millisecond)
 	}
+	o.mu.Unlock()
+	o.SetLogSecrets(logSecretsFromConfig(cfg))
 }
 
 // IssueDetail looks up runtime details for a single issue by its identifier.

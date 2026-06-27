@@ -333,6 +333,28 @@ func TestOrchestrator_LogPrefixIncludesProjectContext(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_RedactsConfiguredSecretsFromLogs(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Tracker.APIKey = "linear-secret"
+	cfg.AgentRuntime.APIKey = "runtime-secret"
+	cfg.AgentRuntime.AuthToken = "runtime-token"
+	cfg.AgentRuntime.Env = map[string]string{
+		"CUSTOM_TOKEN": "env-secret",
+		"PLAIN_VALUE":  "visible-value",
+	}
+	orch := New(cfg, nil, nil, nil)
+
+	got := orch.redactLogMessage("linear-secret runtime-secret runtime-token env-secret visible-value")
+	for _, leaked := range []string{"linear-secret", "runtime-secret", "runtime-token", "env-secret"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("redacted message leaked %q: %s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "visible-value") {
+		t.Fatalf("redacted message removed non-secret value: %s", got)
+	}
+}
+
 func TestOrchestrator_MovesIssueToWorkingStateBeforeRun(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{

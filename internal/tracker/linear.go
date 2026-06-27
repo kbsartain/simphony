@@ -410,7 +410,7 @@ func (c *LinearClient) doGraphQL(ctx context.Context, query string, variables ma
 
 	if resp.StatusCode != http.StatusOK {
 		respBytes, _ := io.ReadAll(resp.Body)
-		body := strings.TrimSpace(string(respBytes))
+		body := c.redactSecrets(strings.TrimSpace(string(respBytes)))
 		if body != "" {
 			return nil, fmt.Errorf("%s: received HTTP %d: %s", api.ErrLinearAPIStatus, resp.StatusCode, body)
 		}
@@ -430,12 +430,20 @@ func (c *LinearClient) doGraphQL(ctx context.Context, query string, variables ma
 	if len(respPayload.Errors) > 0 {
 		msgs := make([]string, len(respPayload.Errors))
 		for i, e := range respPayload.Errors {
-			msgs[i] = e.Message
+			msgs[i] = c.redactSecrets(e.Message)
 		}
 		return nil, fmt.Errorf("%s: %s", api.ErrLinearGraphQLErrors, strings.Join(msgs, "; "))
 	}
 
 	return respPayload.Data, nil
+}
+
+func (c *LinearClient) redactSecrets(text string) string {
+	apiKey := strings.TrimSpace(c.cfg.APIKey)
+	if text == "" || len(apiKey) < 4 {
+		return text
+	}
+	return strings.ReplaceAll(text, apiKey, "********")
 }
 
 func (c *LinearClient) buildCommentCreateMutation() string {

@@ -477,7 +477,7 @@ func TestErrorHandling_TransportError(t *testing.T) {
 func TestErrorHandling_Non200(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"bad token"}`))
+		_, _ = w.Write([]byte(`{"error":"bad token test-key"}`))
 	}))
 	defer server.Close()
 
@@ -493,6 +493,12 @@ func TestErrorHandling_Non200(t *testing.T) {
 	if !strings.Contains(err.Error(), "bad token") {
 		t.Errorf("expected error body in error, got %v", err)
 	}
+	if strings.Contains(err.Error(), "test-key") {
+		t.Errorf("error leaked api key: %v", err)
+	}
+	if !strings.Contains(err.Error(), "********") {
+		t.Errorf("error did not include secret mask: %v", err)
+	}
 }
 
 func TestErrorHandling_GraphQLErrors(t *testing.T) {
@@ -500,7 +506,7 @@ func TestErrorHandling_GraphQLErrors(t *testing.T) {
 		resp := map[string]interface{}{
 			"errors": []map[string]interface{}{
 				{"message": "Invalid filter"},
-				{"message": "Project not found"},
+				{"message": "Project not found for token test-key"},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -523,6 +529,9 @@ func TestErrorHandling_GraphQLErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Project not found") {
 		t.Errorf("expected error containing 'Project not found', got %v", err)
+	}
+	if strings.Contains(err.Error(), "test-key") {
+		t.Errorf("GraphQL error leaked api key: %v", err)
 	}
 }
 
