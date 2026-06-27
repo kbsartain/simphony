@@ -131,7 +131,10 @@ concurrency:
 
 agent_runtime:
   provider: codex
+  model_provider: moonshot
   model: gpt-5.4
+  endpoint_url: $OPENAI_BASE_URL
+  api_key: $OPENAI_API_KEY
 
 projects:
   - id: alpha
@@ -143,7 +146,7 @@ projects:
     workflow_path: projects/beta/WORKFLOW.md
 ```
 
-The dashboard Project Setup page can create a starter registry from a single `WORKFLOW.md`, then add, edit, or remove registry project entries. Registry changes are persisted to `simphony.yaml`; restarting with `-config` applies them to running project runtimes.
+The dashboard Project Setup page can create a starter registry from a single `WORKFLOW.md`, add/edit/remove registry project entries, and edit safe registry-level defaults such as server binding, global/project concurrency caps, isolation guardrails, and global agent runtime defaults. Registry changes are persisted to `simphony.yaml`; restarting with `-config` applies them to running project runtimes. Existing runtime secrets are preserved unless a replacement API key or auth token is explicitly entered.
 
 Useful registry commands:
 
@@ -185,7 +188,7 @@ agent_runtime:
 
 `agent_runtime.endpoint_url` and `agent_runtime.api_key` support OpenAI-compatible and Anthropic-compatible gateways. For Codex, they are passed as `OPENAI_BASE_URL` and `OPENAI_API_KEY`; for Claude, they are passed as `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`.
 
-Global `agent_runtime` defaults can also live in `simphony.yaml`; each project `WORKFLOW.md` can override individual runtime fields when a project needs a different SDK, model, endpoint, or token source.
+Global `agent_runtime` defaults can also live in `simphony.yaml`; each project `WORKFLOW.md` can override individual runtime fields when a project needs a different SDK, model, endpoint, or token source. In multi-project mode, the Project Setup page can edit these global defaults while masking/preserving existing secrets.
 
 ## Codex Model Selection
 

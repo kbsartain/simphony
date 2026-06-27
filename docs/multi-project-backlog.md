@@ -151,7 +151,7 @@ Backlog:
 Status:
 
 - Done: `MP-4.1`, initial `MP-4.2`, `MP-4.3`, `MP-4.4`, and initial `MP-4.5`. The dashboard discovers aggregate projects, uses a left-nav project context shell, scopes runtime/detail/refresh/settings calls to the selected project, and surfaces disabled, stopped, failed, retrying, running, and idle project states.
-- Partial: the project setup surface is now visible as a registry/admin landing page, including the current startup mode, restart-required registry toggle, single-workflow starter registry creation, and add/edit/remove project registry flows.
+- Done: the project setup surface is now visible as a registry/admin landing page, including the current startup mode, restart-required registry toggle, single-workflow starter registry creation, add/edit/remove project registry flows, editable registry defaults, and editable global agent runtime defaults with secret-preserving replacement fields.
 - Pending: deeper project overview actions and polish for the one-project streamlined path.
 
 Acceptance:
@@ -254,7 +254,7 @@ Acceptance:
 
 ## Open Questions
 
-- Should global agent defaults be allowed to override project `agent_runtime`, or only fill missing values?
+- Answered: global agent defaults fill missing values; project `agent_runtime` fields override individual global fields.
 - Should disabled projects be hidden by default or shown as inactive in the dashboard?
 - Should project IDs be manually chosen, derived from folder names, or both?
 - Should multi-project mode require dashboard authentication before binding outside localhost?

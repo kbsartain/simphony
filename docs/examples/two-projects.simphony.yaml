@@ -6,6 +6,7 @@
 
 agent_runtime:
   provider: codex
+  model_provider: moonshot
   model: kimi-k2
   endpoint_url: $OPENAI_BASE_URL
   api_key: $OPENAI_API_KEY

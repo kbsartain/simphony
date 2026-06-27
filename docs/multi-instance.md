@@ -105,6 +105,7 @@ A minimal registry looks like:
 agent_runtime:
   provider: codex
   model: kimi-k2
+  model_provider: moonshot
   endpoint_url: $OPENAI_BASE_URL
   api_key: $OPENAI_API_KEY
 server:
@@ -127,7 +128,9 @@ projects:
     max_concurrent_agents: 2
 ```
 
-Global `agent_runtime` values are defaults. Project workflows can override individual `agent_runtime` fields in their own `WORKFLOW.md`. The registry-level `server` block enables project-scoped API routes such as `/api/v1/projects` and `/api/v1/projects/alpha/state`. Registry-level `concurrency.max_concurrent_agents` limits total running agent sessions across all enabled projects in the supervisor process. `projects[].max_concurrent_agents` caps one project below that global total.
+Global `agent_runtime` values are defaults. Project workflows can override individual `agent_runtime` fields in their own `WORKFLOW.md`. The dashboard Project Setup page can edit these global defaults, along with the registry `server`, `concurrency`, `security`, and `projects` sections. Blank API key and auth-token fields preserve existing registry secrets; entered values replace them. Registry edits are persisted to `simphony.yaml` and take effect for workers after restart.
+
+The registry-level `server` block enables project-scoped API routes such as `/api/v1/projects` and `/api/v1/projects/alpha/state`. Registry-level `concurrency.max_concurrent_agents` limits total running agent sessions across all enabled projects in the supervisor process. `projects[].max_concurrent_agents` caps one project below that global total.
 
 The `security` block keeps accidental cross-project access hard. By default, enabled projects must use non-overlapping workspace roots outside the registry directory and the aggregate dashboard/API must bind to localhost or another loopback address. Use the allow flags only for a deliberate, reviewed exception.
 

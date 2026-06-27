@@ -23,6 +23,7 @@ Single-project mode starts one active project with `-workflow`. Multi-project mo
 agent_runtime:
   provider: codex
   model: kimi-k2
+  model_provider: moonshot
   endpoint_url: $OPENAI_BASE_URL
   api_key: $OPENAI_API_KEY
 server:
@@ -48,6 +49,8 @@ projects:
 `projects[].workflow_path` is resolved relative to the registry file. Project IDs must start with a letter or number and can contain letters, numbers, dots, underscores, and hyphens. Global `agent_runtime` values are applied as defaults when validating project workflows; a project's own `agent_runtime` fields override individual global fields.
 
 Use `simphony validate -config ./simphony.yaml` to validate the registry and enabled project workflows without starting workers. Use `simphony projects -config ./simphony.yaml` to list resolved project settings. A registry-level `server` block enables the aggregate project API and dashboard project selector.
+
+The dashboard Project Setup page can persist registry edits back to `simphony.yaml`. It supports project add/edit/remove, server defaults, global and per-project concurrency caps, isolation guardrails, and global `agent_runtime` defaults. These registry edits are restart-required for running workers. Agent runtime API key and auth-token fields are write-only in the UI: leaving them blank preserves the existing registry value, while entering a value replaces it.
 
 Registry-level `concurrency.max_concurrent_agents` is a supervisor-owned cap across all enabled projects. For example, `max_concurrent_agents: 10` means at most ten total agent sessions can run across the full multi-project process, even if each project's `WORKFLOW.md` allows more local concurrency.
 
