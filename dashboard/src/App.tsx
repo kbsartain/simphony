@@ -7,6 +7,7 @@ import {
   RegistryProjectDeleteResponse,
   RegistryProjectUpdateResponse,
   RegistryResponse,
+  RegistryUpdateResponse,
   RefreshResponse,
   RetrySnapshot,
   RunningSnapshot,
@@ -28,6 +29,7 @@ import {
   fetchState,
   requestRefresh as requestRefreshAPI,
   saveSettings,
+  updateRegistrySettings,
   updateRegistryProject,
   validateTrackerSettings,
 } from './api/client'
@@ -89,6 +91,31 @@ type RegistryProjectDraft = {
   workflowPath: string
   enabled: boolean
   maxConcurrentAgents: string
+}
+type RegistrySettingsDraft = {
+  bindAddress: string
+  port: string
+  dashboardEnabled: boolean
+  apiPrefix: string
+  maxConcurrentAgents: string
+  defaultProjectMaxConcurrentAgents: string
+  allowWorkspaceOverlap: boolean
+  allowWorkspaceUnderRegistryDir: boolean
+  allowRemoteDashboard: boolean
+}
+type RegistryRuntimeDraft = {
+  sdkProvider: string
+  command: string
+  modelProvider: string
+  model: string
+  reasoningEffort: string
+  endpointURL: string
+  apiKey: string
+  authToken: string
+  permissionMode: string
+  allowedTools: string
+  disallowedTools: string
+  settingSources: string
 }
 
 const DEFAULT_REASONING_OPTIONS: ReasoningOption[] = [{ value: '', label: 'Provider default' }]
@@ -232,6 +259,8 @@ function App() {
   const [registryProjectResult, setRegistryProjectResult] = useState<RegistryProjectCreateResponse | null>(null)
   const [registryProjectUpdateResult, setRegistryProjectUpdateResult] = useState<RegistryProjectUpdateResponse | null>(null)
   const [registryProjectDeleteResult, setRegistryProjectDeleteResult] = useState<RegistryProjectDeleteResponse | null>(null)
+  const [registrySettingsResult, setRegistrySettingsResult] = useState<RegistryUpdateResponse | null>(null)
+  const [registryRuntimeResult, setRegistryRuntimeResult] = useState<RegistryUpdateResponse | null>(null)
   const [editingRegistryProjectId, setEditingRegistryProjectId] = useState<string | null>(null)
   const [registryProjectDraft, setRegistryProjectDraft] = useState<RegistryProjectDraft>({
     id: '',
@@ -240,6 +269,8 @@ function App() {
     enabled: true,
     maxConcurrentAgents: '',
   })
+  const [registrySettingsDraft, setRegistrySettingsDraft] = useState<RegistrySettingsDraft>(emptyRegistrySettingsDraft())
+  const [registryRuntimeDraft, setRegistryRuntimeDraft] = useState<RegistryRuntimeDraft>(emptyRegistryRuntimeDraft())
   const [supervisorConcurrency, setSupervisorConcurrency] = useState<SupervisorConcurrency | null>(null)
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [state, setState] = useState<StateSnapshot | null>(null)
@@ -252,6 +283,8 @@ function App() {
   const [refreshing, setRefreshing] = useState(false)
   const [bootstrappingRegistry, setBootstrappingRegistry] = useState(false)
   const [creatingRegistryProject, setCreatingRegistryProject] = useState(false)
+  const [savingRegistrySettings, setSavingRegistrySettings] = useState(false)
+  const [savingRegistryRuntime, setSavingRegistryRuntime] = useState(false)
   const [deletingRegistryProjectId, setDeletingRegistryProjectId] = useState<string | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
   const [validatingTracker, setValidatingTracker] = useState(false)
@@ -387,6 +420,18 @@ function App() {
     }
   }, [loadSettings, page, settings])
 
+  useEffect(() => {
+    if (!registry) {
+      setRegistrySettingsDraft(emptyRegistrySettingsDraft())
+      setRegistryRuntimeDraft(emptyRegistryRuntimeDraft())
+      return
+    }
+    setRegistrySettingsDraft(registrySettingsDraftFromRegistry(registry))
+    setRegistryRuntimeDraft(registryRuntimeDraftFromRegistry(registry))
+    setRegistrySettingsResult(null)
+    setRegistryRuntimeResult(null)
+  }, [registry?.source_path])
+
   const requestRefresh = async () => {
     setRefreshing(true)
     setRefreshResult(null)
@@ -505,6 +550,89 @@ function App() {
       setError(normalizeError(err))
     } finally {
       setDeletingRegistryProjectId(null)
+    }
+  }
+
+  const saveRegistrySettings = async () => {
+    setSavingRegistrySettings(true)
+    setNotice(null)
+    try {
+      const port = Number.parseInt(registrySettingsDraft.port.trim(), 10)
+      const maxConcurrentAgents = registrySettingsDraft.maxConcurrentAgents.trim()
+        ? Number.parseInt(registrySettingsDraft.maxConcurrentAgents.trim(), 10)
+        : 0
+      const defaultProjectMaxConcurrentAgents = registrySettingsDraft.defaultProjectMaxConcurrentAgents.trim()
+        ? Number.parseInt(registrySettingsDraft.defaultProjectMaxConcurrentAgents.trim(), 10)
+        : 0
+      if (Number.isNaN(port) || port <= 0 || port > 65535) {
+        throw new Error('Server port must be between 1 and 65535.')
+      }
+      if (
+        Number.isNaN(maxConcurrentAgents) ||
+        Number.isNaN(defaultProjectMaxConcurrentAgents) ||
+        maxConcurrentAgents < 0 ||
+        defaultProjectMaxConcurrentAgents < 0
+      ) {
+        throw new Error('Concurrency limits must be zero or positive whole numbers.')
+      }
+      const result = await updateRegistrySettings({
+        server: {
+          bind_address: registrySettingsDraft.bindAddress.trim(),
+          port,
+          dashboard_enabled: registrySettingsDraft.dashboardEnabled,
+          api_prefix: registrySettingsDraft.apiPrefix.trim(),
+        },
+        concurrency: {
+          max_concurrent_agents: maxConcurrentAgents,
+          default_project_max_concurrent_agents: defaultProjectMaxConcurrentAgents,
+        },
+        security: {
+          allow_workspace_overlap: registrySettingsDraft.allowWorkspaceOverlap,
+          allow_workspace_under_registry_dir: registrySettingsDraft.allowWorkspaceUnderRegistryDir,
+          allow_remote_dashboard: registrySettingsDraft.allowRemoteDashboard,
+        },
+      })
+      setRegistry(result.registry)
+      setRegistrySettingsDraft(registrySettingsDraftFromRegistry(result.registry))
+      setRegistrySettingsResult(result)
+      setNotice('Registry settings saved')
+      setError(null)
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setSavingRegistrySettings(false)
+    }
+  }
+
+  const saveRegistryRuntime = async () => {
+    setSavingRegistryRuntime(true)
+    setNotice(null)
+    try {
+      const result = await updateRegistrySettings({
+        agent_runtime: {
+          provider: registryRuntimeDraft.sdkProvider,
+          command: registryRuntimeDraft.command.trim(),
+          model: registryRuntimeDraft.model.trim(),
+          model_provider: registryRuntimeDraft.modelProvider.trim(),
+          reasoning_effort: registryRuntimeDraft.reasoningEffort.trim(),
+          endpoint_url: registryRuntimeDraft.endpointURL.trim(),
+          ...(registryRuntimeDraft.apiKey.trim() ? { api_key: registryRuntimeDraft.apiKey.trim() } : {}),
+          ...(registryRuntimeDraft.authToken.trim() ? { auth_token: registryRuntimeDraft.authToken.trim() } : {}),
+          permission_mode: registryRuntimeDraft.permissionMode.trim(),
+          allowed_tools: parseStringList(registryRuntimeDraft.allowedTools),
+          disallowed_tools: parseStringList(registryRuntimeDraft.disallowedTools),
+          setting_sources: parseStringList(registryRuntimeDraft.settingSources),
+        },
+      })
+      setRegistry(result.registry)
+      setRegistryRuntimeDraft(registryRuntimeDraftFromRegistry(result.registry))
+      setRegistryRuntimeResult(result)
+      setNotice('Agent defaults saved')
+      setError(null)
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setSavingRegistryRuntime(false)
     }
   }
 
@@ -914,15 +1042,25 @@ function App() {
             registryProjectResult={registryProjectResult}
             registryProjectUpdateResult={registryProjectUpdateResult}
             registryProjectDeleteResult={registryProjectDeleteResult}
+            registrySettingsDraft={registrySettingsDraft}
+            registrySettingsResult={registrySettingsResult}
+            registryRuntimeDraft={registryRuntimeDraft}
+            registryRuntimeResult={registryRuntimeResult}
             editingRegistryProjectId={editingRegistryProjectId}
             bootstrappingRegistry={bootstrappingRegistry}
             creatingRegistryProject={creatingRegistryProject}
+            savingRegistrySettings={savingRegistrySettings}
+            savingRegistryRuntime={savingRegistryRuntime}
             deletingRegistryProjectId={deletingRegistryProjectId}
             projectOverview={projectOverview}
             supervisorConcurrency={supervisorConcurrency}
             onBootstrapRegistry={createStarterRegistry}
             onRegistryProjectDraftChange={setRegistryProjectDraft}
             onSaveRegistryProject={saveRegistryProject}
+            onRegistrySettingsDraftChange={setRegistrySettingsDraft}
+            onSaveRegistrySettings={saveRegistrySettings}
+            onRegistryRuntimeDraftChange={setRegistryRuntimeDraft}
+            onSaveRegistryRuntime={saveRegistryRuntime}
             onEditRegistryProject={editRegistryProject}
             onCancelRegistryProjectEdit={cancelRegistryProjectEdit}
             onRemoveRegistryProject={removeRegistryProject}
@@ -1057,15 +1195,25 @@ function ProjectSetupView(props: {
   registryProjectResult: RegistryProjectCreateResponse | null
   registryProjectUpdateResult: RegistryProjectUpdateResponse | null
   registryProjectDeleteResult: RegistryProjectDeleteResponse | null
+  registrySettingsDraft: RegistrySettingsDraft
+  registrySettingsResult: RegistryUpdateResponse | null
+  registryRuntimeDraft: RegistryRuntimeDraft
+  registryRuntimeResult: RegistryUpdateResponse | null
   editingRegistryProjectId: string | null
   bootstrappingRegistry: boolean
   creatingRegistryProject: boolean
+  savingRegistrySettings: boolean
+  savingRegistryRuntime: boolean
   deletingRegistryProjectId: string | null
   projectOverview: ProjectOverview | null
   supervisorConcurrency: SupervisorConcurrency | null
   onBootstrapRegistry: () => void
   onRegistryProjectDraftChange: (draft: RegistryProjectDraft) => void
   onSaveRegistryProject: () => void
+  onRegistrySettingsDraftChange: (draft: RegistrySettingsDraft) => void
+  onSaveRegistrySettings: () => void
+  onRegistryRuntimeDraftChange: (draft: RegistryRuntimeDraft) => void
+  onSaveRegistryRuntime: () => void
   onEditRegistryProject: (project: { id: string; name: string; workflow_path: string; enabled: boolean; max_concurrent_agents?: number }) => void
   onCancelRegistryProjectEdit: () => void
   onRemoveRegistryProject: (project: { id: string; name: string }) => void
@@ -1080,6 +1228,12 @@ function ProjectSetupView(props: {
   const startupPath = registryEnabled
     ? props.runtimeMode?.registry_path || props.registry?.source_path || ''
     : props.runtimeMode?.workflow_path || ''
+  const registryRuntimeModels = modelOptionsForProvider(props.registryRuntimeDraft.modelProvider, props.registryRuntimeDraft.model)
+  const registryRuntimeReasoning = reasoningOptionsForSelection(
+    props.registryRuntimeDraft.model,
+    props.registryRuntimeDraft.modelProvider,
+    props.registryRuntimeDraft.reasoningEffort,
+  )
   return (
     <section className="setup-layout">
       <div className="panel setup-main">
@@ -1187,6 +1341,280 @@ function ProjectSetupView(props: {
               </div>
             ))}
           </div>
+        )}
+        {registryEnabled && props.registry && (
+          <form
+            className="registry-project-form registry-settings-form"
+            onSubmit={event => {
+              event.preventDefault()
+              props.onSaveRegistrySettings()
+            }}
+          >
+            <div className="registry-project-form-heading">
+              <div>
+                <p className="eyebrow">Defaults</p>
+                <h3>Registry settings</h3>
+              </div>
+              <button className="secondary-button" type="submit" disabled={props.savingRegistrySettings}>
+                {props.savingRegistrySettings ? 'Saving settings' : 'Save settings'}
+              </button>
+            </div>
+            <div className="registry-project-fields">
+              <label className="form-field">
+                <span>Bind address</span>
+                <input
+                  value={props.registrySettingsDraft.bindAddress}
+                  onChange={event => props.onRegistrySettingsDraftChange({ ...props.registrySettingsDraft, bindAddress: event.target.value })}
+                  placeholder="127.0.0.1"
+                />
+              </label>
+              <label className="form-field">
+                <span>Port</span>
+                <input
+                  value={props.registrySettingsDraft.port}
+                  onChange={event => props.onRegistrySettingsDraftChange({ ...props.registrySettingsDraft, port: event.target.value })}
+                  inputMode="numeric"
+                  placeholder="8080"
+                  required
+                />
+              </label>
+              <label className="form-field">
+                <span>API prefix</span>
+                <input
+                  value={props.registrySettingsDraft.apiPrefix}
+                  onChange={event => props.onRegistrySettingsDraftChange({ ...props.registrySettingsDraft, apiPrefix: event.target.value })}
+                  placeholder="/api/v1"
+                />
+              </label>
+              <label className="form-field">
+                <span>Global slots</span>
+                <input
+                  value={props.registrySettingsDraft.maxConcurrentAgents}
+                  onChange={event => props.onRegistrySettingsDraftChange({ ...props.registrySettingsDraft, maxConcurrentAgents: event.target.value })}
+                  inputMode="numeric"
+                  placeholder="Unlimited"
+                />
+              </label>
+              <label className="form-field">
+                <span>Default project cap</span>
+                <input
+                  value={props.registrySettingsDraft.defaultProjectMaxConcurrentAgents}
+                  onChange={event =>
+                    props.onRegistrySettingsDraftChange({ ...props.registrySettingsDraft, defaultProjectMaxConcurrentAgents: event.target.value })
+                  }
+                  inputMode="numeric"
+                  placeholder="Workflow default"
+                />
+              </label>
+              <label className="registry-checkbox">
+                <input
+                  type="checkbox"
+                  checked={props.registrySettingsDraft.dashboardEnabled}
+                  onChange={event => props.onRegistrySettingsDraftChange({ ...props.registrySettingsDraft, dashboardEnabled: event.target.checked })}
+                />
+                <span>Serve dashboard</span>
+              </label>
+              <label className="registry-checkbox">
+                <input
+                  type="checkbox"
+                  checked={props.registrySettingsDraft.allowRemoteDashboard}
+                  onChange={event => props.onRegistrySettingsDraftChange({ ...props.registrySettingsDraft, allowRemoteDashboard: event.target.checked })}
+                />
+                <span>Allow remote dashboard/API</span>
+              </label>
+              <label className="registry-checkbox">
+                <input
+                  type="checkbox"
+                  checked={props.registrySettingsDraft.allowWorkspaceOverlap}
+                  onChange={event =>
+                    props.onRegistrySettingsDraftChange({ ...props.registrySettingsDraft, allowWorkspaceOverlap: event.target.checked })
+                  }
+                />
+                <span>Allow workspace overlap</span>
+              </label>
+              <label className="registry-checkbox">
+                <input
+                  type="checkbox"
+                  checked={props.registrySettingsDraft.allowWorkspaceUnderRegistryDir}
+                  onChange={event =>
+                    props.onRegistrySettingsDraftChange({ ...props.registrySettingsDraft, allowWorkspaceUnderRegistryDir: event.target.checked })
+                  }
+                />
+                <span>Allow workspaces under registry folder</span>
+              </label>
+            </div>
+            {props.registrySettingsResult && (
+              <div className="bootstrap-result" role="status">
+                <strong>Registry settings saved</strong>
+                <span>Restart Simphony for server and supervisor changes to take effect.</span>
+                <code>{props.registrySettingsResult.command}</code>
+              </div>
+            )}
+          </form>
+        )}
+        {registryEnabled && props.registry && (
+          <form
+            className="registry-project-form registry-runtime-form"
+            onSubmit={event => {
+              event.preventDefault()
+              props.onSaveRegistryRuntime()
+            }}
+          >
+            <div className="registry-project-form-heading">
+              <div>
+                <p className="eyebrow">Defaults</p>
+                <h3>Agent defaults</h3>
+              </div>
+              <button className="secondary-button" type="submit" disabled={props.savingRegistryRuntime}>
+                {props.savingRegistryRuntime ? 'Saving defaults' : 'Save defaults'}
+              </button>
+            </div>
+            <div className="registry-project-fields">
+              <label className="form-field">
+                <span>SDK</span>
+                <select
+                  value={props.registryRuntimeDraft.sdkProvider}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, sdkProvider: event.target.value })}
+                >
+                  <option value="codex">Codex</option>
+                  <option value="claude">Claude Code</option>
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Model provider</span>
+                <select
+                  value={props.registryRuntimeDraft.modelProvider}
+                  onChange={event => {
+                    const nextProvider = event.target.value
+                    const provider = PROVIDER_OPTIONS.find(item => item.id === nextProvider)
+                    const nextModel =
+                      provider && props.registryRuntimeDraft.model && !provider.models.some(option => option.model === props.registryRuntimeDraft.model)
+                        ? ''
+                        : props.registryRuntimeDraft.model
+                    props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, modelProvider: nextProvider, model: nextModel })
+                  }}
+                >
+                  <option value="">SDK default</option>
+                  {providerOptionsWithCurrent(props.registryRuntimeDraft.modelProvider).map(option => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Model</span>
+                <select
+                  value={selectedModelID(props.registryRuntimeDraft.model, props.registryRuntimeDraft.modelProvider)}
+                  onChange={event => {
+                    const option = registryRuntimeModels.find(item => item.id === event.target.value)
+                    props.onRegistryRuntimeDraftChange({
+                      ...props.registryRuntimeDraft,
+                      model: option?.model || '',
+                      modelProvider: option?.modelProvider || props.registryRuntimeDraft.modelProvider,
+                    })
+                  }}
+                >
+                  <option value="">SDK default</option>
+                  {registryRuntimeModels.map(option => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Reasoning</span>
+                <select
+                  value={props.registryRuntimeDraft.reasoningEffort}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, reasoningEffort: event.target.value })}
+                >
+                  {registryRuntimeReasoning.map(option => (
+                    <option key={option.value || 'default'} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field wide">
+                <span>Command</span>
+                <input
+                  value={props.registryRuntimeDraft.command}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, command: event.target.value })}
+                  placeholder={props.registryRuntimeDraft.sdkProvider === 'claude' ? 'node ./simphony-claude-shim.mjs' : 'codex app-server'}
+                />
+              </label>
+              <label className="form-field wide">
+                <span>Endpoint URL</span>
+                <input
+                  value={props.registryRuntimeDraft.endpointURL}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, endpointURL: event.target.value })}
+                  placeholder="https://api.openai.com/v1"
+                />
+              </label>
+              <label className="form-field">
+                <span>API key</span>
+                <input
+                  value={props.registryRuntimeDraft.apiKey}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, apiKey: event.target.value })}
+                  placeholder={props.registry.agent_runtime.api_key_configured ? 'Keep existing' : '$OPENAI_API_KEY'}
+                />
+              </label>
+              <label className="form-field">
+                <span>Auth token</span>
+                <input
+                  value={props.registryRuntimeDraft.authToken}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, authToken: event.target.value })}
+                  placeholder={props.registry.agent_runtime.auth_token_configured ? 'Keep existing' : 'Optional'}
+                />
+              </label>
+              <label className="form-field">
+                <span>Claude permission</span>
+                <input
+                  value={props.registryRuntimeDraft.permissionMode}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, permissionMode: event.target.value })}
+                  placeholder="acceptEdits"
+                />
+              </label>
+              <label className="form-field">
+                <span>Allowed tools</span>
+                <textarea
+                  className="compact-textarea"
+                  value={props.registryRuntimeDraft.allowedTools}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, allowedTools: event.target.value })}
+                  placeholder={'Read\nEdit\nBash'}
+                  spellCheck={false}
+                />
+              </label>
+              <label className="form-field">
+                <span>Disallowed tools</span>
+                <textarea
+                  className="compact-textarea"
+                  value={props.registryRuntimeDraft.disallowedTools}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, disallowedTools: event.target.value })}
+                  placeholder="Optional"
+                  spellCheck={false}
+                />
+              </label>
+              <label className="form-field">
+                <span>Setting sources</span>
+                <textarea
+                  className="compact-textarea"
+                  value={props.registryRuntimeDraft.settingSources}
+                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, settingSources: event.target.value })}
+                  placeholder={'project\nlocal'}
+                  spellCheck={false}
+                />
+              </label>
+            </div>
+            {props.registryRuntimeResult && (
+              <div className="bootstrap-result" role="status">
+                <strong>Agent defaults saved</strong>
+                <span>Secrets are only changed when replacement values are entered.</span>
+                <code>{props.registryRuntimeResult.command}</code>
+              </div>
+            )}
+          </form>
         )}
         {registryEnabled && props.registry && (
           <form
@@ -2628,6 +3056,72 @@ function defaultProjectID(projects: ProjectSummary[]) {
     projects[0]?.id ||
     null
   )
+}
+
+function emptyRegistrySettingsDraft(): RegistrySettingsDraft {
+  return {
+    bindAddress: '127.0.0.1',
+    port: '8080',
+    dashboardEnabled: true,
+    apiPrefix: '/api/v1',
+    maxConcurrentAgents: '',
+    defaultProjectMaxConcurrentAgents: '',
+    allowWorkspaceOverlap: false,
+    allowWorkspaceUnderRegistryDir: false,
+    allowRemoteDashboard: false,
+  }
+}
+
+function registrySettingsDraftFromRegistry(registry: RegistryResponse): RegistrySettingsDraft {
+  return {
+    bindAddress: registry.server?.bind_address || '127.0.0.1',
+    port: registry.server?.port ? String(registry.server.port) : '8080',
+    dashboardEnabled: registry.server?.dashboard_enabled ?? true,
+    apiPrefix: registry.server?.api_prefix || '/api/v1',
+    maxConcurrentAgents: registry.concurrency.max_concurrent_agents > 0 ? String(registry.concurrency.max_concurrent_agents) : '',
+    defaultProjectMaxConcurrentAgents:
+      registry.concurrency.default_project_max_concurrent_agents > 0
+        ? String(registry.concurrency.default_project_max_concurrent_agents)
+        : '',
+    allowWorkspaceOverlap: registry.security.allow_workspace_overlap,
+    allowWorkspaceUnderRegistryDir: registry.security.allow_workspace_under_registry_dir,
+    allowRemoteDashboard: registry.security.allow_remote_dashboard,
+  }
+}
+
+function emptyRegistryRuntimeDraft(): RegistryRuntimeDraft {
+  return {
+    sdkProvider: 'codex',
+    command: '',
+    modelProvider: '',
+    model: '',
+    reasoningEffort: '',
+    endpointURL: '',
+    apiKey: '',
+    authToken: '',
+    permissionMode: '',
+    allowedTools: '',
+    disallowedTools: '',
+    settingSources: '',
+  }
+}
+
+function registryRuntimeDraftFromRegistry(registry: RegistryResponse): RegistryRuntimeDraft {
+  const runtime = registry.agent_runtime || { configured: false }
+  return {
+    sdkProvider: runtime.provider || 'codex',
+    command: runtime.command || '',
+    modelProvider: runtime.model_provider || '',
+    model: runtime.model || '',
+    reasoningEffort: runtime.reasoning_effort || '',
+    endpointURL: runtime.endpoint_url || '',
+    apiKey: '',
+    authToken: '',
+    permissionMode: runtime.permission_mode || '',
+    allowedTools: stringListToText(runtime.allowed_tools || []),
+    disallowedTools: stringListToText(runtime.disallowed_tools || []),
+    settingSources: stringListToText(runtime.setting_sources || []),
+  }
 }
 
 function projectStatus(project: ProjectSummary) {

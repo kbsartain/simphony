@@ -172,6 +172,44 @@ export interface RegistryProjectDeleteResponse {
   change_requires_restart: boolean;
 }
 
+export interface RegistryUpdateRequest {
+  server?: {
+    bind_address?: string;
+    port?: number;
+    dashboard_enabled?: boolean;
+    api_prefix?: string;
+  };
+  concurrency?: {
+    max_concurrent_agents?: number;
+    default_project_max_concurrent_agents?: number;
+  };
+  security?: {
+    allow_workspace_overlap?: boolean;
+    allow_workspace_under_registry_dir?: boolean;
+    allow_remote_dashboard?: boolean;
+  };
+  agent_runtime?: {
+    provider?: string;
+    command?: string;
+    model?: string;
+    model_provider?: string;
+    reasoning_effort?: string;
+    endpoint_url?: string;
+    api_key?: string;
+    auth_token?: string;
+    permission_mode?: string;
+    allowed_tools?: string[];
+    disallowed_tools?: string[];
+    setting_sources?: string[];
+  };
+}
+
+export interface RegistryUpdateResponse {
+  registry: RegistryResponse;
+  command: string;
+  change_requires_restart: boolean;
+}
+
 export interface RegistryServerSummary {
   bind_address: string;
   port: number;

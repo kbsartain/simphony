@@ -144,9 +144,27 @@ func (s *ProjectServer) handleRegistry(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectAPINotFound(w, r)
 		return
 	}
+	if r.Method == http.MethodPut {
+		var req api.RegistryUpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+				Error: api.APIError{Code: "bad_request", Message: "Request body must be valid JSON"},
+			})
+			return
+		}
+		response, status, errCode, err := s.updateRegistrySettings(req)
+		if err != nil {
+			s.writeJSON(w, status, api.APIErrorResponse{
+				Error: api.APIError{Code: errCode, Message: err.Error()},
+			})
+			return
+		}
+		s.writeJSON(w, http.StatusOK, response)
+		return
+	}
 	if r.Method != http.MethodGet {
 		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
-			Error: api.APIError{Code: "method_not_allowed", Message: "Only GET is allowed"},
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only GET or PUT is allowed"},
 		})
 		return
 	}
@@ -970,8 +988,445 @@ func (s *ProjectServer) deleteRegistryProject(projectID string) (api.RegistryPro
 
 func cloneRegistryForAppend(registry *config.ProjectRegistry) *config.ProjectRegistry {
 	next := *registry
+	if registry.Server != nil {
+		server := *registry.Server
+		next.Server = &server
+	}
+	if registry.AgentRuntime != nil {
+		runtime := *registry.AgentRuntime
+		next.AgentRuntime = &runtime
+	}
 	next.Projects = append([]config.RegistryProject(nil), registry.Projects...)
 	return &next
+}
+
+func (s *ProjectServer) updateRegistrySettings(req api.RegistryUpdateRequest) (api.RegistryUpdateResponse, int, string, error) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+
+	registry := s.manager.Registry()
+	if registry == nil {
+		return api.RegistryUpdateResponse{}, http.StatusNotFound, "registry_not_available", fmt.Errorf("no project registry is active")
+	}
+	if strings.TrimSpace(registry.SourcePath) == "" {
+		return api.RegistryUpdateResponse{}, http.StatusInternalServerError, "registry_source_missing", fmt.Errorf("active project registry has no source path")
+	}
+
+	nextRegistry := cloneRegistryForAppend(registry)
+	if err := applyRegistrySettingsUpdate(nextRegistry, req); err != nil {
+		return api.RegistryUpdateResponse{}, http.StatusBadRequest, "registry_settings_invalid", err
+	}
+	if _, err := config.ValidateProjectIsolation(nextRegistry); err != nil {
+		return api.RegistryUpdateResponse{}, http.StatusBadRequest, "registry_validation_error", err
+	}
+	if err := updateRegistrySettingsInFile(registry.SourcePath, nextRegistry, req); err != nil {
+		return api.RegistryUpdateResponse{}, http.StatusInternalServerError, "registry_write_error", err
+	}
+
+	registry.Server = nextRegistry.Server
+	registry.Concurrency = nextRegistry.Concurrency
+	registry.Security = nextRegistry.Security
+	registry.AgentRuntime = nextRegistry.AgentRuntime
+	registry.AgentRuntimeDefaults = nextRegistry.AgentRuntimeDefaults
+	registrySummary, err := registryResponse(registry)
+	if err != nil {
+		return api.RegistryUpdateResponse{}, http.StatusInternalServerError, "registry_validation_error", err
+	}
+	return api.RegistryUpdateResponse{
+		Registry:              registrySummary,
+		Command:               fmt.Sprintf("simphony -config %s", registry.SourcePath),
+		ChangeRequiresRestart: true,
+	}, 0, "", nil
+}
+
+func applyRegistrySettingsUpdate(registry *config.ProjectRegistry, req api.RegistryUpdateRequest) error {
+	if req.Server != nil {
+		if registry.Server == nil {
+			registry.Server = defaultRegistryServerConfig()
+		}
+		if req.Server.BindAddress != nil {
+			bindAddress := strings.TrimSpace(*req.Server.BindAddress)
+			if bindAddress == "" {
+				bindAddress = "127.0.0.1"
+			}
+			registry.Server.BindAddress = bindAddress
+		}
+		if req.Server.Port != nil {
+			if *req.Server.Port <= 0 || *req.Server.Port > 65535 {
+				return fmt.Errorf("server.port must be between 1 and 65535")
+			}
+			registry.Server.Port = *req.Server.Port
+		}
+		if req.Server.DashboardEnabled != nil {
+			registry.Server.DashboardEnabled = *req.Server.DashboardEnabled
+		}
+		if req.Server.APIPrefix != nil {
+			apiPrefix := strings.TrimSpace(*req.Server.APIPrefix)
+			if apiPrefix == "" {
+				apiPrefix = "/api/v1"
+			}
+			apiPrefix = "/" + strings.Trim(apiPrefix, "/")
+			if apiPrefix == "/" {
+				apiPrefix = "/api/v1"
+			}
+			registry.Server.APIPrefix = apiPrefix
+		}
+	}
+	if req.Concurrency != nil {
+		if req.Concurrency.MaxConcurrentAgents != nil {
+			if *req.Concurrency.MaxConcurrentAgents < 0 {
+				return fmt.Errorf("concurrency.max_concurrent_agents must be zero or positive")
+			}
+			registry.Concurrency.MaxConcurrentAgents = *req.Concurrency.MaxConcurrentAgents
+		}
+		if req.Concurrency.DefaultProjectMaxConcurrentAgents != nil {
+			if *req.Concurrency.DefaultProjectMaxConcurrentAgents < 0 {
+				return fmt.Errorf("concurrency.default_project_max_concurrent_agents must be zero or positive")
+			}
+			registry.Concurrency.DefaultProjectMaxConcurrentAgents = *req.Concurrency.DefaultProjectMaxConcurrentAgents
+		}
+	}
+	if req.Security != nil {
+		if req.Security.AllowWorkspaceOverlap != nil {
+			registry.Security.AllowWorkspaceOverlap = *req.Security.AllowWorkspaceOverlap
+		}
+		if req.Security.AllowWorkspaceUnderRegistryDir != nil {
+			registry.Security.AllowWorkspaceUnderRegistryDir = *req.Security.AllowWorkspaceUnderRegistryDir
+		}
+		if req.Security.AllowRemoteDashboard != nil {
+			registry.Security.AllowRemoteDashboard = *req.Security.AllowRemoteDashboard
+		}
+	}
+	if req.AgentRuntime != nil {
+		defaults := cloneRegistryMap(registry.AgentRuntimeDefaults)
+		applyStringPtr(defaults, "provider", req.AgentRuntime.Provider, true)
+		applyStringPtr(defaults, "command", req.AgentRuntime.Command, false)
+		applyStringPtr(defaults, "model", req.AgentRuntime.Model, false)
+		applyStringPtr(defaults, "model_provider", req.AgentRuntime.ModelProvider, false)
+		applyStringPtr(defaults, "reasoning_effort", req.AgentRuntime.ReasoningEffort, false)
+		applyStringPtr(defaults, "endpoint_url", req.AgentRuntime.EndpointURL, false)
+		applyStringPtr(defaults, "api_key", req.AgentRuntime.APIKey, false)
+		applyStringPtr(defaults, "auth_token", req.AgentRuntime.AuthToken, false)
+		applyStringPtr(defaults, "permission_mode", req.AgentRuntime.PermissionMode, false)
+		applyStringSlice(defaults, "allowed_tools", req.AgentRuntime.AllowedTools)
+		applyStringSlice(defaults, "disallowed_tools", req.AgentRuntime.DisallowedTools)
+		applyStringSlice(defaults, "setting_sources", req.AgentRuntime.SettingSources)
+
+		runtime, err := runtimeConfigFromDefaults(defaults)
+		if err != nil {
+			return err
+		}
+		if len(defaults) == 0 {
+			registry.AgentRuntimeDefaults = nil
+			registry.AgentRuntime = nil
+		} else {
+			registry.AgentRuntimeDefaults = defaults
+			registry.AgentRuntime = runtime
+		}
+	}
+	return nil
+}
+
+func applyStringPtr(values map[string]interface{}, key string, value *string, defaultCodex bool) {
+	if value == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		if defaultCodex {
+			values[key] = "codex"
+		} else {
+			delete(values, key)
+		}
+		return
+	}
+	if key == "provider" {
+		trimmed = strings.ToLower(trimmed)
+	}
+	values[key] = trimmed
+}
+
+func applyStringSlice(values map[string]interface{}, key string, items []string) {
+	if items == nil {
+		return
+	}
+	cleaned := make([]interface{}, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			cleaned = append(cleaned, item)
+		}
+	}
+	if len(cleaned) == 0 {
+		delete(values, key)
+		return
+	}
+	values[key] = cleaned
+}
+
+func runtimeConfigFromDefaults(defaults map[string]interface{}) (*api.AgentRuntimeConfig, error) {
+	provider := strings.ToLower(strings.TrimSpace(registryStringDefault(defaults, "provider", "codex")))
+	if provider == "" {
+		provider = "codex"
+	}
+	if provider != "codex" && provider != "claude" {
+		return nil, fmt.Errorf("agent_runtime.provider must be codex or claude, got %q", provider)
+	}
+	runtime := &api.AgentRuntimeConfig{
+		Provider:          provider,
+		Command:           registryString(defaults, "command"),
+		Model:             registryString(defaults, "model"),
+		ModelProvider:     registryString(defaults, "model_provider"),
+		EndpointURL:       registryString(defaults, "endpoint_url"),
+		PermissionMode:    registryString(defaults, "permission_mode"),
+		AllowedTools:      registryStringSlice(defaults, "allowed_tools"),
+		DisallowedTools:   registryStringSlice(defaults, "disallowed_tools"),
+		SettingSources:    registryStringSlice(defaults, "setting_sources"),
+		ApprovalPolicy:    "auto",
+		ThreadSandbox:     "none",
+		TurnSandboxPolicy: "none",
+		TurnTimeoutMs:     3600000,
+		ReadTimeoutMs:     5000,
+		StallTimeoutMs:    300000,
+	}
+	if runtime.Command == "" && provider == "codex" {
+		runtime.Command = "codex app-server"
+	}
+	if runtime.PermissionMode == "" && provider == "claude" {
+		runtime.PermissionMode = "acceptEdits"
+	}
+	if value := registryString(defaults, "reasoning_effort"); value != "" {
+		normalized, err := normalizeRegistryReasoningEffort(value)
+		if err != nil {
+			return nil, fmt.Errorf("agent_runtime.reasoning_effort %w", err)
+		}
+		runtime.ReasoningEffort = normalized
+	}
+	runtime.APIKeyConfigured = strings.TrimSpace(registryString(defaults, "api_key")) != ""
+	runtime.AuthTokenConfigured = strings.TrimSpace(registryString(defaults, "auth_token")) != ""
+	return runtime, nil
+}
+
+func normalizeRegistryReasoningEffort(value string) (string, error) {
+	raw := strings.TrimSpace(value)
+	normalized := strings.ToLower(raw)
+	normalized = strings.ReplaceAll(normalized, "-", "")
+	normalized = strings.ReplaceAll(normalized, "_", "")
+	normalized = strings.ReplaceAll(normalized, " ", "")
+	switch normalized {
+	case "":
+		return "", nil
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("must be one of none, minimal, low, medium, high, or xhigh, got %q", raw)
+	}
+}
+
+func registryStringDefault(values map[string]interface{}, key string, fallback string) string {
+	if value := registryString(values, key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func registryString(values map[string]interface{}, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, ok := values[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func registryStringSlice(values map[string]interface{}, key string) []string {
+	if values == nil {
+		return nil
+	}
+	raw, ok := values[key]
+	if !ok {
+		return nil
+	}
+	switch items := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			text, ok := item.(string)
+			if !ok {
+				continue
+			}
+			text = strings.TrimSpace(text)
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func cloneRegistryMap(in map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for key, value := range in {
+		out[key] = cloneRegistryValue(value)
+	}
+	return out
+}
+
+func cloneRegistryValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return cloneRegistryMap(typed)
+	case []interface{}:
+		out := make([]interface{}, len(typed))
+		for i, item := range typed {
+			out[i] = cloneRegistryValue(item)
+		}
+		return out
+	case []string:
+		out := make([]interface{}, len(typed))
+		for i, item := range typed {
+			out[i] = item
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
+func defaultRegistryServerConfig() *config.RegistryServerConfig {
+	return &config.RegistryServerConfig{
+		BindAddress:      "127.0.0.1",
+		Port:             8080,
+		DashboardEnabled: true,
+		APIPrefix:        "/api/v1",
+	}
+}
+
+func updateRegistrySettingsInFile(registryPath string, registry *config.ProjectRegistry, req api.RegistryUpdateRequest) error {
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		return fmt.Errorf("read registry: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse registry yaml: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("registry root must be a mapping")
+	}
+	root := doc.Content[0]
+	if registry.Server != nil {
+		serverNode := ensureMappingValue(root, "server")
+		if serverNode.Kind != yaml.MappingNode {
+			return fmt.Errorf("server must be a mapping")
+		}
+		setMappingValue(serverNode, "bind_address", scalarNode(registry.Server.BindAddress))
+		setMappingValue(serverNode, "port", intNode(registry.Server.Port))
+		setMappingValue(serverNode, "dashboard_enabled", boolNode(registry.Server.DashboardEnabled))
+		setMappingValue(serverNode, "api_prefix", scalarNode(registry.Server.APIPrefix))
+	}
+
+	concurrencyNode := ensureMappingValue(root, "concurrency")
+	if concurrencyNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("concurrency must be a mapping")
+	}
+	if registry.Concurrency.MaxConcurrentAgents > 0 {
+		setMappingValue(concurrencyNode, "max_concurrent_agents", intNode(registry.Concurrency.MaxConcurrentAgents))
+	} else {
+		removeMappingValue(concurrencyNode, "max_concurrent_agents")
+	}
+	if registry.Concurrency.DefaultProjectMaxConcurrentAgents > 0 {
+		setMappingValue(concurrencyNode, "default_project_max_concurrent_agents", intNode(registry.Concurrency.DefaultProjectMaxConcurrentAgents))
+	} else {
+		removeMappingValue(concurrencyNode, "default_project_max_concurrent_agents")
+	}
+	if len(concurrencyNode.Content) == 0 {
+		removeMappingValue(root, "concurrency")
+	}
+
+	securityNode := ensureMappingValue(root, "security")
+	if securityNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("security must be a mapping")
+	}
+	setMappingValue(securityNode, "allow_workspace_overlap", boolNode(registry.Security.AllowWorkspaceOverlap))
+	setMappingValue(securityNode, "allow_workspace_under_registry_dir", boolNode(registry.Security.AllowWorkspaceUnderRegistryDir))
+	setMappingValue(securityNode, "allow_remote_dashboard", boolNode(registry.Security.AllowRemoteDashboard))
+
+	if req.AgentRuntime != nil {
+		agentRuntimeNode := ensureMappingValue(root, "agent_runtime")
+		if agentRuntimeNode.Kind != yaml.MappingNode {
+			return fmt.Errorf("agent_runtime must be a mapping")
+		}
+		updateRegistryAgentRuntimeNode(agentRuntimeNode, registry.AgentRuntimeDefaults, req.AgentRuntime)
+		if len(agentRuntimeNode.Content) == 0 {
+			removeMappingValue(root, "agent_runtime")
+		}
+	}
+
+	file, err := os.OpenFile(registryPath, os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("open registry for write: %w", err)
+	}
+	defer file.Close()
+	encoder := yaml.NewEncoder(file)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&doc); err != nil {
+		return fmt.Errorf("write registry yaml: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return fmt.Errorf("finish registry yaml: %w", err)
+	}
+	return nil
+}
+
+func updateRegistryAgentRuntimeNode(node *yaml.Node, defaults map[string]interface{}, req *api.RegistryAgentRuntimeUpdateRequest) {
+	setStringMappingFromDefaults(node, defaults, "provider")
+	setStringMappingFromDefaults(node, defaults, "command")
+	setStringMappingFromDefaults(node, defaults, "model")
+	setStringMappingFromDefaults(node, defaults, "model_provider")
+	setStringMappingFromDefaults(node, defaults, "reasoning_effort")
+	setStringMappingFromDefaults(node, defaults, "endpoint_url")
+	if req.APIKey != nil {
+		setStringMappingFromDefaults(node, defaults, "api_key")
+	}
+	if req.AuthToken != nil {
+		setStringMappingFromDefaults(node, defaults, "auth_token")
+	}
+	setStringMappingFromDefaults(node, defaults, "permission_mode")
+	setStringSliceMappingFromDefaults(node, defaults, "allowed_tools")
+	setStringSliceMappingFromDefaults(node, defaults, "disallowed_tools")
+	setStringSliceMappingFromDefaults(node, defaults, "setting_sources")
+}
+
+func setStringMappingFromDefaults(node *yaml.Node, defaults map[string]interface{}, key string) {
+	value := registryString(defaults, key)
+	if value == "" {
+		removeMappingValue(node, key)
+		return
+	}
+	setMappingValue(node, key, scalarNode(value))
+}
+
+func setStringSliceMappingFromDefaults(node *yaml.Node, defaults map[string]interface{}, key string) {
+	items := registryStringSlice(defaults, key)
+	if len(items) == 0 {
+		removeMappingValue(node, key)
+		return
+	}
+	setMappingValue(node, key, stringSequenceNode(items))
 }
 
 func appendRegistryProjectToFile(registryPath string, req api.RegistryProjectCreateRequest) error {
@@ -1154,6 +1609,16 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
+func ensureMappingValue(node *yaml.Node, key string) *yaml.Node {
+	existing := mappingValue(node, key)
+	if existing != nil {
+		return existing
+	}
+	created := &yaml.Node{Kind: yaml.MappingNode}
+	node.Content = append(node.Content, scalarNode(key), created)
+	return created
+}
+
 func setMappingValue(node *yaml.Node, key string, value *yaml.Node) {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
@@ -1186,6 +1651,14 @@ func boolNode(value bool) *yaml.Node {
 
 func intNode(value int) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", value)}
+}
+
+func stringSequenceNode(values []string) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, value := range values {
+		node.Content = append(node.Content, scalarNode(value))
+	}
+	return node
 }
 
 func registryAgentRuntimeSummary(runtime *api.AgentRuntimeConfig) api.RegistryAgentRuntimeSummary {

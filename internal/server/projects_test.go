@@ -199,6 +199,251 @@ func TestProjectServerReturnsRuntimeMode(t *testing.T) {
 	}
 }
 
+func TestProjectServerUpdatesRegistrySettings(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+server:
+  bind_address: 127.0.0.1
+  port: 8080
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	s := newTestProjectServer(&fakeProjectManager{registry: registry})
+
+	payload := `{
+  "server": {
+    "bind_address": "127.0.0.1",
+    "port": 9090,
+    "dashboard_enabled": false,
+    "api_prefix": "custom-api"
+  },
+  "concurrency": {
+    "max_concurrent_agents": 8,
+    "default_project_max_concurrent_agents": 2
+  },
+  "security": {
+    "allow_workspace_overlap": true,
+    "allow_workspace_under_registry_dir": true,
+    "allow_remote_dashboard": false
+  }
+}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/registry", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.RegistryUpdateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Registry.Server == nil || body.Registry.Server.Port != 9090 || body.Registry.Server.APIPrefix != "/custom-api" || body.Registry.Server.DashboardEnabled {
+		t.Fatalf("registry server = %+v, want updated server settings", body.Registry.Server)
+	}
+	if body.Registry.Concurrency.MaxConcurrentAgents != 8 || body.Registry.Concurrency.DefaultProjectMaxConcurrentAgents != 2 {
+		t.Fatalf("registry concurrency = %+v, want updated caps", body.Registry.Concurrency)
+	}
+	if !body.Registry.Security.AllowWorkspaceOverlap || !body.Registry.Security.AllowWorkspaceUnderRegistryDir || body.Registry.Security.AllowRemoteDashboard {
+		t.Fatalf("registry security = %+v, want updated security flags", body.Registry.Security)
+	}
+	if !body.ChangeRequiresRestart || !strings.Contains(body.Command, "-config") {
+		t.Fatalf("restart metadata = command %q restart %v, want restart command", body.Command, body.ChangeRequiresRestart)
+	}
+	if registry.Server.Port != 9090 || registry.Server.APIPrefix != "/custom-api" || registry.Concurrency.MaxConcurrentAgents != 8 {
+		t.Fatalf("manager registry = %+v, want in-memory settings updated", registry)
+	}
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"port: 9090",
+		"dashboard_enabled: false",
+		"api_prefix: /custom-api",
+		"max_concurrent_agents: 8",
+		"default_project_max_concurrent_agents: 2",
+		"allow_workspace_overlap: true",
+		"allow_workspace_under_registry_dir: true",
+		"allow_remote_dashboard: false",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("registry file = %q, want %q", text, want)
+		}
+	}
+}
+
+func TestProjectServerRejectsInvalidRegistrySettings(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	before, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	s := newTestProjectServer(&fakeProjectManager{registry: registry})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/registry", strings.NewReader(`{"server":{"port":70000}}`))
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	var body api.APIErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if body.Error.Code != "registry_settings_invalid" {
+		t.Fatalf("error code = %q, want registry_settings_invalid", body.Error.Code)
+	}
+	after, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("registry file changed on invalid settings")
+	}
+}
+
+func TestProjectServerUpdatesRegistryAgentRuntimeDefaultsAndPreservesSecrets(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+agent_runtime:
+  provider: codex
+  model: old-model
+  api_key: old-secret
+  auth_token: old-token
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	s := newTestProjectServer(&fakeProjectManager{registry: registry})
+
+	payload := `{
+  "agent_runtime": {
+    "provider": "codex",
+    "model": "kimi-k2",
+    "model_provider": "moonshot",
+    "reasoning_effort": "medium",
+    "endpoint_url": "https://openai-compatible.example/v1"
+  }
+}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/registry", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.RegistryUpdateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Registry.AgentRuntime.Provider != "codex" || body.Registry.AgentRuntime.Model != "kimi-k2" || body.Registry.AgentRuntime.ModelProvider != "moonshot" {
+		t.Fatalf("agent runtime = %+v, want updated codex moonshot model", body.Registry.AgentRuntime)
+	}
+	if !body.Registry.AgentRuntime.APIKeyConfigured || !body.Registry.AgentRuntime.AuthTokenConfigured {
+		t.Fatalf("secret flags = %+v, want existing secrets preserved", body.Registry.AgentRuntime)
+	}
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"model: kimi-k2",
+		"model_provider: moonshot",
+		"reasoning_effort: medium",
+		"endpoint_url: https://openai-compatible.example/v1",
+		"api_key: old-secret",
+		"auth_token: old-token",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("registry file = %q, want %q", text, want)
+		}
+	}
+}
+
+func TestProjectServerReplacesRegistryAgentRuntimeSecretWhenProvided(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+agent_runtime:
+  provider: codex
+  api_key: old-secret
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	s := newTestProjectServer(&fakeProjectManager{registry: registry})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/registry", strings.NewReader(`{"agent_runtime":{"provider":"claude","api_key":"$ANTHROPIC_API_KEY","permission_mode":"acceptEdits","allowed_tools":["Read","Edit"]}}`))
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.RegistryUpdateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Registry.AgentRuntime.Provider != "claude" || body.Registry.AgentRuntime.PermissionMode != "acceptEdits" {
+		t.Fatalf("agent runtime = %+v, want claude runtime", body.Registry.AgentRuntime)
+	}
+	if !body.Registry.AgentRuntime.APIKeyConfigured {
+		t.Fatalf("api key flag = false, want configured")
+	}
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "old-secret") || !strings.Contains(text, "api_key: $ANTHROPIC_API_KEY") || !strings.Contains(text, "provider: claude") {
+		t.Fatalf("registry file = %q, want replaced secret and claude provider", text)
+	}
+	if !strings.Contains(text, "- Read") || !strings.Contains(text, "- Edit") {
+		t.Fatalf("registry file = %q, want allowed tool list", text)
+	}
+}
+
 func TestProjectServerCreatesRegistryProject(t *testing.T) {
 	dir := t.TempDir()
 	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")

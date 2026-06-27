@@ -458,6 +458,58 @@ type RegistryProjectDeleteResponse struct {
 	ChangeRequiresRestart bool             `json:"change_requires_restart"`
 }
 
+// RegistryServerUpdateRequest updates aggregate server registry settings.
+type RegistryServerUpdateRequest struct {
+	BindAddress      *string `json:"bind_address,omitempty"`
+	Port             *int    `json:"port,omitempty"`
+	DashboardEnabled *bool   `json:"dashboard_enabled,omitempty"`
+	APIPrefix        *string `json:"api_prefix,omitempty"`
+}
+
+// RegistryConcurrencyUpdateRequest updates supervisor concurrency registry settings.
+type RegistryConcurrencyUpdateRequest struct {
+	MaxConcurrentAgents               *int `json:"max_concurrent_agents,omitempty"`
+	DefaultProjectMaxConcurrentAgents *int `json:"default_project_max_concurrent_agents,omitempty"`
+}
+
+// RegistrySecurityUpdateRequest updates multi-project isolation guardrails.
+type RegistrySecurityUpdateRequest struct {
+	AllowWorkspaceOverlap          *bool `json:"allow_workspace_overlap,omitempty"`
+	AllowWorkspaceUnderRegistryDir *bool `json:"allow_workspace_under_registry_dir,omitempty"`
+	AllowRemoteDashboard           *bool `json:"allow_remote_dashboard,omitempty"`
+}
+
+// RegistryAgentRuntimeUpdateRequest updates global agent runtime defaults.
+type RegistryAgentRuntimeUpdateRequest struct {
+	Provider        *string  `json:"provider,omitempty"`
+	Command         *string  `json:"command,omitempty"`
+	Model           *string  `json:"model,omitempty"`
+	ModelProvider   *string  `json:"model_provider,omitempty"`
+	ReasoningEffort *string  `json:"reasoning_effort,omitempty"`
+	EndpointURL     *string  `json:"endpoint_url,omitempty"`
+	APIKey          *string  `json:"api_key,omitempty"`
+	AuthToken       *string  `json:"auth_token,omitempty"`
+	PermissionMode  *string  `json:"permission_mode,omitempty"`
+	AllowedTools    []string `json:"allowed_tools,omitempty"`
+	DisallowedTools []string `json:"disallowed_tools,omitempty"`
+	SettingSources  []string `json:"setting_sources,omitempty"`
+}
+
+// RegistryUpdateRequest updates non-secret global registry settings.
+type RegistryUpdateRequest struct {
+	Server       *RegistryServerUpdateRequest       `json:"server,omitempty"`
+	Concurrency  *RegistryConcurrencyUpdateRequest  `json:"concurrency,omitempty"`
+	Security     *RegistrySecurityUpdateRequest     `json:"security,omitempty"`
+	AgentRuntime *RegistryAgentRuntimeUpdateRequest `json:"agent_runtime,omitempty"`
+}
+
+// RegistryUpdateResponse reports persisted global registry settings.
+type RegistryUpdateResponse struct {
+	Registry              RegistryResponse `json:"registry"`
+	Command               string           `json:"command"`
+	ChangeRequiresRestart bool             `json:"change_requires_restart"`
+}
+
 // RegistryServerSummary describes the aggregate multi-project server config.
 type RegistryServerSummary struct {
 	BindAddress      string `json:"bind_address"`

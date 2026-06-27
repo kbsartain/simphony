@@ -231,7 +231,7 @@ func runProjectRegistry(ctx context.Context, registryPath string, projectID stri
 			}
 		}()
 		fmt.Printf("Project API listening on http://%s:%d%s/projects\n", registry.Server.BindAddress, registry.Server.Port, registry.Server.APIPrefix)
-		fmt.Println("Multi-project dashboard UI is planned next; use the project API for aggregate state.")
+		fmt.Printf("Dashboard/API listening on http://%s:%d\n", registry.Server.BindAddress, registry.Server.Port)
 	} else {
 		fmt.Println("No registry server configured; project runtimes are running headless.")
 	}
