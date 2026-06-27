@@ -100,8 +100,8 @@ Backlog:
 
 Status:
 
-- Done: `MP-2.1`, `MP-2.2`, `MP-2.3`, `MP-2.4`, and sibling startup failure isolation for `MP-2.6`.
-- Partial: `MP-2.5`; project lifecycle logs include project fields, while deep orchestrator logs remain single-project style until a logging context is added.
+- Done: `MP-2.1`, `MP-2.2`, `MP-2.3`, `MP-2.4`, `MP-2.5`, and sibling startup failure isolation for `MP-2.6`.
+- Done: orchestrator runtime logs now inherit `project_id` and `project_name` from each project worker.
 - Partial: `MP-2.7`; manager lifecycle tests are in place, with deeper hot-reload tests still pending.
 
 Acceptance:

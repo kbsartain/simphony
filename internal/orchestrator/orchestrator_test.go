@@ -322,6 +322,17 @@ func TestOrchestrator_DispatchEligibility(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_LogPrefixIncludesProjectContext(t *testing.T) {
+	orch := New(defaultConfig(), nil, nil, nil)
+	orch.SetLogContext(" simphony ", " Simphony ")
+
+	got := orch.logPrefix()
+	want := `project_id=simphony project_name="Simphony"`
+	if got != want {
+		t.Fatalf("logPrefix() = %q, want %q", got, want)
+	}
+}
+
 func TestOrchestrator_MovesIssueToWorkingStateBeforeRun(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{

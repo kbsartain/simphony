@@ -304,6 +304,7 @@ func (r *Runtime) build() (*api.WorkflowDefinition, *api.WorkflowConfig, *agent.
 
 	runner := agent.NewRunner(def.PromptTemplate)
 	orch := orchestrator.New(cfg, trackerClient, wsMgr, runner)
+	orch.SetLogContext(r.project.ID, r.project.Name)
 	orch.SetDispatchLimiter(r.limiter)
 	return def, cfg, runner, orch, nil
 }
