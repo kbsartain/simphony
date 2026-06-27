@@ -122,7 +122,9 @@ When a multi-project process is running, start triage from the aggregate project
 curl http://localhost:8080/api/v1/projects
 ```
 
-The project list shows which projects are disabled, stopped, failed, running, retrying, or waiting on the supervisor concurrency gate. A failed project does not stop healthy sibling projects. Fix that project's `WORKFLOW.md`, Linear settings, hooks, or workspace root, then restart the Simphony process to start the failed runtime cleanly.
+The project list shows which projects are disabled, stopped, failed, running, retrying, waiting on the supervisor concurrency gate, or missing an active workflow watcher. A failed project does not stop healthy sibling projects. Fix that project's `WORKFLOW.md`, Linear settings, hooks, or workspace root, then restart the Simphony process to start the failed runtime cleanly.
+
+Linear validation is intentionally on-demand rather than part of passive health polling. Use the dashboard Settings page's **Test connection** action, or call the project-scoped validation endpoint, when you want Simphony to contact Linear and verify the current tracker settings.
 
 To narrow the blast radius while debugging, start only the affected project:
 

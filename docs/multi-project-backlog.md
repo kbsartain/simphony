@@ -232,7 +232,7 @@ Status:
 - Done: `MP-7.1`; `simphony validate -config ./simphony.yaml` validates the registry and enabled project workflows without starting runtimes. The legacy `-validate-config` flag remains available.
 - Done: `MP-7.2`; `simphony projects -config ./simphony.yaml` lists configured projects, server/global concurrency settings, validation warnings, workspace roots, tracker slugs, runtime defaults, and config health.
 - Done: `MP-7.3`; `simphony -config ./simphony.yaml -project <id>` starts only one enabled project runtime while leaving the full registry visible to summaries and the aggregate API.
-- Partial: `MP-7.4`; static registry/workspace/config health is available from `validate` and `projects`, and watcher-state reporting is exposed through project summaries/API/dashboard. Live tracker validation remains a future enhancement.
+- Done: `MP-7.4`; static registry/workspace/config health is available from `validate` and `projects`, watcher-state reporting is exposed through project summaries/API/dashboard, and live Linear validation is available as an explicit per-project settings/API action instead of background polling.
 - Done: `MP-7.5`; operations docs cover startup, shutdown, logging fields, project-scoped inspection, selected-project debugging, hot reload isolation, and recovery guidance.
 - Done: `MP-7.6`; `docs/examples/two-projects.simphony.yaml` provides a two-project workstation registry example.
 
@@ -256,6 +256,6 @@ Acceptance:
 
 - Answered: global agent defaults fill missing values; project `agent_runtime` fields override individual global fields.
 - Answered: disabled projects are shown as inactive so operators can edit, re-enable, or remove them from Project Setup.
-- Should project IDs be manually chosen, derived from folder names, or both?
-- Should multi-project mode require dashboard authentication before binding outside localhost?
-- Should the global concurrency gate use strict FIFO fairness or lightweight best-effort fairness?
+- Answered: project IDs are explicit stable registry keys. Bootstrap/setup flows may derive starter IDs for convenience, but operators can edit them before saving.
+- Answered: this iteration does not include built-in dashboard authentication. Non-loopback dashboard/API binding requires `security.allow_remote_dashboard: true`; remote deployments should sit behind a private network, authenticated proxy, or tunnel.
+- Answered: the global concurrency gate uses lightweight owner-aware FIFO fairness. It avoids a larger scheduler while preventing one project from repeatedly bypassing earlier waiting projects.

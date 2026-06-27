@@ -232,9 +232,10 @@ Validates, applies, and saves updated workflow settings. If a masked secret valu
 
 ```http
 POST /api/v1/settings/validate-tracker
+POST /api/v1/projects/{project_id}/settings/validate-tracker
 ```
 
-Validates the submitted tracker settings against Linear without saving them. The server resolves the workflow config, creates a Linear client, and fetches candidate issues for the configured project and active states.
+Validates the submitted tracker settings against Linear without saving them. The server resolves the workflow config, creates a Linear client, and fetches candidate issues for the configured project and active states. In multi-project mode, use the project-scoped route unless exactly one project runtime is running.
 
 ```json
 {
