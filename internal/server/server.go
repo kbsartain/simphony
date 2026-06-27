@@ -10,6 +10,7 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/kbsartain/simphony/internal/config"
 	"github.com/kbsartain/simphony/internal/tracker"
 	"github.com/kbsartain/simphony/pkg/api"
+	"gopkg.in/yaml.v3"
 )
 
 const settingsSecretMask = "********"
@@ -72,6 +74,8 @@ func NewWithSettings(orch Orchestrator, port int, workflowPath string, applier S
 }
 
 func (s *Server) registerRoutes() {
+	s.mux.HandleFunc("/api/v1/runtime-mode", s.withCORS(s.handleRuntimeMode))
+	s.mux.HandleFunc("/api/v1/registry/bootstrap", s.withCORS(s.handleRegistryBootstrap))
 	s.mux.HandleFunc("/api/v1/state", s.withCORS(s.handleState))
 	s.mux.HandleFunc("/api/v1/refresh", s.withCORS(s.handleRefresh))
 	s.mux.HandleFunc("/api/v1/settings/validate-tracker", s.withCORS(s.handleValidateTrackerSettings))
@@ -187,6 +191,187 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := s.orch.Refresh()
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleRuntimeMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only GET is allowed"},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, api.RuntimeModeResponse{
+		Mode:                  api.RuntimeModeSingleWorkflow,
+		WorkflowPath:          s.workflowPath,
+		ChangeRequiresRestart: true,
+	})
+}
+
+func (s *Server) handleRegistryBootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+	if s.workflowPath == "" {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "workflow_not_configured", Message: "Registry bootstrap requires a configured workflow path"},
+		})
+		return
+	}
+
+	response, content, err := s.buildRegistryBootstrap()
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, api.APIErrorResponse{
+			Error: api.APIError{Code: "registry_bootstrap_error", Message: err.Error()},
+		})
+		return
+	}
+
+	info, err := os.Stat(response.RegistryPath)
+	if err == nil {
+		if info.IsDir() {
+			s.writeJSON(w, http.StatusConflict, api.APIErrorResponse{
+				Error: api.APIError{Code: "registry_path_is_directory", Message: fmt.Sprintf("%s is a directory", response.RegistryPath)},
+			})
+			return
+		}
+		response.Created = false
+		s.writeJSON(w, http.StatusOK, response)
+		return
+	}
+	if !os.IsNotExist(err) {
+		s.writeJSON(w, http.StatusInternalServerError, api.APIErrorResponse{
+			Error: api.APIError{Code: "registry_stat_error", Message: err.Error()},
+		})
+		return
+	}
+	if err := os.WriteFile(response.RegistryPath, content, 0o644); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, api.APIErrorResponse{
+			Error: api.APIError{Code: "registry_write_error", Message: err.Error()},
+		})
+		return
+	}
+	response.Created = true
+	s.writeJSON(w, http.StatusCreated, response)
+}
+
+type bootstrapRegistryYAML struct {
+	Server   bootstrapRegistryServer    `yaml:"server"`
+	Security bootstrapRegistrySecurity  `yaml:"security,omitempty"`
+	Projects []bootstrapRegistryProject `yaml:"projects"`
+}
+
+type bootstrapRegistryServer struct {
+	BindAddress      string `yaml:"bind_address"`
+	Port             int    `yaml:"port"`
+	DashboardEnabled bool   `yaml:"dashboard_enabled"`
+	APIPrefix        string `yaml:"api_prefix"`
+}
+
+type bootstrapRegistrySecurity struct {
+	AllowWorkspaceUnderRegistryDir bool `yaml:"allow_workspace_under_registry_dir,omitempty"`
+}
+
+type bootstrapRegistryProject struct {
+	ID           string `yaml:"id"`
+	Name         string `yaml:"name"`
+	WorkflowPath string `yaml:"workflow_path"`
+}
+
+func (s *Server) buildRegistryBootstrap() (api.RegistryBootstrapResponse, []byte, error) {
+	workflowPath, err := filepath.Abs(s.workflowPath)
+	if err != nil {
+		return api.RegistryBootstrapResponse{}, nil, fmt.Errorf("resolve workflow path: %w", err)
+	}
+	workflowDir := filepath.Dir(workflowPath)
+	registryPath := filepath.Join(workflowDir, "simphony.yaml")
+	workflowRel, err := filepath.Rel(workflowDir, workflowPath)
+	if err != nil {
+		return api.RegistryBootstrapResponse{}, nil, fmt.Errorf("resolve workflow relative path: %w", err)
+	}
+
+	projectName := filepath.Base(workflowDir)
+	if strings.TrimSpace(projectName) == "" || projectName == "." || projectName == string(filepath.Separator) {
+		projectName = "Project"
+	}
+	projectID := registryProjectID(projectName)
+
+	serverPort := s.port
+	if serverPort == 0 {
+		serverPort = 8080
+	}
+
+	registryFile := bootstrapRegistryYAML{
+		Server: bootstrapRegistryServer{
+			BindAddress:      "127.0.0.1",
+			Port:             serverPort,
+			DashboardEnabled: true,
+			APIPrefix:        "/api/v1",
+		},
+		Projects: []bootstrapRegistryProject{
+			{
+				ID:           projectID,
+				Name:         projectName,
+				WorkflowPath: filepath.ToSlash(workflowRel),
+			},
+		},
+	}
+	if workspaceUnderRegistryDir(workflowPath, workflowDir) {
+		registryFile.Security.AllowWorkspaceUnderRegistryDir = true
+	}
+	content, err := yaml.Marshal(registryFile)
+	if err != nil {
+		return api.RegistryBootstrapResponse{}, nil, fmt.Errorf("render registry yaml: %w", err)
+	}
+
+	response := api.RegistryBootstrapResponse{
+		RegistryPath: registryPath,
+		WorkflowPath: workflowPath,
+		ProjectID:    projectID,
+		ProjectName:  projectName,
+		Command:      fmt.Sprintf("simphony -config %s", registryPath),
+	}
+	return response, content, nil
+}
+
+var registryProjectIDInvalid = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+func registryProjectID(name string) string {
+	id := strings.ToLower(strings.Trim(registryProjectIDInvalid.ReplaceAllString(name, "-"), ".-_"))
+	if id == "" {
+		return "project"
+	}
+	first := id[0]
+	if (first >= 'a' && first <= 'z') || (first >= '0' && first <= '9') {
+		return id
+	}
+	return "project-" + id
+}
+
+func workspaceUnderRegistryDir(workflowPath string, registryDir string) bool {
+	def, err := config.LoadWorkflow(workflowPath)
+	if err != nil {
+		return false
+	}
+	cfg, err := config.ResolveConfig(def, filepath.Dir(workflowPath))
+	if err != nil {
+		return false
+	}
+	workspaceRoot, err := filepath.Abs(cfg.Workspace.Root)
+	if err != nil {
+		return false
+	}
+	registryDir, err = filepath.Abs(registryDir)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(registryDir, workspaceRoot)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {

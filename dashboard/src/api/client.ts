@@ -1,11 +1,16 @@
 import {
   APIErrorResponse,
   IssueDetailResponse,
+  RegistryBootstrapResponse,
+  RegistryProjectCreateRequest,
+  RegistryProjectCreateResponse,
   ProjectSummary,
   ProjectsResponse,
+  RegistryResponse,
   RefreshResponse,
   RetrySnapshot,
   RunningSnapshot,
+  RuntimeModeResponse,
   SettingsResponse,
   SettingsUpdateRequest,
   SettingsValidationResponse,
@@ -22,6 +27,52 @@ export async function fetchProjects(): Promise<ProjectsResponse> {
       used_agents: response.concurrency?.used_agents || 0,
       available_agents: response.concurrency?.available_agents || 0,
     },
+  }
+}
+
+export async function fetchRegistry(): Promise<RegistryResponse> {
+  return normalizeRegistry(await fetchJSON<RegistryResponse>('/api/v1/registry'))
+}
+
+export async function fetchRuntimeMode(): Promise<RuntimeModeResponse> {
+  const mode = await fetchJSON<RuntimeModeResponse>('/api/v1/runtime-mode')
+  return {
+    mode: mode.mode || 'single_workflow',
+    workflow_path: mode.workflow_path || '',
+    registry_path: mode.registry_path || '',
+    change_requires_restart: Boolean(mode.change_requires_restart),
+  }
+}
+
+export async function bootstrapRegistry(): Promise<RegistryBootstrapResponse> {
+  const response = await fetchJSON<RegistryBootstrapResponse>('/api/v1/registry/bootstrap', { method: 'POST' })
+  return {
+    registry_path: response.registry_path || '',
+    workflow_path: response.workflow_path || '',
+    project_id: response.project_id || '',
+    project_name: response.project_name || '',
+    command: response.command || '',
+    created: Boolean(response.created),
+  }
+}
+
+export async function createRegistryProject(request: RegistryProjectCreateRequest): Promise<RegistryProjectCreateResponse> {
+  const response = await fetchJSON<RegistryProjectCreateResponse>('/api/v1/registry/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  return {
+    registry: normalizeRegistry(response.registry),
+    project: {
+      id: response.project?.id || '',
+      name: response.project?.name || response.project?.id || 'Unnamed project',
+      workflow_path: response.project?.workflow_path || '',
+      enabled: Boolean(response.project?.enabled),
+      max_concurrent_agents: response.project?.max_concurrent_agents || 0,
+    },
+    command: response.command || '',
+    change_requires_restart: Boolean(response.change_requires_restart),
   }
 }
 
@@ -77,6 +128,48 @@ function normalizeProjectSummary(project: ProjectSummary): ProjectSummary {
     counts: normalizeCounts(project.counts),
     waiting_on_supervisor: Boolean(project.waiting_on_supervisor),
     last_supervisor_deferred_at: project.last_supervisor_deferred_at || '',
+  }
+}
+
+function normalizeRegistry(registry: RegistryResponse): RegistryResponse {
+  return {
+    ...registry,
+    generated_at: registry.generated_at || '',
+    source_path: registry.source_path || '',
+    server: registry.server
+      ? {
+          bind_address: registry.server.bind_address || '',
+          port: registry.server.port || 0,
+          dashboard_enabled: Boolean(registry.server.dashboard_enabled),
+          api_prefix: registry.server.api_prefix || '/api/v1',
+        }
+      : undefined,
+    concurrency: {
+      max_concurrent_agents: registry.concurrency?.max_concurrent_agents || 0,
+      default_project_max_concurrent_agents: registry.concurrency?.default_project_max_concurrent_agents || 0,
+    },
+    security: {
+      allow_workspace_overlap: Boolean(registry.security?.allow_workspace_overlap),
+      allow_workspace_under_registry_dir: Boolean(registry.security?.allow_workspace_under_registry_dir),
+      allow_remote_dashboard: Boolean(registry.security?.allow_remote_dashboard),
+    },
+    agent_runtime: {
+      ...registry.agent_runtime,
+      configured: Boolean(registry.agent_runtime?.configured),
+      env_keys: registry.agent_runtime?.env_keys || [],
+      stage_override_keys: registry.agent_runtime?.stage_override_keys || [],
+      allowed_tools: registry.agent_runtime?.allowed_tools || [],
+      disallowed_tools: registry.agent_runtime?.disallowed_tools || [],
+      setting_sources: registry.agent_runtime?.setting_sources || [],
+    },
+    projects: (registry.projects || []).map(project => ({
+      id: project.id || '',
+      name: project.name || project.id || 'Unnamed project',
+      workflow_path: project.workflow_path || '',
+      enabled: Boolean(project.enabled),
+      max_concurrent_agents: project.max_concurrent_agents || 0,
+    })),
+    warnings: registry.warnings || [],
   }
 }
 

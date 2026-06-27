@@ -119,6 +119,98 @@ export interface ProjectsResponse {
   concurrency: SupervisorConcurrency;
 }
 
+export interface RuntimeModeResponse {
+  mode: 'single_workflow' | 'project_registry' | string;
+  workflow_path?: string;
+  registry_path?: string;
+  change_requires_restart: boolean;
+}
+
+export interface RegistryBootstrapResponse {
+  registry_path: string;
+  workflow_path: string;
+  project_id: string;
+  project_name: string;
+  command: string;
+  created: boolean;
+}
+
+export interface RegistryProjectCreateRequest {
+  id: string;
+  name?: string;
+  workflow_path: string;
+  enabled?: boolean;
+  max_concurrent_agents?: number;
+}
+
+export interface RegistryProjectCreateResponse {
+  registry: RegistryResponse;
+  project: RegistryProjectSummary;
+  command: string;
+  change_requires_restart: boolean;
+}
+
+export interface RegistryServerSummary {
+  bind_address: string;
+  port: number;
+  dashboard_enabled: boolean;
+  api_prefix: string;
+}
+
+export interface RegistryConcurrencySummary {
+  max_concurrent_agents: number;
+  default_project_max_concurrent_agents: number;
+}
+
+export interface RegistrySecuritySummary {
+  allow_workspace_overlap: boolean;
+  allow_workspace_under_registry_dir: boolean;
+  allow_remote_dashboard: boolean;
+}
+
+export interface RegistryAgentRuntimeSummary {
+  configured: boolean;
+  provider?: string;
+  command?: string;
+  model?: string;
+  model_provider?: string;
+  reasoning_effort?: string;
+  endpoint_url?: string;
+  api_key_configured?: boolean;
+  auth_token_configured?: boolean;
+  env_keys?: string[];
+  stage_override_keys?: string[];
+  permission_mode?: string;
+  allowed_tools?: string[];
+  disallowed_tools?: string[];
+  setting_sources?: string[];
+}
+
+export interface RegistryProjectSummary {
+  id: string;
+  name: string;
+  workflow_path: string;
+  enabled: boolean;
+  max_concurrent_agents?: number;
+}
+
+export interface RegistryWarningSummary {
+  code: string;
+  message: string;
+  project_ids?: string[];
+}
+
+export interface RegistryResponse {
+  generated_at: string;
+  source_path: string;
+  server?: RegistryServerSummary;
+  concurrency: RegistryConcurrencySummary;
+  security: RegistrySecuritySummary;
+  agent_runtime: RegistryAgentRuntimeSummary;
+  projects: RegistryProjectSummary[];
+  warnings?: RegistryWarningSummary[];
+}
+
 export interface IssueDetailResponse {
   issue_identifier: string;
   issue_id: string;

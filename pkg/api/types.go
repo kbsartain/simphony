@@ -391,6 +391,117 @@ type ProjectsResponse struct {
 	Concurrency SupervisorConcurrency `json:"concurrency"`
 }
 
+const (
+	// RuntimeModeSingleWorkflow identifies a server started from one WORKFLOW.md.
+	RuntimeModeSingleWorkflow = "single_workflow"
+	// RuntimeModeProjectRegistry identifies a server started from simphony.yaml.
+	RuntimeModeProjectRegistry = "project_registry"
+)
+
+// RuntimeModeResponse reports the server startup mode.
+type RuntimeModeResponse struct {
+	Mode                  string `json:"mode"`
+	WorkflowPath          string `json:"workflow_path,omitempty"`
+	RegistryPath          string `json:"registry_path,omitempty"`
+	ChangeRequiresRestart bool   `json:"change_requires_restart"`
+}
+
+// RegistryBootstrapResponse reports a generated starter project registry.
+type RegistryBootstrapResponse struct {
+	RegistryPath string `json:"registry_path"`
+	WorkflowPath string `json:"workflow_path"`
+	ProjectID    string `json:"project_id"`
+	ProjectName  string `json:"project_name"`
+	Command      string `json:"command"`
+	Created      bool   `json:"created"`
+}
+
+// RegistryProjectCreateRequest appends a project entry to a registry file.
+type RegistryProjectCreateRequest struct {
+	ID                  string `json:"id"`
+	Name                string `json:"name,omitempty"`
+	WorkflowPath        string `json:"workflow_path"`
+	Enabled             *bool  `json:"enabled,omitempty"`
+	MaxConcurrentAgents int    `json:"max_concurrent_agents,omitempty"`
+}
+
+// RegistryProjectCreateResponse reports a persisted registry project entry.
+type RegistryProjectCreateResponse struct {
+	Registry              RegistryResponse       `json:"registry"`
+	Project               RegistryProjectSummary `json:"project"`
+	Command               string                 `json:"command"`
+	ChangeRequiresRestart bool                   `json:"change_requires_restart"`
+}
+
+// RegistryServerSummary describes the aggregate multi-project server config.
+type RegistryServerSummary struct {
+	BindAddress      string `json:"bind_address"`
+	Port             int    `json:"port"`
+	DashboardEnabled bool   `json:"dashboard_enabled"`
+	APIPrefix        string `json:"api_prefix"`
+}
+
+// RegistryConcurrencySummary describes supervisor concurrency defaults.
+type RegistryConcurrencySummary struct {
+	MaxConcurrentAgents               int `json:"max_concurrent_agents"`
+	DefaultProjectMaxConcurrentAgents int `json:"default_project_max_concurrent_agents"`
+}
+
+// RegistrySecuritySummary describes registry isolation guardrails.
+type RegistrySecuritySummary struct {
+	AllowWorkspaceOverlap          bool `json:"allow_workspace_overlap"`
+	AllowWorkspaceUnderRegistryDir bool `json:"allow_workspace_under_registry_dir"`
+	AllowRemoteDashboard           bool `json:"allow_remote_dashboard"`
+}
+
+// RegistryAgentRuntimeSummary describes global runtime defaults without secrets.
+type RegistryAgentRuntimeSummary struct {
+	Configured           bool              `json:"configured"`
+	Provider             string            `json:"provider,omitempty"`
+	Command              string            `json:"command,omitempty"`
+	Model                string            `json:"model,omitempty"`
+	ModelProvider        string            `json:"model_provider,omitempty"`
+	ReasoningEffort      string            `json:"reasoning_effort,omitempty"`
+	EndpointURL          string            `json:"endpoint_url,omitempty"`
+	APIKeyConfigured     bool              `json:"api_key_configured,omitempty"`
+	AuthTokenConfigured  bool              `json:"auth_token_configured,omitempty"`
+	EnvKeys              []string          `json:"env_keys,omitempty"`
+	StageOverrideKeys    []string          `json:"stage_override_keys,omitempty"`
+	PermissionMode       string            `json:"permission_mode,omitempty"`
+	AllowedTools         []string          `json:"allowed_tools,omitempty"`
+	DisallowedTools      []string          `json:"disallowed_tools,omitempty"`
+	SettingSources       []string          `json:"setting_sources,omitempty"`
+	AdditionalProperties map[string]string `json:"additional_properties,omitempty"`
+}
+
+// RegistryProjectSummary describes one configured project entry.
+type RegistryProjectSummary struct {
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	WorkflowPath        string `json:"workflow_path"`
+	Enabled             bool   `json:"enabled"`
+	MaxConcurrentAgents int    `json:"max_concurrent_agents,omitempty"`
+}
+
+// RegistryWarningSummary is a non-fatal registry validation warning.
+type RegistryWarningSummary struct {
+	Code       string   `json:"code"`
+	Message    string   `json:"message"`
+	ProjectIDs []string `json:"project_ids,omitempty"`
+}
+
+// RegistryResponse returns the active multi-project registry without secrets.
+type RegistryResponse struct {
+	GeneratedAt  time.Time                   `json:"generated_at"`
+	SourcePath   string                      `json:"source_path"`
+	Server       *RegistryServerSummary      `json:"server,omitempty"`
+	Concurrency  RegistryConcurrencySummary  `json:"concurrency"`
+	Security     RegistrySecuritySummary     `json:"security"`
+	AgentRuntime RegistryAgentRuntimeSummary `json:"agent_runtime"`
+	Projects     []RegistryProjectSummary    `json:"projects"`
+	Warnings     []RegistryWarningSummary    `json:"warnings,omitempty"`
+}
+
 // APIError is a structured API error.
 type APIError struct {
 	Code    string `json:"code"`

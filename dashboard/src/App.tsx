@@ -2,17 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   IssueDetailResponse,
   ProjectSummary,
+  RegistryBootstrapResponse,
+  RegistryProjectCreateResponse,
+  RegistryResponse,
   RefreshResponse,
   RetrySnapshot,
   RunningSnapshot,
+  RuntimeModeResponse,
   SettingsResponse,
   SettingsValidationResponse,
   StateSnapshot,
   SupervisorConcurrency,
 } from './api/types'
 import {
+  bootstrapRegistry,
+  createRegistryProject,
   fetchIssueDetail,
   fetchProjects,
+  fetchRegistry,
+  fetchRuntimeMode,
   fetchSettings,
   fetchState,
   requestRefresh as requestRefreshAPI,
@@ -25,7 +33,7 @@ const DEFAULT_POLL_INTERVAL_MS = 5000
 const MIN_UI_POLL_INTERVAL_MS = 1000
 
 type QueueFilter = 'all' | 'running' | 'retrying'
-type Page = 'runtime' | 'settings'
+type Page = 'runtime' | 'settings' | 'setup'
 type ActivityItem = {
   id: string
   label: string
@@ -59,6 +67,24 @@ type ReasoningOption = {
 type SkillStageOption = {
   id: string
   label: string
+}
+type ProjectOverview = {
+  runningProjects: number
+  disabledProjects: number
+  errorProjects: number
+  waitingProjects: number
+  runningIssues: number
+  retryingIssues: number
+  supervisorCapacity: number
+  supervisorUsed: number
+  supervisorAvailable: number
+}
+type RegistryProjectDraft = {
+  id: string
+  name: string
+  workflowPath: string
+  enabled: boolean
+  maxConcurrentAgents: string
 }
 
 const DEFAULT_REASONING_OPTIONS: ReasoningOption[] = [{ value: '', label: 'Provider default' }]
@@ -196,6 +222,17 @@ function App() {
   const [projectDiscoveryComplete, setProjectDiscoveryComplete] = useState(false)
   const [projectMode, setProjectMode] = useState(false)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [registry, setRegistry] = useState<RegistryResponse | null>(null)
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeModeResponse | null>(null)
+  const [registryBootstrap, setRegistryBootstrap] = useState<RegistryBootstrapResponse | null>(null)
+  const [registryProjectResult, setRegistryProjectResult] = useState<RegistryProjectCreateResponse | null>(null)
+  const [registryProjectDraft, setRegistryProjectDraft] = useState<RegistryProjectDraft>({
+    id: '',
+    name: '',
+    workflowPath: '',
+    enabled: true,
+    maxConcurrentAgents: '',
+  })
   const [supervisorConcurrency, setSupervisorConcurrency] = useState<SupervisorConcurrency | null>(null)
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [state, setState] = useState<StateSnapshot | null>(null)
@@ -206,6 +243,8 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [bootstrappingRegistry, setBootstrappingRegistry] = useState(false)
+  const [creatingRegistryProject, setCreatingRegistryProject] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
   const [validatingTracker, setValidatingTracker] = useState(false)
   const [trackerValidation, setTrackerValidation] = useState<SettingsValidationResponse | null>(null)
@@ -219,12 +258,25 @@ function App() {
   const selectedProject = projects.find(project => project.id === selectedProjectId) || null
   const selectedAPIProjectId = projectMode ? selectedProjectId || undefined : undefined
 
+  const loadRuntimeMode = useCallback(async () => {
+    try {
+      setRuntimeMode(await fetchRuntimeMode())
+    } catch {
+      setRuntimeMode(null)
+    }
+  }, [])
+
   const loadProjects = useCallback(async () => {
     try {
       const data = await fetchProjects()
       const nextProjects = data.projects
       setProjects(nextProjects)
       setSupervisorConcurrency(data.concurrency)
+      try {
+        setRegistry(await fetchRegistry())
+      } catch {
+        setRegistry(null)
+      }
       setProjectMode(true)
       setSelectedProjectId(current => {
         if (current && nextProjects.some(project => project.id === current)) {
@@ -234,6 +286,7 @@ function App() {
       })
     } catch {
       setProjects([])
+      setRegistry(null)
       setSupervisorConcurrency(null)
       setProjectMode(false)
       setSelectedProjectId(null)
@@ -277,8 +330,9 @@ function App() {
   }, [projectMode, selectedProjectId])
 
   useEffect(() => {
+    void loadRuntimeMode()
     void loadProjects()
-  }, [loadProjects])
+  }, [loadProjects, loadRuntimeMode])
 
   useEffect(() => {
     if (!projectMode) {
@@ -339,6 +393,51 @@ function App() {
       setError(normalizeError(err))
     } finally {
       setRefreshing(false)
+    }
+  }
+
+  const createStarterRegistry = async () => {
+    setBootstrappingRegistry(true)
+    setNotice(null)
+    try {
+      const result = await bootstrapRegistry()
+      setRegistryBootstrap(result)
+      setNotice(result.created ? 'Starter registry created' : 'Starter registry already exists')
+      setError(null)
+      await loadRuntimeMode()
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setBootstrappingRegistry(false)
+    }
+  }
+
+  const addRegistryProject = async () => {
+    setCreatingRegistryProject(true)
+    setNotice(null)
+    try {
+      const maxConcurrentAgents = registryProjectDraft.maxConcurrentAgents.trim()
+        ? Number.parseInt(registryProjectDraft.maxConcurrentAgents.trim(), 10)
+        : 0
+      if (Number.isNaN(maxConcurrentAgents) || maxConcurrentAgents < 0) {
+        throw new Error('Project cap must be a positive whole number.')
+      }
+      const result = await createRegistryProject({
+        id: registryProjectDraft.id.trim(),
+        name: registryProjectDraft.name.trim(),
+        workflow_path: registryProjectDraft.workflowPath.trim(),
+        enabled: registryProjectDraft.enabled,
+        max_concurrent_agents: maxConcurrentAgents || undefined,
+      })
+      setRegistry(result.registry)
+      setRegistryProjectResult(result)
+      setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, maxConcurrentAgents: '' })
+      setNotice('Project added to registry')
+      setError(null)
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setCreatingRegistryProject(false)
     }
   }
 
@@ -470,7 +569,7 @@ function App() {
       .slice(0, 8)
   }, [state])
 
-  const projectOverview = useMemo(() => {
+  const projectOverview = useMemo<ProjectOverview | null>(() => {
     if (!projectMode || projects.length === 0) {
       return null
     }
@@ -516,227 +615,250 @@ function App() {
     setSelectedProjectId(projectID)
   }
 
+  const activeProjectStatus = selectedProject ? projectStatus(selectedProject) : null
+  const pageTitle = page === 'settings' ? 'Project settings' : page === 'setup' ? 'Project setup' : 'Runtime'
+  const pageSubtitle =
+    page === 'setup'
+      ? projectMode
+        ? `${projects.length} configured project${projects.length === 1 ? '' : 's'}`
+        : 'Single-project mode'
+      : selectedProject
+        ? selectedProject.name || selectedProject.id
+        : 'Local workflow'
+
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="title-block">
-          <div className="brand-mark" aria-hidden="true">
-            S
-          </div>
+    <main className="app-frame">
+      <ProjectSidebar
+        page={page}
+        projectMode={projectMode}
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        projectOverview={projectOverview}
+        supervisorConcurrency={supervisorConcurrency}
+        onPageChange={setPage}
+        onProjectSelect={projectID => {
+          changeProject(projectID)
+          setPage('runtime')
+        }}
+      />
+
+      <section className="workspace-shell">
+        <header className="workspace-header">
           <div>
-            <p className="eyebrow">Simphony command center</p>
-            <h1>Agent operations</h1>
+            <p className="eyebrow">{page === 'setup' ? 'Supervisor' : activeProjectStatus ? activeProjectStatus.label : 'Local project'}</p>
+            <h1>{pageTitle}</h1>
+            <p className="workspace-subtitle">{pageSubtitle}</p>
           </div>
-        </div>
-        <div className="topbar-actions">
-          {projectMode && (
-            <label className="project-select">
-              <span className="sr-only">Project</span>
-              <select value={selectedProjectId || ''} onChange={event => changeProject(event.target.value)} aria-label="Project">
-                {projects.map(project => (
-                  <option key={project.id} value={project.id}>
-                    {project.name || project.id}
-                    {!project.enabled ? ' (disabled)' : project.running ? '' : ' (stopped)'}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <div className="segment-control" role="group" aria-label="Dashboard page">
-            <FilterButton active={page === 'runtime'} label="Runtime" onClick={() => setPage('runtime')} />
-            <FilterButton active={page === 'settings'} label="Settings" onClick={() => setPage('settings')} />
+          <div className="workspace-actions">
+            {activeProjectStatus && page !== 'setup' && <span className={`project-status ${activeProjectStatus.tone}`}>{activeProjectStatus.label}</span>}
+            <div className="sync-copy">
+              <span>Snapshot {formatDateTime(state.generated_at)}</span>
+              <span>UI {lastUpdated ? lastUpdated.toLocaleTimeString() : 'never'}</span>
+            </div>
+            {page !== 'setup' && (
+              <button className="icon-button" type="button" onClick={requestRefresh} disabled={refreshing} title="Refresh now">
+                <span aria-hidden="true" className={refreshing ? 'refresh-glyph spinning' : 'refresh-glyph'} />
+                <span>{refreshing ? 'Syncing' : 'Sync'}</span>
+              </button>
+            )}
           </div>
-          <div className="sync-copy">
-            {selectedProject && <span>{selectedProject.name || selectedProject.id}</span>}
-            <span>Snapshot {formatDateTime(state.generated_at)}</span>
-            <span>UI {lastUpdated ? lastUpdated.toLocaleTimeString() : 'never'}</span>
+        </header>
+
+        {error && (
+          <div className="alert alert-error" role="alert">
+            <strong>API error</strong>
+            <span>{error}</span>
           </div>
-          <button className="icon-button" type="button" onClick={requestRefresh} disabled={refreshing} title="Refresh now">
-            <span aria-hidden="true" className={refreshing ? 'refresh-glyph spinning' : 'refresh-glyph'} />
-            <span>{refreshing ? 'Syncing' : 'Sync'}</span>
-          </button>
-        </div>
-      </header>
+        )}
 
-      {error && (
-        <div className="alert alert-error" role="alert">
-          <strong>API error</strong>
-          <span>{error}</span>
-        </div>
-      )}
+        {notice && (
+          <div className="alert alert-info" role="status">
+            <strong>{notice}</strong>
+          </div>
+        )}
 
-      {notice && (
-        <div className="alert alert-info" role="status">
-          <strong>{notice}</strong>
-        </div>
-      )}
+        {page === 'runtime' && refreshResult && (
+          <div className="alert alert-info" role="status">
+            <strong>{refreshResult.coalesced ? 'Refresh coalesced' : 'Refresh queued'}</strong>
+            <span>
+              {refreshResult.operations.length > 0 ? refreshResult.operations.join(', ') : 'No operations reported'} at{' '}
+              {formatDateTime(refreshResult.requested_at)}
+            </span>
+          </div>
+        )}
 
-      {page === 'runtime' && refreshResult && (
-        <div className="alert alert-info" role="status">
-          <strong>{refreshResult.coalesced ? 'Refresh coalesced' : 'Refresh queued'}</strong>
-          <span>
-            {refreshResult.operations.length > 0 ? refreshResult.operations.join(', ') : 'No operations reported'} at{' '}
-            {formatDateTime(refreshResult.requested_at)}
-          </span>
-        </div>
-      )}
-
-      {page === 'runtime' ? (
-        <>
-          {projectMode && projectOverview && (
-            <section className="project-overview" aria-label="Project overview">
-              <div className="project-overview-heading">
-                <div>
-                  <p className="eyebrow">Projects</p>
-                  <h2>Runtime overview</h2>
+        {page === 'runtime' && (
+          <>
+            {projectMode && projectOverview && (
+              <section className="project-overview" aria-label="Project overview">
+                <div className="project-overview-heading">
+                  <div>
+                    <p className="eyebrow">Projects</p>
+                    <h2>Runtime overview</h2>
+                  </div>
+                  <div className="project-overview-stats">
+                    <span>{projectOverview.runningProjects} running</span>
+                    <span>{projectOverview.runningIssues} active</span>
+                    <span>{projectOverview.retryingIssues} retrying</span>
+                    {projectOverview.supervisorCapacity > 0 && (
+                      <span>
+                        {projectOverview.supervisorUsed}/{projectOverview.supervisorCapacity} global slots
+                      </span>
+                    )}
+                    {projectOverview.waitingProjects > 0 && <span>{projectOverview.waitingProjects} waiting</span>}
+                    {projectOverview.disabledProjects > 0 && <span>{projectOverview.disabledProjects} disabled</span>}
+                    {projectOverview.errorProjects > 0 && <span>{projectOverview.errorProjects} failed</span>}
+                  </div>
                 </div>
-                <div className="project-overview-stats">
-                  <span>{projectOverview.runningProjects} running</span>
-                  <span>{projectOverview.runningIssues} active</span>
-                  <span>{projectOverview.retryingIssues} retrying</span>
-                  {projectOverview.supervisorCapacity > 0 && (
-                    <span>
-                      {projectOverview.supervisorUsed}/{projectOverview.supervisorCapacity} global slots
-                    </span>
-                  )}
-                  {projectOverview.waitingProjects > 0 && <span>{projectOverview.waitingProjects} waiting</span>}
-                  {projectOverview.disabledProjects > 0 && <span>{projectOverview.disabledProjects} disabled</span>}
-                  {projectOverview.errorProjects > 0 && <span>{projectOverview.errorProjects} failed</span>}
-                </div>
+              </section>
+            )}
+
+            <section className="metrics-grid" aria-label="Runtime metrics">
+              <MetricCard label="Active issues" value={summary.active.toLocaleString()} detail="Running plus retry queue" tone="green" />
+              <MetricCard label="Running" value={summary.running.toLocaleString()} detail="Live Codex sessions" tone="blue" />
+              <MetricCard label="Retrying" value={summary.retrying.toLocaleString()} detail="Backoff queue" tone="amber" />
+              <MetricCard label="Completed" value={state.counts.completed.toLocaleString()} detail={`${state.counts.claimed.toLocaleString()} claimed`} tone="ink" />
+            </section>
+
+            <section className="ops-band" aria-label="Operations summary">
+              <div>
+                <span className="ops-label">Posture</span>
+                <strong>{summary.queuePressure}</strong>
               </div>
-              <div className="project-card-grid">
-                {projects.map(project => (
-                  <ProjectCard
-                    key={project.id}
-                    project={project}
-                    active={project.id === selectedProjectId}
-                    onSelect={() => changeProject(project.id)}
-                  />
-                ))}
+              <div>
+                <span className="ops-label">Output share</span>
+                <strong>{summary.tokens > 0 ? `${summary.outputShare}%` : 'No tokens'}</strong>
+              </div>
+              <div>
+                <span className="ops-label">Slot usage</span>
+                <strong>{summary.slotCapacity > 0 ? `${summary.slotUsage}%` : 'Unknown'}</strong>
+              </div>
+              <div>
+                <span className="ops-label">Poll interval</span>
+                <strong>{formatMilliseconds(state.poll_interval_ms)}</strong>
               </div>
             </section>
-          )}
 
-          <section className="metrics-grid" aria-label="Runtime metrics">
-            <MetricCard label="Active issues" value={summary.active.toLocaleString()} detail="Running plus retry queue" tone="green" />
-            <MetricCard label="Running" value={summary.running.toLocaleString()} detail="Live Codex sessions" tone="blue" />
-            <MetricCard label="Retrying" value={summary.retrying.toLocaleString()} detail="Backoff queue" tone="amber" />
-            <MetricCard label="Completed" value={state.counts.completed.toLocaleString()} detail={`${state.counts.claimed.toLocaleString()} claimed`} tone="ink" />
-          </section>
-
-          <section className="ops-band" aria-label="Operations summary">
-            <div>
-              <span className="ops-label">Posture</span>
-              <strong>{summary.queuePressure}</strong>
-            </div>
-            <div>
-              <span className="ops-label">Output share</span>
-              <strong>{summary.tokens > 0 ? `${summary.outputShare}%` : 'No tokens'}</strong>
-            </div>
-            <div>
-              <span className="ops-label">Slot usage</span>
-              <strong>{summary.slotCapacity > 0 ? `${summary.slotUsage}%` : 'Unknown'}</strong>
-            </div>
-            <div>
-              <span className="ops-label">Poll interval</span>
-              <strong>{formatMilliseconds(state.poll_interval_ms)}</strong>
-            </div>
-          </section>
-
-          <section className="content-grid">
-            <div className="main-column">
-              <section className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">Queue</p>
-                    <h2>Issue flow</h2>
+            <section className="content-grid">
+              <div className="main-column">
+                <section className="panel">
+                  <div className="panel-heading">
+                    <div>
+                      <p className="eyebrow">Queue</p>
+                      <h2>Issue flow</h2>
+                    </div>
+                    <div className="segment-control" role="group" aria-label="Queue filter">
+                      <FilterButton active={filter === 'all'} label="All" onClick={() => setFilter('all')} />
+                      <FilterButton active={filter === 'running'} label="Running" onClick={() => setFilter('running')} />
+                      <FilterButton active={filter === 'retrying'} label="Retrying" onClick={() => setFilter('retrying')} />
+                    </div>
                   </div>
-                  <div className="segment-control" role="group" aria-label="Queue filter">
-                    <FilterButton active={filter === 'all'} label="All" onClick={() => setFilter('all')} />
-                    <FilterButton active={filter === 'running'} label="Running" onClick={() => setFilter('running')} />
-                    <FilterButton active={filter === 'retrying'} label="Retrying" onClick={() => setFilter('retrying')} />
+                  <div className="queue-toolbar">
+                    <label className="search-field">
+                      <span className="search-icon" aria-hidden="true" />
+                      <span className="sr-only">Search queue</span>
+                      <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search issue, session, state, or error" />
+                    </label>
+                    <span className="queue-count">
+                      {visibleRunning.length + visibleRetrying.length} shown of {state.running.length + state.retrying.length}
+                    </span>
                   </div>
-                </div>
-                <div className="queue-toolbar">
-                  <label className="search-field">
-                    <span className="search-icon" aria-hidden="true" />
-                    <span className="sr-only">Search queue</span>
-                    <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search issue, session, state, or error" />
-                  </label>
-                  <span className="queue-count">
-                    {visibleRunning.length + visibleRetrying.length} shown of {state.running.length + state.retrying.length}
-                  </span>
-                </div>
 
-                <div className="queue-stack">
-                  {visibleRunning.map(item => (
-                    <RunningRow key={entryKey(item)} item={item} onOpen={openIssue} />
-                  ))}
-                  {visibleRetrying.map(item => (
-                    <RetryRow key={entryKey(item)} item={item} onOpen={openIssue} />
-                  ))}
-                  {visibleRunning.length === 0 && visibleRetrying.length === 0 && (
-                    <EmptyState title="No issues in this view" body="The orchestrator has no matching running sessions or retry entries." />
-                  )}
-                </div>
-              </section>
-            </div>
-
-            <aside className="side-column">
-              <section className="panel compact-panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">Activity</p>
-                    <h2>Latest signal</h2>
+                  <div className="queue-stack">
+                    {visibleRunning.map(item => (
+                      <RunningRow key={entryKey(item)} item={item} onOpen={openIssue} />
+                    ))}
+                    {visibleRetrying.map(item => (
+                      <RetryRow key={entryKey(item)} item={item} onOpen={openIssue} />
+                    ))}
+                    {visibleRunning.length === 0 && visibleRetrying.length === 0 && (
+                      <EmptyState title="No issues in this view" body="The orchestrator has no matching running sessions or retry entries." />
+                    )}
                   </div>
-                </div>
-                <ActivityFeed items={activity} onOpen={openIssue} />
-              </section>
+                </section>
+              </div>
 
-              <section className="panel compact-panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">Capacity</p>
-                    <h2>Runtime mix</h2>
+              <aside className="side-column">
+                <section className="panel compact-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <p className="eyebrow">Activity</p>
+                      <h2>Latest signal</h2>
+                    </div>
                   </div>
-                </div>
-                <div className="capacity-bars">
-                  <CapacityBar label="Slots" value={state.counts.running} total={Math.max(state.max_concurrent_agents, 1)} />
-                  <CapacityBar label="Input" value={state.codex_totals.input_tokens} total={Math.max(state.codex_totals.total_tokens, 1)} />
-                  <CapacityBar label="Output" value={state.codex_totals.output_tokens} total={Math.max(state.codex_totals.total_tokens, 1)} />
-                  <CapacityBar label="Total" value={state.codex_totals.total_tokens} total={Math.max(state.codex_totals.total_tokens, 1)} />
-                </div>
-              </section>
+                  <ActivityFeed items={activity} onOpen={openIssue} />
+                </section>
 
-              <section className="panel compact-panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">Rate limits</p>
-                    <h2>Provider signal</h2>
+                <section className="panel compact-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <p className="eyebrow">Capacity</p>
+                      <h2>Runtime mix</h2>
+                    </div>
                   </div>
-                </div>
-                <RateLimitPanel rateLimits={state.rate_limits} />
-              </section>
-            </aside>
-          </section>
+                  <div className="capacity-bars">
+                    <CapacityBar label="Slots" value={state.counts.running} total={Math.max(state.max_concurrent_agents, 1)} />
+                    <CapacityBar label="Input" value={state.codex_totals.input_tokens} total={Math.max(state.codex_totals.total_tokens, 1)} />
+                    <CapacityBar label="Output" value={state.codex_totals.output_tokens} total={Math.max(state.codex_totals.total_tokens, 1)} />
+                    <CapacityBar label="Total" value={state.codex_totals.total_tokens} total={Math.max(state.codex_totals.total_tokens, 1)} />
+                  </div>
+                </section>
 
-          <IssueDrawer detailState={detailState} onClose={closeIssue} />
-        </>
-      ) : (
-        <SettingsView
-          settings={settings}
-          settingsDraft={settingsDraft}
-          promptDraft={promptDraft}
-          saving={savingSettings}
-          validatingTracker={validatingTracker}
-          trackerValidation={trackerValidation}
-          onSettingsDraftChange={setSettingsDraft}
-          onPromptDraftChange={setPromptDraft}
-          onReload={() => loadSettings().catch(err => setError(normalizeError(err)))}
-          onSave={saveWorkflowSettings}
-          onValidateTracker={validateLinearSettings}
-        />
-      )}
+                <section className="panel compact-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <p className="eyebrow">Rate limits</p>
+                      <h2>Provider signal</h2>
+                    </div>
+                  </div>
+                  <RateLimitPanel rateLimits={state.rate_limits} />
+                </section>
+              </aside>
+            </section>
+
+            <IssueDrawer detailState={detailState} onClose={closeIssue} />
+          </>
+        )}
+
+        {page === 'settings' && (
+          <SettingsView
+            settings={settings}
+            settingsDraft={settingsDraft}
+            promptDraft={promptDraft}
+            saving={savingSettings}
+            validatingTracker={validatingTracker}
+            trackerValidation={trackerValidation}
+            onSettingsDraftChange={setSettingsDraft}
+            onPromptDraftChange={setPromptDraft}
+            onReload={() => loadSettings().catch(err => setError(normalizeError(err)))}
+            onSave={saveWorkflowSettings}
+            onValidateTracker={validateLinearSettings}
+          />
+        )}
+
+        {page === 'setup' && (
+          <ProjectSetupView
+            projectMode={projectMode}
+            projects={projects}
+            registry={registry}
+            runtimeMode={runtimeMode}
+            registryBootstrap={registryBootstrap}
+            registryProjectDraft={registryProjectDraft}
+            registryProjectResult={registryProjectResult}
+            bootstrappingRegistry={bootstrappingRegistry}
+            creatingRegistryProject={creatingRegistryProject}
+            projectOverview={projectOverview}
+            supervisorConcurrency={supervisorConcurrency}
+            onBootstrapRegistry={createStarterRegistry}
+            onRegistryProjectDraftChange={setRegistryProjectDraft}
+            onCreateRegistryProject={addRegistryProject}
+            onSelectProject={projectID => {
+              changeProject(projectID)
+              setPage('settings')
+            }}
+          />
+        )}
+      </section>
     </main>
   )
 }
@@ -756,6 +878,443 @@ function FilterButton(props: { active: boolean; label: string; onClick: () => vo
     <button className={props.active ? 'segment active' : 'segment'} type="button" onClick={props.onClick} aria-pressed={props.active}>
       {props.label}
     </button>
+  )
+}
+
+function ProjectSidebar(props: {
+  page: Page
+  projectMode: boolean
+  projects: ProjectSummary[]
+  selectedProjectId: string | null
+  projectOverview: ProjectOverview | null
+  supervisorConcurrency: SupervisorConcurrency | null
+  onPageChange: (page: Page) => void
+  onProjectSelect: (projectID: string) => void
+}) {
+  const activeIssues = props.projectOverview ? props.projectOverview.runningIssues + props.projectOverview.retryingIssues : 0
+  return (
+    <aside className="project-sidebar" aria-label="Project navigation">
+      <div className="sidebar-brand">
+        <div className="brand-mark" aria-hidden="true">
+          S
+        </div>
+        <div>
+          <strong>Simphony</strong>
+          <span>{props.projectMode ? 'Multi-project' : 'Single project'}</span>
+        </div>
+      </div>
+
+      <nav className="primary-nav" aria-label="Workspace">
+        <button className={props.page === 'runtime' ? 'nav-item active' : 'nav-item'} type="button" onClick={() => props.onPageChange('runtime')}>
+          <span className="nav-glyph nav-glyph-runtime" aria-hidden="true" />
+          <span>Runtime</span>
+        </button>
+        <button className={props.page === 'settings' ? 'nav-item active' : 'nav-item'} type="button" onClick={() => props.onPageChange('settings')}>
+          <span className="nav-glyph nav-glyph-settings" aria-hidden="true" />
+          <span>Settings</span>
+        </button>
+        <button className={props.page === 'setup' ? 'nav-item active' : 'nav-item'} type="button" onClick={() => props.onPageChange('setup')}>
+          <span className="nav-glyph nav-glyph-setup" aria-hidden="true" />
+          <span>Project setup</span>
+        </button>
+      </nav>
+
+      <div className="sidebar-summary" aria-label="Supervisor summary">
+        <span>{activeIssues.toLocaleString()} active issues</span>
+        {props.supervisorConcurrency?.max_concurrent_agents ? (
+          <strong>
+            {props.supervisorConcurrency.used_agents}/{props.supervisorConcurrency.max_concurrent_agents} slots
+          </strong>
+        ) : (
+          <strong>Local capacity</strong>
+        )}
+      </div>
+
+      <div className="project-nav-section">
+        <div className="project-nav-heading">
+          <span>Projects</span>
+          <button className="add-project-button" type="button" onClick={() => props.onPageChange('setup')} title="Open project setup">
+            +
+          </button>
+        </div>
+        {props.projectMode ? (
+          <div className="project-nav-list">
+            {props.projects.map(project => (
+              <ProjectNavButton
+                key={project.id}
+                project={project}
+                active={project.id === props.selectedProjectId && props.page !== 'setup'}
+                onSelect={() => props.onProjectSelect(project.id)}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="sidebar-muted">Start with `-config` to manage multiple project contexts.</p>
+        )}
+      </div>
+    </aside>
+  )
+}
+
+function ProjectNavButton(props: { project: ProjectSummary; active: boolean; onSelect: () => void }) {
+  const status = projectStatus(props.project)
+  const activeCount = props.project.counts.running + props.project.counts.retrying
+  return (
+    <button className={props.active ? 'project-nav-item active' : 'project-nav-item'} type="button" onClick={props.onSelect} title={props.project.workflow_path}>
+      <span className={`status-dot ${status.tone}`} aria-hidden="true" />
+      <span className="project-nav-copy">
+        <strong>{props.project.name || props.project.id}</strong>
+        <span>
+          {status.label}
+          {activeCount > 0 ? ` - ${activeCount} active` : ''}
+        </span>
+      </span>
+    </button>
+  )
+}
+
+function ProjectSetupView(props: {
+  projectMode: boolean
+  projects: ProjectSummary[]
+  registry: RegistryResponse | null
+  runtimeMode: RuntimeModeResponse | null
+  registryBootstrap: RegistryBootstrapResponse | null
+  registryProjectDraft: RegistryProjectDraft
+  registryProjectResult: RegistryProjectCreateResponse | null
+  bootstrappingRegistry: boolean
+  creatingRegistryProject: boolean
+  projectOverview: ProjectOverview | null
+  supervisorConcurrency: SupervisorConcurrency | null
+  onBootstrapRegistry: () => void
+  onRegistryProjectDraftChange: (draft: RegistryProjectDraft) => void
+  onCreateRegistryProject: () => void
+  onSelectProject: (projectID: string) => void
+}) {
+  const configuredCount = props.registry?.projects.length ?? props.projects.length
+  const registryProjectByID = new Map((props.registry?.projects || []).map(project => [project.id, project]))
+  const runtimeProjectByID = new Map(props.projects.map(project => [project.id, project]))
+  const setupProjects = props.registry?.projects || props.projects
+  const startupMode = props.runtimeMode?.mode || (props.projectMode ? 'project_registry' : 'single_workflow')
+  const registryEnabled = startupMode === 'project_registry'
+  const startupPath = registryEnabled
+    ? props.runtimeMode?.registry_path || props.registry?.source_path || ''
+    : props.runtimeMode?.workflow_path || ''
+  return (
+    <section className="setup-layout">
+      <div className="panel setup-main">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Registry</p>
+            <h2>Project contexts</h2>
+          </div>
+          <span className="setup-badge">Read-only in this build</span>
+        </div>
+        <div className="setup-intro">
+          <h3>{props.projectMode ? `${configuredCount} configured project${configuredCount === 1 ? '' : 's'}` : 'Single-project mode'}</h3>
+          <p>
+            Project setup is the future home for adding projects, editing registry defaults, and controlling project lifecycle. Today, it reflects
+            the configured registry and links into each project's editable workflow settings.
+          </p>
+        </div>
+        <div className="startup-mode-panel">
+          <div className="startup-mode-copy">
+            <span className="mode-pill">{registryEnabled ? 'Project registry' : 'Single workflow'}</span>
+            <div>
+              <h3>Startup mode</h3>
+              <p>
+                Simphony currently starts in {registryEnabled ? 'project registry mode' : 'single workflow mode'}. Switching between these modes
+                changes the supervisor shape and requires a server restart.
+              </p>
+            </div>
+          </div>
+          <div className="startup-mode-control">
+            <label className="toggle-label" htmlFor="registry-mode-toggle">
+              Use project registry
+            </label>
+            <button
+              id="registry-mode-toggle"
+              className={`switch-control ${registryEnabled ? 'on' : ''}`}
+              type="button"
+              role="switch"
+              aria-checked={registryEnabled}
+              disabled
+              title="Changing startup mode requires restarting Simphony"
+            >
+              <span />
+            </button>
+          </div>
+          <dl className="startup-mode-facts">
+            <div>
+              <dt>{registryEnabled ? 'Registry file' : 'Workflow file'}</dt>
+              <dd>{startupPath || 'Not reported by server'}</dd>
+            </div>
+            <div>
+              <dt>Mode changes</dt>
+              <dd>{props.runtimeMode?.change_requires_restart === false ? 'Live switch supported' : 'Restart required'}</dd>
+            </div>
+          </dl>
+          <p className="restart-note" role="status">
+            To change this setting, restart Simphony with {registryEnabled ? '-workflow ./WORKFLOW.md' : '-config ./simphony.yaml'}.
+          </p>
+          {!registryEnabled && (
+            <div className="bootstrap-action-row">
+              <button className="secondary-button" type="button" onClick={props.onBootstrapRegistry} disabled={props.bootstrappingRegistry}>
+                {props.bootstrappingRegistry ? 'Creating registry' : 'Create starter registry'}
+              </button>
+              <span>Generates a local `simphony.yaml` for this workflow without changing the running server.</span>
+            </div>
+          )}
+          {props.registryBootstrap && (
+            <div className="bootstrap-result" role="status">
+              <strong>{props.registryBootstrap.created ? 'Registry created' : 'Registry already exists'}</strong>
+              <span>{props.registryBootstrap.registry_path}</span>
+              <code>{props.registryBootstrap.command}</code>
+            </div>
+          )}
+        </div>
+        {props.registry && (
+          <div className="registry-detail-grid">
+            <RegistryFact label="Registry file" value={props.registry.source_path || 'Unknown'} />
+            <RegistryFact
+              label="Server"
+              value={props.registry.server ? `${props.registry.server.bind_address}:${props.registry.server.port}${props.registry.server.api_prefix}` : 'Disabled'}
+            />
+            <RegistryFact
+              label="Global concurrency"
+              value={
+                props.registry.concurrency.max_concurrent_agents > 0
+                  ? `${props.registry.concurrency.max_concurrent_agents} total slots`
+                  : 'Unlimited'
+              }
+            />
+            <RegistryFact
+              label="Project default cap"
+              value={
+                props.registry.concurrency.default_project_max_concurrent_agents > 0
+                  ? props.registry.concurrency.default_project_max_concurrent_agents.toLocaleString()
+                  : 'Workflow default'
+              }
+            />
+          </div>
+        )}
+        {props.registry?.warnings && props.registry.warnings.length > 0 && (
+          <div className="registry-warning-list" role="status">
+            {props.registry.warnings.map(warning => (
+              <div key={`${warning.code}-${warning.project_ids?.join('-') || warning.message}`}>
+                <strong>{warning.code}</strong>
+                <span>{warning.message}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {registryEnabled && props.registry && (
+          <form
+            className="registry-project-form"
+            onSubmit={event => {
+              event.preventDefault()
+              props.onCreateRegistryProject()
+            }}
+          >
+            <div className="registry-project-form-heading">
+              <div>
+                <p className="eyebrow">Registry</p>
+                <h3>Add project</h3>
+              </div>
+              <button className="secondary-button" type="submit" disabled={props.creatingRegistryProject}>
+                {props.creatingRegistryProject ? 'Adding project' : 'Add project'}
+              </button>
+            </div>
+            <div className="registry-project-fields">
+              <label className="form-field">
+                <span>Project ID</span>
+                <input
+                  value={props.registryProjectDraft.id}
+                  onChange={event => props.onRegistryProjectDraftChange({ ...props.registryProjectDraft, id: event.target.value })}
+                  placeholder="conjit"
+                  required
+                />
+              </label>
+              <label className="form-field">
+                <span>Name</span>
+                <input
+                  value={props.registryProjectDraft.name}
+                  onChange={event => props.onRegistryProjectDraftChange({ ...props.registryProjectDraft, name: event.target.value })}
+                  placeholder="Conjit"
+                />
+              </label>
+              <label className="form-field wide">
+                <span>Workflow path</span>
+                <input
+                  value={props.registryProjectDraft.workflowPath}
+                  onChange={event => props.onRegistryProjectDraftChange({ ...props.registryProjectDraft, workflowPath: event.target.value })}
+                  placeholder="projects/conjit/WORKFLOW.md"
+                  required
+                />
+              </label>
+              <label className="form-field">
+                <span>Project cap</span>
+                <input
+                  value={props.registryProjectDraft.maxConcurrentAgents}
+                  onChange={event => props.onRegistryProjectDraftChange({ ...props.registryProjectDraft, maxConcurrentAgents: event.target.value })}
+                  inputMode="numeric"
+                  placeholder="Default"
+                />
+              </label>
+              <label className="registry-checkbox">
+                <input
+                  type="checkbox"
+                  checked={props.registryProjectDraft.enabled}
+                  onChange={event => props.onRegistryProjectDraftChange({ ...props.registryProjectDraft, enabled: event.target.checked })}
+                />
+                <span>Enabled on restart</span>
+              </label>
+            </div>
+            {props.registryProjectResult && (
+              <div className="bootstrap-result" role="status">
+                <strong>Project saved to registry</strong>
+                <span>{props.registryProjectResult.project.workflow_path}</span>
+                <code>{props.registryProjectResult.command}</code>
+              </div>
+            )}
+          </form>
+        )}
+        {props.projectMode ? (
+          <div className="setup-project-list">
+            {setupProjects.map(project => {
+              const registryProject = registryProjectByID.get(project.id)
+              const runtimeProject = runtimeProjectByID.get(project.id)
+              return (
+                <div key={project.id} className="setup-project-item">
+                  {runtimeProject ? (
+                    <ProjectCard project={runtimeProject} active={false} onSelect={() => props.onSelectProject(project.id)} />
+                  ) : (
+                    <div className="pending-project-card">
+                      <strong>{project.name || project.id}</strong>
+                      <span>{project.id}</span>
+                      <em>Pending restart</em>
+                    </div>
+                  )}
+                  <dl>
+                    <div>
+                      <dt>Registry path</dt>
+                      <dd>{registryProject?.workflow_path || project.workflow_path}</dd>
+                    </div>
+                    <div>
+                      <dt>Project cap</dt>
+                      <dd>{registryProject?.max_concurrent_agents ? registryProject.max_concurrent_agents.toLocaleString() : 'Default'}</dd>
+                    </div>
+                  </dl>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <EmptyState title="No registry is active" body="Restart Simphony with -config ./simphony.yaml to enable multi-project setup." />
+        )}
+      </div>
+
+      <aside className="setup-side">
+        <section className="panel compact-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Supervisor</p>
+              <h2>Capacity</h2>
+            </div>
+          </div>
+          <dl className="rate-list">
+            <div>
+              <dt>Configured Projects</dt>
+              <dd>{configuredCount.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Running Projects</dt>
+              <dd>{(props.projectOverview?.runningProjects || 0).toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Global Slots</dt>
+              <dd>
+                {props.supervisorConcurrency?.max_concurrent_agents
+                  ? `${props.supervisorConcurrency.used_agents}/${props.supervisorConcurrency.max_concurrent_agents}`
+                  : 'Unlimited'}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
+        <section className="panel compact-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Defaults</p>
+              <h2>Agent runtime</h2>
+            </div>
+          </div>
+          {props.registry?.agent_runtime.configured ? (
+            <dl className="rate-list">
+              <div>
+                <dt>Provider</dt>
+                <dd>{props.registry.agent_runtime.provider || 'Default'}</dd>
+              </div>
+              <div>
+                <dt>Model</dt>
+                <dd>{props.registry.agent_runtime.model || 'Default'}</dd>
+              </div>
+              <div>
+                <dt>Endpoint</dt>
+                <dd>{props.registry.agent_runtime.endpoint_url || 'Provider default'}</dd>
+              </div>
+              <div>
+                <dt>Secrets</dt>
+                <dd>
+                  {[
+                    props.registry.agent_runtime.api_key_configured ? 'API key' : '',
+                    props.registry.agent_runtime.auth_token_configured ? 'Auth token' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(', ') || 'None configured'}
+                </dd>
+              </div>
+              <div>
+                <dt>Env keys</dt>
+                <dd>{props.registry.agent_runtime.env_keys?.join(', ') || 'None'}</dd>
+              </div>
+            </dl>
+          ) : (
+            <p className="muted">No global agent runtime defaults are configured.</p>
+          )}
+        </section>
+
+        <section className="panel compact-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Security</p>
+              <h2>Guardrails</h2>
+            </div>
+          </div>
+          {props.registry ? (
+            <div className="setup-checklist">
+              <span>{props.registry.security.allow_workspace_overlap ? 'Workspace overlap allowed' : 'Workspace overlap blocked'}</span>
+              <span>
+                {props.registry.security.allow_workspace_under_registry_dir
+                  ? 'Registry-contained workspaces allowed'
+                  : 'Registry-contained workspaces blocked'}
+              </span>
+              <span>{props.registry.security.allow_remote_dashboard ? 'Remote dashboard allowed' : 'Remote dashboard requires opt-in'}</span>
+            </div>
+          ) : (
+            <p className="muted">Registry security settings are not available in single-project mode.</p>
+          )}
+        </section>
+      </aside>
+    </section>
+  )
+}
+
+function RegistryFact(props: { label: string; value: string }) {
+  return (
+    <div className="registry-fact">
+      <span>{props.label}</span>
+      <strong>{props.value}</strong>
+    </div>
   )
 }
 
@@ -1087,7 +1646,7 @@ function SettingsView(props: {
           <div className="validation-result" role="status">
             <strong>{trackerValidation.message || 'Linear settings validated'}</strong>
             <span>
-              {trackerValidation.project_slug || 'Project'} · {trackerValidation.candidate_count.toLocaleString()} candidate issues
+              {trackerValidation.project_slug || 'Project'} - {trackerValidation.candidate_count.toLocaleString()} candidate issues
             </span>
           </div>
         )}

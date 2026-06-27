@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +76,7 @@ type fakeProjectManager struct {
 	summaries   []project.RuntimeSummary
 	runtimes    map[string]project.ObservableRuntime
 	concurrency api.SupervisorConcurrency
+	registry    *config.ProjectRegistry
 }
 
 func (f *fakeProjectManager) Summaries() []project.RuntimeSummary {
@@ -97,8 +101,216 @@ func (f *fakeProjectManager) Concurrency() api.SupervisorConcurrency {
 	return f.concurrency
 }
 
+func (f *fakeProjectManager) Registry() *config.ProjectRegistry {
+	return f.registry
+}
+
 func newTestProjectServer(manager ProjectRuntimeManager) *ProjectServer {
 	return NewProjectServer(manager, "127.0.0.1", 8080, "/api/v1")
+}
+
+func TestProjectServerReturnsRegistryWithoutSecrets(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	betaWorkflow := filepath.Join(dir, "beta", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	writeServerTestWorkflow(t, betaWorkflow, filepath.Join(dir, "..", "beta-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+server:
+  bind_address: 127.0.0.1
+  port: 8080
+agent_runtime:
+  provider: codex
+  model: kimi-k2
+  endpoint_url: https://openai-compatible.example/v1
+  api_key: secret-openai-key
+  auth_token: secret-auth-token
+  env:
+    SAFE_PUBLIC_FLAG: enabled
+concurrency:
+  max_concurrent_agents: 10
+security:
+  allow_workspace_overlap: false
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+  - id: beta
+    name: Beta
+    workflow_path: beta/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	manager := &fakeProjectManager{registry: registry}
+	s := newTestProjectServer(manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/registry", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.RegistryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.SourcePath != registryPath || len(body.Projects) != 2 {
+		t.Fatalf("registry response = %+v, want source and two projects", body)
+	}
+	if !body.AgentRuntime.APIKeyConfigured || !body.AgentRuntime.AuthTokenConfigured {
+		t.Fatalf("agent runtime secret flags = %+v, want configured", body.AgentRuntime)
+	}
+	if strings.Contains(rec.Body.String(), "secret-openai-key") || strings.Contains(rec.Body.String(), "secret-auth-token") {
+		t.Fatalf("registry response leaked secret: %s", rec.Body.String())
+	}
+	if len(body.AgentRuntime.EnvKeys) != 1 || body.AgentRuntime.EnvKeys[0] != "SAFE_PUBLIC_FLAG" {
+		t.Fatalf("env keys = %+v, want SAFE_PUBLIC_FLAG", body.AgentRuntime.EnvKeys)
+	}
+	if len(body.Warnings) != 1 || body.Warnings[0].Code != "duplicate_tracker_project" {
+		t.Fatalf("warnings = %+v, want duplicate tracker project warning", body.Warnings)
+	}
+}
+
+func TestProjectServerReturnsRuntimeMode(t *testing.T) {
+	registry := &config.ProjectRegistry{SourcePath: filepath.Join(t.TempDir(), "simphony.yaml")}
+	manager := &fakeProjectManager{registry: registry}
+	s := newTestProjectServer(manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime-mode", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.RuntimeModeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode runtime mode: %v", err)
+	}
+	if body.Mode != api.RuntimeModeProjectRegistry || body.RegistryPath != registry.SourcePath {
+		t.Fatalf("runtime mode = %+v, want project registry with path %q", body, registry.SourcePath)
+	}
+	if !body.ChangeRequiresRestart {
+		t.Fatalf("change_requires_restart = false, want true")
+	}
+}
+
+func TestProjectServerCreatesRegistryProject(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	betaWorkflow := filepath.Join(dir, "beta", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	writeServerTestWorkflow(t, betaWorkflow, filepath.Join(dir, "..", "beta-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+server:
+  bind_address: 127.0.0.1
+  port: 8080
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	manager := &fakeProjectManager{registry: registry}
+	s := newTestProjectServer(manager)
+
+	payload := `{"id":"beta","name":"Beta","workflow_path":"beta/WORKFLOW.md","enabled":false,"max_concurrent_agents":2}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/registry/projects", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	var body api.RegistryProjectCreateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Project.ID != "beta" || body.Project.Enabled || body.Project.MaxConcurrentAgents != 2 {
+		t.Fatalf("created project = %+v, want disabled beta with cap", body.Project)
+	}
+	if !body.ChangeRequiresRestart || !strings.Contains(body.Command, "-config") {
+		t.Fatalf("restart metadata = command %q restart %v, want restart command", body.Command, body.ChangeRequiresRestart)
+	}
+	if len(body.Registry.Projects) != 2 || len(manager.registry.Projects) != 2 {
+		t.Fatalf("registry projects = response %d manager %d, want 2", len(body.Registry.Projects), len(manager.registry.Projects))
+	}
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "id: beta") || !strings.Contains(text, "enabled: false") || !strings.Contains(text, "max_concurrent_agents: 2") {
+		t.Fatalf("registry file = %q, want appended beta project", text)
+	}
+}
+
+func TestProjectServerRejectsDuplicateRegistryProject(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	before, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	s := newTestProjectServer(&fakeProjectManager{registry: registry})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/registry/projects", strings.NewReader(`{"id":"ALPHA","workflow_path":"alpha/WORKFLOW.md"}`))
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	var apiErr api.APIErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if apiErr.Error.Code != "project_id_exists" {
+		t.Fatalf("error code = %q, want project_id_exists", apiErr.Error.Code)
+	}
+	after, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("registry file changed on duplicate")
+	}
+}
+
+func writeServerTestWorkflow(t *testing.T, path string, workspaceRoot string) {
+	t.Helper()
+	content := "---\ntracker:\n  kind: linear\n  api_key: test-linear-key\n  project_slug: shared-project\nworkspace:\n  root: " + filepath.ToSlash(workspaceRoot) + "\n---\n\nWork on {{ issue.identifier }}.\n"
+	writeServerTestFile(t, path, content)
+}
+
+func writeServerTestFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 func TestProjectServerListsProjects(t *testing.T) {

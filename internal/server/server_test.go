@@ -165,6 +165,109 @@ func TestHandleRefreshRejectsGet(t *testing.T) {
 	}
 }
 
+func TestHandleRuntimeModeReturnsSingleWorkflow(t *testing.T) {
+	workflowPath := writeWorkflowForSettingsTest(t, "---\ntracker:\n  kind: linear\n---\n\nPrompt body\n")
+	s := NewWithSettings(&fakeOrchestrator{}, 8080, workflowPath, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime-mode", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var body api.RuntimeModeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode runtime mode: %v", err)
+	}
+	if body.Mode != api.RuntimeModeSingleWorkflow || body.WorkflowPath != workflowPath {
+		t.Fatalf("runtime mode = %+v, want single workflow with path %q", body, workflowPath)
+	}
+	if !body.ChangeRequiresRestart {
+		t.Fatalf("change_requires_restart = false, want true")
+	}
+}
+
+func TestHandleRegistryBootstrapCreatesStarterRegistry(t *testing.T) {
+	workflowPath := writeWorkflowForSettingsTest(t, `---
+tracker:
+  kind: linear
+  api_key: test-linear-key
+  project_slug: simphony
+workspace:
+  root: ./simphony_workspaces
+---
+
+Prompt body
+`)
+	s := NewWithSettings(&fakeOrchestrator{}, 8080, workflowPath, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/registry/bootstrap", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	var body api.RegistryBootstrapResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if !body.Created {
+		t.Fatalf("created = false, want true")
+	}
+	if body.WorkflowPath != workflowPath || body.ProjectID == "" || body.ProjectName == "" {
+		t.Fatalf("bootstrap response = %+v, want workflow path and project identity", body)
+	}
+	if !strings.Contains(body.Command, "-config") || !strings.Contains(body.Command, body.RegistryPath) {
+		t.Fatalf("command = %q, want -config registry path", body.Command)
+	}
+
+	data, err := os.ReadFile(body.RegistryPath)
+	if err != nil {
+		t.Fatalf("read generated registry: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "workflow_path: WORKFLOW.md") {
+		t.Fatalf("generated registry = %q, want relative workflow path", text)
+	}
+	if !strings.Contains(text, "allow_workspace_under_registry_dir: true") {
+		t.Fatalf("generated registry = %q, want explicit workspace-under-registry opt-in", text)
+	}
+}
+
+func TestHandleRegistryBootstrapDoesNotOverwriteExistingRegistry(t *testing.T) {
+	workflowPath := writeWorkflowForSettingsTest(t, "---\ntracker:\n  kind: linear\n---\n\nPrompt body\n")
+	registryPath := filepath.Join(filepath.Dir(workflowPath), "simphony.yaml")
+	original := "projects: []\n"
+	if err := os.WriteFile(registryPath, []byte(original), 0o644); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+	s := NewWithSettings(&fakeOrchestrator{}, 8080, workflowPath, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/registry/bootstrap", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.RegistryBootstrapResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if body.Created {
+		t.Fatalf("created = true, want false")
+	}
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("registry content = %q, want original %q", string(data), original)
+	}
+}
+
 func TestHandleIssueDetail(t *testing.T) {
 	orch := &fakeOrchestrator{
 		details: map[string]api.IssueDetailResponse{

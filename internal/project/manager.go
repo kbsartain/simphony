@@ -261,6 +261,14 @@ func (m *Manager) Concurrency() api.SupervisorConcurrency {
 	}
 }
 
+// Registry returns the active project registry.
+func (m *Manager) Registry() *config.ProjectRegistry {
+	if m == nil {
+		return nil
+	}
+	return m.registry
+}
+
 func summaryFromRuntime(runtime ManagedRuntime, running bool, lastError string) RuntimeSummary {
 	project := runtime.Project()
 	return RuntimeSummary{

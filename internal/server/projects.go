@@ -8,12 +8,19 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	pathpkg "path"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/kbsartain/simphony/internal/config"
 	"github.com/kbsartain/simphony/internal/project"
 	"github.com/kbsartain/simphony/pkg/api"
+	"gopkg.in/yaml.v3"
 )
 
 // ProjectRuntimeManager is the manager surface used by the aggregate project API.
@@ -22,6 +29,7 @@ type ProjectRuntimeManager interface {
 	Summary(id string) (project.RuntimeSummary, bool)
 	Runtime(id string) (project.ObservableRuntime, bool)
 	Concurrency() api.SupervisorConcurrency
+	Registry() *config.ProjectRegistry
 }
 
 // ProjectServer serves project-scoped API routes for multi-project mode.
@@ -32,6 +40,7 @@ type ProjectServer struct {
 	apiPrefix  string
 	mux        *http.ServeMux
 	httpServer *http.Server
+	registryMu sync.Mutex
 }
 
 // NewProjectServer creates an aggregate API server for multi-project mode.
@@ -64,6 +73,9 @@ func NewProjectServer(manager ProjectRuntimeManager, bind string, port int, apiP
 
 func (s *ProjectServer) registerRoutes() {
 	projectsPath := s.apiPrefix + "/projects"
+	s.mux.HandleFunc(s.apiPrefix+"/runtime-mode", s.withCORS(s.handleRuntimeMode))
+	s.mux.HandleFunc(s.apiPrefix+"/registry", s.withCORS(s.handleRegistry))
+	s.mux.HandleFunc(s.apiPrefix+"/registry/projects", s.withCORS(s.handleRegistryProjects))
 	s.mux.HandleFunc(s.apiPrefix+"/state", s.withCORS(s.handleDefaultProjectState))
 	s.mux.HandleFunc(s.apiPrefix+"/refresh", s.withCORS(s.handleDefaultProjectRefresh))
 	s.mux.HandleFunc(s.apiPrefix+"/settings/validate-tracker", s.withCORS(s.handleDefaultProjectValidateTrackerSettings))
@@ -124,6 +136,87 @@ func (s *ProjectServer) writeJSON(w http.ResponseWriter, status int, v interface
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("project_server json encode error: %v", err)
 	}
+}
+
+func (s *ProjectServer) handleRegistry(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != s.apiPrefix+"/registry" {
+		s.handleProjectAPINotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only GET is allowed"},
+		})
+		return
+	}
+
+	registry := s.manager.Registry()
+	if registry == nil {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "registry_not_available", Message: "No project registry is active"},
+		})
+		return
+	}
+	response, err := registryResponse(registry)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, api.APIErrorResponse{
+			Error: api.APIError{Code: "registry_validation_error", Message: err.Error()},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, response)
+}
+
+func (s *ProjectServer) handleRuntimeMode(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != s.apiPrefix+"/runtime-mode" {
+		s.handleProjectAPINotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only GET is allowed"},
+		})
+		return
+	}
+
+	response := api.RuntimeModeResponse{
+		Mode:                  api.RuntimeModeProjectRegistry,
+		ChangeRequiresRestart: true,
+	}
+	if registry := s.manager.Registry(); registry != nil {
+		response.RegistryPath = registry.SourcePath
+	}
+	s.writeJSON(w, http.StatusOK, response)
+}
+
+func (s *ProjectServer) handleRegistryProjects(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != s.apiPrefix+"/registry/projects" {
+		s.handleProjectAPINotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+
+	var req api.RegistryProjectCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "bad_request", Message: "Request body must be valid JSON"},
+		})
+		return
+	}
+
+	response, status, errCode, err := s.createRegistryProject(req)
+	if err != nil {
+		s.writeJSON(w, status, api.APIErrorResponse{
+			Error: api.APIError{Code: errCode, Message: err.Error()},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, response)
 }
 
 func (s *ProjectServer) handleProjects(w http.ResponseWriter, r *http.Request) {
@@ -515,4 +608,278 @@ func (s *ProjectServer) singleRunningRuntime() (project.ObservableRuntime, bool)
 		return nil, false
 	}
 	return runtime, true
+}
+
+func registryResponse(registry *config.ProjectRegistry) (api.RegistryResponse, error) {
+	report, err := config.ValidateProjectIsolation(registry)
+	if err != nil {
+		return api.RegistryResponse{}, err
+	}
+
+	response := api.RegistryResponse{
+		GeneratedAt: time.Now(),
+		SourcePath:  registry.SourcePath,
+		Concurrency: api.RegistryConcurrencySummary{
+			MaxConcurrentAgents:               registry.Concurrency.MaxConcurrentAgents,
+			DefaultProjectMaxConcurrentAgents: registry.Concurrency.DefaultProjectMaxConcurrentAgents,
+		},
+		Security: api.RegistrySecuritySummary{
+			AllowWorkspaceOverlap:          registry.Security.AllowWorkspaceOverlap,
+			AllowWorkspaceUnderRegistryDir: registry.Security.AllowWorkspaceUnderRegistryDir,
+			AllowRemoteDashboard:           registry.Security.AllowRemoteDashboard,
+		},
+		AgentRuntime: registryAgentRuntimeSummary(registry.AgentRuntime),
+		Projects:     make([]api.RegistryProjectSummary, 0, len(registry.Projects)),
+		Warnings:     make([]api.RegistryWarningSummary, 0, len(report.Warnings)),
+	}
+	if registry.Server != nil {
+		response.Server = &api.RegistryServerSummary{
+			BindAddress:      registry.Server.BindAddress,
+			Port:             registry.Server.Port,
+			DashboardEnabled: registry.Server.DashboardEnabled,
+			APIPrefix:        registry.Server.APIPrefix,
+		}
+	}
+	for _, item := range registry.Projects {
+		response.Projects = append(response.Projects, api.RegistryProjectSummary{
+			ID:                  item.ID,
+			Name:                item.Name,
+			WorkflowPath:        item.WorkflowPath,
+			Enabled:             item.Enabled,
+			MaxConcurrentAgents: item.MaxConcurrentAgents,
+		})
+	}
+	for _, warning := range report.Warnings {
+		response.Warnings = append(response.Warnings, api.RegistryWarningSummary{
+			Code:       warning.Code,
+			Message:    warning.Message,
+			ProjectIDs: append([]string(nil), warning.ProjectIDs...),
+		})
+	}
+	return response, nil
+}
+
+var registryProjectIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func (s *ProjectServer) createRegistryProject(req api.RegistryProjectCreateRequest) (api.RegistryProjectCreateResponse, int, string, error) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+
+	registry := s.manager.Registry()
+	if registry == nil {
+		return api.RegistryProjectCreateResponse{}, http.StatusNotFound, "registry_not_available", fmt.Errorf("no project registry is active")
+	}
+	if strings.TrimSpace(registry.SourcePath) == "" {
+		return api.RegistryProjectCreateResponse{}, http.StatusInternalServerError, "registry_source_missing", fmt.Errorf("active project registry has no source path")
+	}
+
+	projectID := strings.TrimSpace(req.ID)
+	if projectID == "" {
+		return api.RegistryProjectCreateResponse{}, http.StatusBadRequest, "project_id_required", fmt.Errorf("project id is required")
+	}
+	if !registryProjectIDPattern.MatchString(projectID) {
+		return api.RegistryProjectCreateResponse{}, http.StatusBadRequest, "project_id_invalid", fmt.Errorf("project id must start with a letter or number and contain only letters, numbers, dots, underscores, or hyphens")
+	}
+	for _, existing := range registry.Projects {
+		if strings.EqualFold(existing.ID, projectID) {
+			return api.RegistryProjectCreateResponse{}, http.StatusConflict, "project_id_exists", fmt.Errorf("project %q already exists", projectID)
+		}
+	}
+
+	workflowPathForYAML := strings.TrimSpace(req.WorkflowPath)
+	if workflowPathForYAML == "" {
+		return api.RegistryProjectCreateResponse{}, http.StatusBadRequest, "workflow_path_required", fmt.Errorf("workflow path is required")
+	}
+	registryDir := filepath.Dir(registry.SourcePath)
+	resolvedWorkflowPath := workflowPathForYAML
+	if !filepath.IsAbs(resolvedWorkflowPath) {
+		resolvedWorkflowPath = filepath.Join(registryDir, resolvedWorkflowPath)
+	}
+	resolvedWorkflowPath, err := filepath.Abs(resolvedWorkflowPath)
+	if err != nil {
+		return api.RegistryProjectCreateResponse{}, http.StatusBadRequest, "workflow_path_invalid", fmt.Errorf("resolve workflow path: %w", err)
+	}
+	info, err := os.Stat(resolvedWorkflowPath)
+	if err != nil {
+		return api.RegistryProjectCreateResponse{}, http.StatusBadRequest, "workflow_path_not_found", fmt.Errorf("workflow path %q: %w", resolvedWorkflowPath, err)
+	}
+	if info.IsDir() {
+		return api.RegistryProjectCreateResponse{}, http.StatusBadRequest, "workflow_path_is_directory", fmt.Errorf("workflow path %q is a directory", resolvedWorkflowPath)
+	}
+	if _, err := config.LoadWorkflow(resolvedWorkflowPath); err != nil {
+		return api.RegistryProjectCreateResponse{}, http.StatusBadRequest, "workflow_load_error", err
+	}
+
+	if req.MaxConcurrentAgents < 0 {
+		return api.RegistryProjectCreateResponse{}, http.StatusBadRequest, "max_concurrent_agents_invalid", fmt.Errorf("max_concurrent_agents must be positive")
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = projectID
+	}
+
+	nextRegistry := cloneRegistryForAppend(registry)
+	nextProject := config.RegistryProject{
+		ID:                  projectID,
+		Name:                name,
+		WorkflowPath:        resolvedWorkflowPath,
+		Enabled:             enabled,
+		MaxConcurrentAgents: req.MaxConcurrentAgents,
+	}
+	nextRegistry.Projects = append(nextRegistry.Projects, nextProject)
+	if _, err := config.ValidateProjectIsolation(nextRegistry); err != nil {
+		return api.RegistryProjectCreateResponse{}, http.StatusBadRequest, "registry_validation_error", err
+	}
+
+	if err := appendRegistryProjectToFile(registry.SourcePath, api.RegistryProjectCreateRequest{
+		ID:                  projectID,
+		Name:                name,
+		WorkflowPath:        filepath.ToSlash(workflowPathForYAML),
+		Enabled:             &enabled,
+		MaxConcurrentAgents: req.MaxConcurrentAgents,
+	}); err != nil {
+		return api.RegistryProjectCreateResponse{}, http.StatusInternalServerError, "registry_write_error", err
+	}
+
+	registry.Projects = append(registry.Projects, nextProject)
+	registrySummary, err := registryResponse(registry)
+	if err != nil {
+		return api.RegistryProjectCreateResponse{}, http.StatusInternalServerError, "registry_validation_error", err
+	}
+	projectSummary := api.RegistryProjectSummary{
+		ID:                  nextProject.ID,
+		Name:                nextProject.Name,
+		WorkflowPath:        nextProject.WorkflowPath,
+		Enabled:             nextProject.Enabled,
+		MaxConcurrentAgents: nextProject.MaxConcurrentAgents,
+	}
+	return api.RegistryProjectCreateResponse{
+		Registry:              registrySummary,
+		Project:               projectSummary,
+		Command:               fmt.Sprintf("simphony -config %s", registry.SourcePath),
+		ChangeRequiresRestart: true,
+	}, 0, "", nil
+}
+
+func cloneRegistryForAppend(registry *config.ProjectRegistry) *config.ProjectRegistry {
+	next := *registry
+	next.Projects = append([]config.RegistryProject(nil), registry.Projects...)
+	return &next
+}
+
+func appendRegistryProjectToFile(registryPath string, req api.RegistryProjectCreateRequest) error {
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		return fmt.Errorf("read registry: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse registry yaml: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("registry root must be a mapping")
+	}
+	root := doc.Content[0]
+	projectsNode := mappingValue(root, "projects")
+	if projectsNode == nil {
+		projectsNode = &yaml.Node{Kind: yaml.SequenceNode}
+		root.Content = append(root.Content, scalarNode("projects"), projectsNode)
+	}
+	if projectsNode.Kind != yaml.SequenceNode {
+		return fmt.Errorf("projects must be a list")
+	}
+	projectsNode.Content = append(projectsNode.Content, registryProjectNode(req))
+
+	file, err := os.OpenFile(registryPath, os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("open registry for write: %w", err)
+	}
+	defer file.Close()
+	encoder := yaml.NewEncoder(file)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&doc); err != nil {
+		return fmt.Errorf("write registry yaml: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return fmt.Errorf("finish registry yaml: %w", err)
+	}
+	return nil
+}
+
+func registryProjectNode(req api.RegistryProjectCreateRequest) *yaml.Node {
+	content := []*yaml.Node{
+		scalarNode("id"), scalarNode(req.ID),
+		scalarNode("name"), scalarNode(req.Name),
+		scalarNode("workflow_path"), scalarNode(req.WorkflowPath),
+	}
+	if req.Enabled != nil && !*req.Enabled {
+		content = append(content, scalarNode("enabled"), boolNode(false))
+	}
+	if req.MaxConcurrentAgents > 0 {
+		content = append(content, scalarNode("max_concurrent_agents"), intNode(req.MaxConcurrentAgents))
+	}
+	return &yaml.Node{Kind: yaml.MappingNode, Content: content}
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func scalarNode(value string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+}
+
+func boolNode(value bool) *yaml.Node {
+	if value {
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"}
+	}
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "false"}
+}
+
+func intNode(value int) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", value)}
+}
+
+func registryAgentRuntimeSummary(runtime *api.AgentRuntimeConfig) api.RegistryAgentRuntimeSummary {
+	if runtime == nil {
+		return api.RegistryAgentRuntimeSummary{}
+	}
+	return api.RegistryAgentRuntimeSummary{
+		Configured:          true,
+		Provider:            runtime.Provider,
+		Command:             runtime.Command,
+		Model:               runtime.Model,
+		ModelProvider:       runtime.ModelProvider,
+		ReasoningEffort:     runtime.ReasoningEffort,
+		EndpointURL:         runtime.EndpointURL,
+		APIKeyConfigured:    runtime.APIKeyConfigured || runtime.APIKey != "",
+		AuthTokenConfigured: runtime.AuthTokenConfigured || runtime.AuthToken != "",
+		EnvKeys:             sortedStringKeys(runtime.Env),
+		StageOverrideKeys:   sortedStringKeys(runtime.StageOverrides),
+		PermissionMode:      runtime.PermissionMode,
+		AllowedTools:        append([]string(nil), runtime.AllowedTools...),
+		DisallowedTools:     append([]string(nil), runtime.DisallowedTools...),
+		SettingSources:      append([]string(nil), runtime.SettingSources...),
+	}
+}
+
+func sortedStringKeys[V any](m map[string]V) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

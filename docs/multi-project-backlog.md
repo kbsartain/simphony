@@ -150,7 +150,8 @@ Backlog:
 
 Status:
 
-- Done: `MP-4.1`, initial `MP-4.2`, `MP-4.3`, `MP-4.4`, and initial `MP-4.5`. The dashboard discovers aggregate projects, shows a project selector and overview cards, scopes runtime/detail/refresh/settings calls to the selected project, and surfaces disabled, stopped, failed, retrying, running, and idle project states.
+- Done: `MP-4.1`, initial `MP-4.2`, `MP-4.3`, `MP-4.4`, and initial `MP-4.5`. The dashboard discovers aggregate projects, uses a left-nav project context shell, scopes runtime/detail/refresh/settings calls to the selected project, and surfaces disabled, stopped, failed, retrying, running, and idle project states.
+- Partial: the project setup surface is now visible as a registry/admin landing page, including the current startup mode, restart-required registry toggle, single-workflow starter registry creation, and append-only project creation for existing registries; edit/remove project flows still require registry admin APIs.
 - Pending: deeper project overview actions and polish for the one-project streamlined path.
 
 Acceptance:
