@@ -5,7 +5,9 @@
 
 Simphony is a Go implementation of the [OpenAI Symphony specification](https://github.com/openai/symphony/blob/main/SPEC.md). It is a long-running automation service that watches an issue tracker, creates an isolated workspace for each eligible issue, runs a coding agent against that issue, and exposes runtime state through an optional HTTP API and React dashboard.
 
-The project is currently focused on Linear as the tracker backend, with Codex app-server as the default agent runtime and an optional Claude Code Agent SDK runtime.
+The project is currently focused on Linear as the tracker backend. Codex app-server remains the default agent runtime, but workflows can also select the Claude Code Agent SDK shim or configure OpenAI-compatible and Anthropic-compatible endpoints through provider-neutral `agent_runtime` settings.
+
+Simphony can run in the original single-project mode from one `WORKFLOW.md`, or in multi-project mode from a `simphony.yaml` registry. Multi-project mode starts isolated per-project runtimes under one supervisor, with shared dashboard navigation, registry setup, and optional global concurrency limits.
 
 Simphony is intended for teams that want a configurable, unattended bridge between issue tracking and coding-agent execution. Treat `WORKFLOW.md` as local runtime configuration; the reusable starter templates live in [workflow examples](docs/workflow-examples.md).
 
@@ -20,6 +22,7 @@ Simphony is intended for teams that want a configurable, unattended bridge betwe
 - Reconciles running work against tracker state and removes workspaces for terminal issues.
 - Hot-reloads `WORKFLOW.md` changes without restarting the process.
 - Serves a JSON status API and optional dashboard.
+- Can supervise multiple projects from one `simphony.yaml`, keeping each project's workflow, Linear settings, workspaces, retry state, hooks, and agent environment isolated.
 
 ## Repository Layout
 
@@ -101,6 +104,57 @@ From a local build on macOS or Linux:
 
 If `server.port` is configured, the API listens on `http://localhost:<port>`.
 
+## Multi-Project Mode
+
+Use single-project mode when one Simphony process should manage one workflow:
+
+```bash
+simphony -workflow ./WORKFLOW.md
+```
+
+Use multi-project mode when one Simphony supervisor should manage multiple project runtimes:
+
+```bash
+simphony -config ./simphony.yaml
+```
+
+A registry lists project workflow files and optional global defaults:
+
+```yaml
+server:
+  bind_address: 127.0.0.1
+  port: 8080
+  dashboard_enabled: true
+
+concurrency:
+  max_concurrent_agents: 10
+
+agent_runtime:
+  provider: codex
+  model: gpt-5.4
+
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: projects/alpha/WORKFLOW.md
+    max_concurrent_agents: 3
+  - id: beta
+    name: Beta
+    workflow_path: projects/beta/WORKFLOW.md
+```
+
+The dashboard Project Setup page can create a starter registry from a single `WORKFLOW.md`, then add, edit, or remove registry project entries. Registry changes are persisted to `simphony.yaml`; restarting with `-config` applies them to running project runtimes.
+
+Useful registry commands:
+
+```bash
+simphony validate -config ./simphony.yaml
+simphony projects -config ./simphony.yaml
+simphony -config ./simphony.yaml -project alpha
+```
+
+See [multi-instance and multi-project operation](docs/multi-instance.md), [configuration](docs/configuration.md), and the [two-project registry example](docs/examples/two-projects.simphony.yaml).
+
 ## Pipeline States
 
 Simphony treats normal coding work and approved merge work as separate pipeline stages:
@@ -130,6 +184,8 @@ agent_runtime:
 ```
 
 `agent_runtime.endpoint_url` and `agent_runtime.api_key` support OpenAI-compatible and Anthropic-compatible gateways. For Codex, they are passed as `OPENAI_BASE_URL` and `OPENAI_API_KEY`; for Claude, they are passed as `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`.
+
+Global `agent_runtime` defaults can also live in `simphony.yaml`; each project `WORKFLOW.md` can override individual runtime fields when a project needs a different SDK, model, endpoint, or token source.
 
 ## Codex Model Selection
 
@@ -211,6 +267,7 @@ When `dashboard/dist` exists, Simphony serves it from `/`.
 
 - [Documentation index](docs/README.md) lists all guides.
 - [Configuration](docs/configuration.md) explains `WORKFLOW.md`, defaults, and prompt templates.
+- [Multi-instance and multi-project operation](docs/multi-instance.md) explains separate-process operation, `simphony.yaml`, and supervisor isolation.
 - [Environment and secrets](docs/environment.md) explains required environment variables and safe credential handling.
 - [Workflow examples](docs/workflow-examples.md) provides complete starter workflows.
 - [Linear setup](docs/linear.md) explains project slugs, issue selection, terminal states, and blocker handling.
@@ -258,4 +315,5 @@ Current limitations:
 - Linear is the only tracker adapter.
 - Runtime state is in memory only.
 - Agent user-input requests are rejected because Simphony runs unattended.
+- Registry edits in the dashboard require a restart before they affect running project runtimes.
 - The dashboard is intentionally minimal and focused on operational status.
