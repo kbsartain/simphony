@@ -56,13 +56,16 @@ Returns configured projects, per-project runtime counts, and shared supervisor c
         "completed": 4
       },
       "waiting_on_supervisor": true,
-      "last_supervisor_deferred_at": "2026-05-01T11:59:30Z"
+      "last_supervisor_deferred_at": "2026-05-01T11:59:30Z",
+      "workflow_watcher_running": true
     }
   ]
 }
 ```
 
 `waiting_on_supervisor` means that project's last dispatch pass had eligible work but could not acquire a shared global slot. It clears when the project successfully dispatches again.
+
+`workflow_watcher_running` reports whether the project's `WORKFLOW.md` hot-reload watcher is active. If watcher setup failed, `workflow_watcher_error` contains the setup error.
 
 ## Get State
 

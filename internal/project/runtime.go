@@ -25,14 +25,15 @@ type Runtime struct {
 	registry *config.ProjectRegistry
 	project  config.RegistryProject
 
-	mu      sync.Mutex
-	def     *api.WorkflowDefinition
-	cfg     *api.WorkflowConfig
-	runner  *agent.Runner
-	orch    *orchestrator.Orchestrator
-	limiter orchestrator.DispatchLimiter
-	watcher workflowWatcher
-	started bool
+	mu         sync.Mutex
+	def        *api.WorkflowDefinition
+	cfg        *api.WorkflowConfig
+	runner     *agent.Runner
+	orch       *orchestrator.Orchestrator
+	limiter    orchestrator.DispatchLimiter
+	watcher    workflowWatcher
+	watcherErr string
+	started    bool
 }
 
 // NewRuntime creates a project runtime.
@@ -84,8 +85,10 @@ func (r *Runtime) Start(ctx context.Context) error {
 	})
 	if err != nil {
 		log.Printf("project_id=%s project_name=%q action=workflow_watch status=failed error=%v", r.project.ID, r.project.Name, err)
+		r.watcherErr = err.Error()
 	} else {
 		r.watcher = watcher
+		r.watcherErr = ""
 	}
 
 	go func() {
@@ -106,6 +109,7 @@ func (r *Runtime) Stop() {
 	watcher := r.watcher
 	orch := r.orch
 	r.watcher = nil
+	r.watcherErr = ""
 	r.started = false
 	r.mu.Unlock()
 
@@ -115,6 +119,13 @@ func (r *Runtime) Stop() {
 	if orch != nil {
 		orch.Stop()
 	}
+}
+
+// WatcherStatus returns whether workflow hot reload is watching this project.
+func (r *Runtime) WatcherStatus() (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.started && r.watcher != nil, r.watcherErr
 }
 
 // Reload applies a changed project workflow to future orchestration work.

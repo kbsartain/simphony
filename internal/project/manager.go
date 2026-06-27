@@ -53,6 +53,11 @@ type ObservableRuntime interface {
 	ValidateTrackerSettings(req api.SettingsUpdateRequest) (api.SettingsValidationResponse, error)
 }
 
+// WatchableRuntime exposes workflow watcher health for project summaries.
+type WatchableRuntime interface {
+	WatcherStatus() (running bool, lastError string)
+}
+
 // RuntimeFactory builds a runtime for a registry project.
 type RuntimeFactory func(registry *config.ProjectRegistry, project config.RegistryProject, limiter orchestrator.DispatchLimiter) ManagedRuntime
 
@@ -64,13 +69,15 @@ type StartReport struct {
 
 // RuntimeSummary is a lightweight project runtime view.
 type RuntimeSummary struct {
-	ID                  string
-	Name                string
-	WorkflowPath        string
-	Enabled             bool
-	Running             bool
-	LastError           string
-	MaxConcurrentAgents int
+	ID                     string
+	Name                   string
+	WorkflowPath           string
+	Enabled                bool
+	Running                bool
+	LastError              string
+	MaxConcurrentAgents    int
+	WorkflowWatcherRunning bool
+	WorkflowWatcherError   string
 }
 
 // Manager owns a set of isolated project runtimes.
@@ -206,13 +213,14 @@ func (m *Manager) Summaries() []RuntimeSummary {
 			lastError = err.Error()
 		}
 		summaries = append(summaries, RuntimeSummary{
-			ID:                  project.ID,
-			Name:                project.Name,
-			WorkflowPath:        project.WorkflowPath,
-			Enabled:             project.Enabled,
-			Running:             false,
-			LastError:           lastError,
-			MaxConcurrentAgents: project.MaxConcurrentAgents,
+			ID:                     project.ID,
+			Name:                   project.Name,
+			WorkflowPath:           project.WorkflowPath,
+			Enabled:                project.Enabled,
+			Running:                false,
+			LastError:              lastError,
+			MaxConcurrentAgents:    project.MaxConcurrentAgents,
+			WorkflowWatcherRunning: false,
 		})
 	}
 	return summaries
@@ -275,13 +283,20 @@ func (m *Manager) Registry() *config.ProjectRegistry {
 
 func summaryFromRuntime(runtime ManagedRuntime, running bool, lastError string) RuntimeSummary {
 	project := runtime.Project()
+	watcherRunning := false
+	watcherError := ""
+	if watchable, ok := runtime.(WatchableRuntime); ok {
+		watcherRunning, watcherError = watchable.WatcherStatus()
+	}
 	return RuntimeSummary{
-		ID:                  project.ID,
-		Name:                project.Name,
-		WorkflowPath:        project.WorkflowPath,
-		Enabled:             project.Enabled,
-		Running:             running,
-		LastError:           lastError,
-		MaxConcurrentAgents: project.MaxConcurrentAgents,
+		ID:                     project.ID,
+		Name:                   project.Name,
+		WorkflowPath:           project.WorkflowPath,
+		Enabled:                project.Enabled,
+		Running:                running,
+		LastError:              lastError,
+		MaxConcurrentAgents:    project.MaxConcurrentAgents,
+		WorkflowWatcherRunning: watcherRunning,
+		WorkflowWatcherError:   watcherError,
 	}
 }

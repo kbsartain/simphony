@@ -1158,6 +1158,12 @@ function ProjectHealthPanel(props: {
                 </div>
                 <span>{project.workflow_path}</span>
                 {project.last_error && <em>{project.last_error}</em>}
+                {project.running && (
+                  <em>
+                    Watcher {project.workflow_watcher_running ? 'active' : 'inactive'}
+                    {project.workflow_watcher_error ? `: ${project.workflow_watcher_error}` : ''}
+                  </em>
+                )}
                 {project.waiting_on_supervisor && (
                   <em>
                     Waiting for a global slot
@@ -1181,6 +1187,10 @@ function ProjectHealthPanel(props: {
                 <div>
                   <dt>Cap</dt>
                   <dd>{cap}</dd>
+                </div>
+                <div>
+                  <dt>Watch</dt>
+                  <dd>{project.workflow_watcher_running ? 'On' : 'Off'}</dd>
                 </div>
               </dl>
               <div className="project-health-actions">

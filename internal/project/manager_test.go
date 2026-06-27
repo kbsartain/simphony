@@ -15,10 +15,12 @@ import (
 )
 
 type fakeRuntime struct {
-	project  config.RegistryProject
-	startErr error
-	started  bool
-	stopped  bool
+	project      config.RegistryProject
+	startErr     error
+	started      bool
+	stopped      bool
+	watcher      bool
+	watcherError string
 }
 
 func (f *fakeRuntime) ID() string {
@@ -36,6 +38,10 @@ func (f *fakeRuntime) Start(ctx context.Context) error {
 
 func (f *fakeRuntime) Stop() {
 	f.stopped = true
+}
+
+func (f *fakeRuntime) WatcherStatus() (bool, string) {
+	return f.watcher, f.watcherError
 }
 
 func TestManagerStartsEnabledProjectsAndSkipsDisabled(t *testing.T) {
@@ -64,6 +70,29 @@ func TestManagerStartsEnabledProjectsAndSkipsDisabled(t *testing.T) {
 	}
 	if !created["alpha"].started {
 		t.Fatal("alpha runtime was not started")
+	}
+}
+
+func TestManagerSummaryIncludesWorkflowWatcherStatus(t *testing.T) {
+	registry := &config.ProjectRegistry{
+		Projects: []config.RegistryProject{
+			{ID: "alpha", Name: "Alpha", WorkflowPath: "alpha/WORKFLOW.md", Enabled: true},
+		},
+	}
+	manager := NewManagerWithFactory(registry, func(_ *config.ProjectRegistry, project config.RegistryProject, _ orchestrator.DispatchLimiter) ManagedRuntime {
+		return &fakeRuntime{project: project, watcher: true}
+	})
+
+	report := manager.Start(context.Background())
+	if len(report.Started) != 1 || !report.Started[0].WorkflowWatcherRunning {
+		t.Fatalf("Started = %+v, want watcher running in start report", report.Started)
+	}
+	summary, ok := manager.Summary("alpha")
+	if !ok {
+		t.Fatal("alpha summary missing")
+	}
+	if !summary.WorkflowWatcherRunning || summary.WorkflowWatcherError != "" {
+		t.Fatalf("summary watcher status = running:%t error:%q, want running with no error", summary.WorkflowWatcherRunning, summary.WorkflowWatcherError)
 	}
 }
 

@@ -173,6 +173,8 @@ function normalizeProjectSummary(project: ProjectSummary): ProjectSummary {
     counts: normalizeCounts(project.counts),
     waiting_on_supervisor: Boolean(project.waiting_on_supervisor),
     last_supervisor_deferred_at: project.last_supervisor_deferred_at || '',
+    workflow_watcher_running: Boolean(project.workflow_watcher_running),
+    workflow_watcher_error: project.workflow_watcher_error || '',
   }
 }
 

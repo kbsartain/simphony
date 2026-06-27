@@ -731,8 +731,8 @@ func TestProjectServerListsProjects(t *testing.T) {
 	deferredAt := time.Date(2026, 6, 26, 12, 10, 0, 0, time.UTC)
 	manager := &fakeProjectManager{
 		summaries: []project.RuntimeSummary{
-			{ID: "alpha", Name: "Alpha", WorkflowPath: "/tmp/alpha/WORKFLOW.md", Enabled: true, Running: true, MaxConcurrentAgents: 2},
-			{ID: "beta", Name: "Beta", WorkflowPath: "/tmp/beta/WORKFLOW.md", Enabled: false, Running: false},
+			{ID: "alpha", Name: "Alpha", WorkflowPath: "/tmp/alpha/WORKFLOW.md", Enabled: true, Running: true, MaxConcurrentAgents: 2, WorkflowWatcherRunning: true},
+			{ID: "beta", Name: "Beta", WorkflowPath: "/tmp/beta/WORKFLOW.md", Enabled: false, Running: false, WorkflowWatcherError: "watch unavailable"},
 		},
 		runtimes: map[string]project.ObservableRuntime{
 			"alpha": &fakeProjectRuntime{
@@ -770,8 +770,14 @@ func TestProjectServerListsProjects(t *testing.T) {
 	if body.Projects[0].MaxConcurrentAgents != 2 {
 		t.Fatalf("alpha max concurrent = %d, want 2", body.Projects[0].MaxConcurrentAgents)
 	}
+	if !body.Projects[0].WorkflowWatcherRunning || body.Projects[0].WorkflowWatcherError != "" {
+		t.Fatalf("alpha watcher = running:%t error:%q, want running without error", body.Projects[0].WorkflowWatcherRunning, body.Projects[0].WorkflowWatcherError)
+	}
 	if body.Projects[1].ID != "beta" || body.Projects[1].Running {
 		t.Fatalf("beta summary = %+v, want stopped beta", body.Projects[1])
+	}
+	if body.Projects[1].WorkflowWatcherRunning || body.Projects[1].WorkflowWatcherError != "watch unavailable" {
+		t.Fatalf("beta watcher = running:%t error:%q, want stopped with watch unavailable", body.Projects[1].WorkflowWatcherRunning, body.Projects[1].WorkflowWatcherError)
 	}
 	if body.Concurrency.MaxConcurrentAgents != 10 || body.Concurrency.UsedAgents != 10 || body.Concurrency.AvailableAgents != 0 {
 		t.Fatalf("concurrency = %+v, want full supervisor pool", body.Concurrency)

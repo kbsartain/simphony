@@ -105,6 +105,8 @@ export interface ProjectSummary {
   counts: StateCounts;
   waiting_on_supervisor?: boolean;
   last_supervisor_deferred_at?: string;
+  workflow_watcher_running: boolean;
+  workflow_watcher_error?: string;
 }
 
 export interface SupervisorConcurrency {

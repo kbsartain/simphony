@@ -300,13 +300,15 @@ func (s *ProjectServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 	projects := make([]api.ProjectSummary, 0, len(summaries))
 	for _, summary := range summaries {
 		projectSummary := api.ProjectSummary{
-			ID:                  summary.ID,
-			Name:                summary.Name,
-			WorkflowPath:        summary.WorkflowPath,
-			Enabled:             summary.Enabled,
-			Running:             summary.Running,
-			LastError:           summary.LastError,
-			MaxConcurrentAgents: summary.MaxConcurrentAgents,
+			ID:                     summary.ID,
+			Name:                   summary.Name,
+			WorkflowPath:           summary.WorkflowPath,
+			Enabled:                summary.Enabled,
+			Running:                summary.Running,
+			LastError:              summary.LastError,
+			MaxConcurrentAgents:    summary.MaxConcurrentAgents,
+			WorkflowWatcherRunning: summary.WorkflowWatcherRunning,
+			WorkflowWatcherError:   summary.WorkflowWatcherError,
 		}
 		if runtime, ok := s.manager.Runtime(summary.ID); ok {
 			if snapshot, ok := runtime.Snapshot(); ok {

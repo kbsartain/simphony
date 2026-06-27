@@ -232,7 +232,7 @@ Status:
 - Done: `MP-7.1`; `simphony validate -config ./simphony.yaml` validates the registry and enabled project workflows without starting runtimes. The legacy `-validate-config` flag remains available.
 - Done: `MP-7.2`; `simphony projects -config ./simphony.yaml` lists configured projects, server/global concurrency settings, validation warnings, workspace roots, tracker slugs, runtime defaults, and config health.
 - Done: `MP-7.3`; `simphony -config ./simphony.yaml -project <id>` starts only one enabled project runtime while leaving the full registry visible to summaries and the aggregate API.
-- Partial: `MP-7.4`; static registry/workspace/config health is available from `validate` and `projects`, while live tracker validation and watcher-state reporting remain future enhancements.
+- Partial: `MP-7.4`; static registry/workspace/config health is available from `validate` and `projects`, and watcher-state reporting is exposed through project summaries/API/dashboard. Live tracker validation remains a future enhancement.
 - Done: `MP-7.5`; operations docs cover startup, shutdown, logging fields, project-scoped inspection, selected-project debugging, hot reload isolation, and recovery guidance.
 - Done: `MP-7.6`; `docs/examples/two-projects.simphony.yaml` provides a two-project workstation registry example.
 

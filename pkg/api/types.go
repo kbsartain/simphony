@@ -375,6 +375,8 @@ type ProjectSummary struct {
 	Counts                   StateCounts `json:"counts"`
 	WaitingOnSupervisor      bool        `json:"waiting_on_supervisor,omitempty"`
 	LastSupervisorDeferredAt *time.Time  `json:"last_supervisor_deferred_at,omitempty"`
+	WorkflowWatcherRunning   bool        `json:"workflow_watcher_running"`
+	WorkflowWatcherError     string      `json:"workflow_watcher_error,omitempty"`
 }
 
 // SupervisorConcurrency reports shared multi-project agent capacity.
