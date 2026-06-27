@@ -612,6 +612,121 @@ h3 {
   background: #fff;
 }
 
+.project-health-panel {
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.health-capacity {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.project-health-list {
+  display: grid;
+}
+
+.project-health-row {
+  display: grid;
+  grid-template-columns: 12px minmax(220px, 1.4fr) minmax(260px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 104px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--line);
+  background: #fff;
+}
+
+.project-health-row:first-child {
+  border-top: 0;
+}
+
+.project-health-row.failed {
+  background: #fffafa;
+}
+
+.project-health-row.waiting {
+  background: #fffdf5;
+}
+
+.project-health-copy {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.project-health-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.project-health-title strong,
+.project-health-copy span,
+.project-health-copy em {
+  overflow-wrap: anywhere;
+}
+
+.project-health-copy span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.project-health-copy em {
+  color: #7a5b13;
+  font-size: 0.82rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.project-health-row.failed .project-health-copy em {
+  color: #ad4646;
+}
+
+.project-health-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(58px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.project-health-metrics div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(251, 252, 248, 0.92);
+}
+
+.project-health-metrics dt,
+.project-health-metrics dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-health-metrics dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.project-health-metrics dd {
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.project-health-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .project-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -1982,6 +2097,15 @@ h3 {
 }
 
 @media (max-width: 1040px) {
+  .project-health-row {
+    grid-template-columns: 12px minmax(0, 1fr);
+  }
+
+  .project-health-metrics,
+  .project-health-actions {
+    grid-column: 2;
+  }
+
   .metrics-grid,
   .ops-band,
   .content-grid,
@@ -2069,6 +2193,27 @@ h3 {
   }
 
   .project-overview-stats {
+    justify-content: flex-start;
+  }
+
+  .project-health-row {
+    grid-template-columns: 1fr;
+  }
+
+  .project-health-row .status-dot {
+    display: none;
+  }
+
+  .project-health-metrics,
+  .project-health-actions {
+    grid-column: auto;
+  }
+
+  .project-health-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .project-health-actions {
     justify-content: flex-start;
   }
 

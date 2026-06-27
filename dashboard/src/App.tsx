@@ -924,6 +924,20 @@ function App() {
                 </div>
               </section>
             )}
+            {projectMode && projectOverview && (
+              <ProjectHealthPanel
+                projects={projects}
+                supervisorConcurrency={supervisorConcurrency}
+                onOpenRuntime={projectID => {
+                  changeProject(projectID)
+                  setPage('runtime')
+                }}
+                onOpenSettings={projectID => {
+                  changeProject(projectID)
+                  setPage('settings')
+                }}
+              />
+            )}
 
             <section className="metrics-grid" aria-label="Runtime metrics">
               <MetricCard label="Active issues" value={summary.active.toLocaleString()} detail="Running plus retry queue" tone="green" />
@@ -1107,6 +1121,81 @@ function FilterButton(props: { active: boolean; label: string; onClick: () => vo
     <button className={props.active ? 'segment active' : 'segment'} type="button" onClick={props.onClick} aria-pressed={props.active}>
       {props.label}
     </button>
+  )
+}
+
+function ProjectHealthPanel(props: {
+  projects: ProjectSummary[]
+  supervisorConcurrency: SupervisorConcurrency | null
+  onOpenRuntime: (projectID: string) => void
+  onOpenSettings: (projectID: string) => void
+}) {
+  return (
+    <section className="panel project-health-panel" aria-label="Project health">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Health</p>
+          <h2>Project status</h2>
+        </div>
+        <span className="health-capacity">
+          {props.supervisorConcurrency?.max_concurrent_agents
+            ? `${props.supervisorConcurrency.available_agents}/${props.supervisorConcurrency.max_concurrent_agents} slots free`
+            : 'Unlimited slots'}
+        </span>
+      </div>
+      <div className="project-health-list">
+        {props.projects.map(project => {
+          const status = projectStatus(project)
+          const activeCount = project.counts.running + project.counts.retrying
+          const cap = project.max_concurrent_agents ? project.max_concurrent_agents.toLocaleString() : 'Default'
+          return (
+            <article key={project.id} className={`project-health-row ${status.tone}`}>
+              <span className={`status-dot ${status.tone}`} aria-hidden="true" />
+              <div className="project-health-copy">
+                <div className="project-health-title">
+                  <strong>{project.name || project.id}</strong>
+                  <span className={`project-status ${status.tone}`}>{status.label}</span>
+                </div>
+                <span>{project.workflow_path}</span>
+                {project.last_error && <em>{project.last_error}</em>}
+                {project.waiting_on_supervisor && (
+                  <em>
+                    Waiting for a global slot
+                    {project.last_supervisor_deferred_at ? ` since ${formatDateTime(project.last_supervisor_deferred_at)}` : ''}
+                  </em>
+                )}
+              </div>
+              <dl className="project-health-metrics">
+                <div>
+                  <dt>Active</dt>
+                  <dd>{activeCount.toLocaleString()}</dd>
+                </div>
+                <div>
+                  <dt>Retry</dt>
+                  <dd>{project.counts.retrying.toLocaleString()}</dd>
+                </div>
+                <div>
+                  <dt>Done</dt>
+                  <dd>{project.counts.completed.toLocaleString()}</dd>
+                </div>
+                <div>
+                  <dt>Cap</dt>
+                  <dd>{cap}</dd>
+                </div>
+              </dl>
+              <div className="project-health-actions">
+                <button className="ghost-button" type="button" onClick={() => props.onOpenRuntime(project.id)}>
+                  Runtime
+                </button>
+                <button className="ghost-button" type="button" onClick={() => props.onOpenSettings(project.id)}>
+                  Settings
+                </button>
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 
