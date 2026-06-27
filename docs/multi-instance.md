@@ -1,5 +1,7 @@
 # Running Multiple Projects Today
 
+Note: this repository has been used for a Simphony multi-project concurrency smoke test.
+
 Until the multi-project supervisor runtime is implemented, the supported way to operate more than one Simphony project is to run one Simphony process per project.
 
 Each process needs its own:
