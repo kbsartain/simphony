@@ -293,13 +293,16 @@ func defaultConfig() *api.WorkflowConfig {
 		},
 		Polling: api.PollingConfig{IntervalMs: 10000},
 		Workspace: api.WorkspaceConfig{
-			Root: "",
+			Root: ".",
 		},
 		Hooks: api.HooksConfig{TimeoutMs: 60000},
 		Agent: api.AgentConfig{
 			MaxConcurrentAgents: 10,
 			MaxTurns:            20,
 			MaxRetryBackoffMs:   300000,
+		},
+		AgentRuntime: api.AgentRuntimeConfig{
+			Command: "go version",
 		},
 		Codex: api.CodexConfig{
 			Command:        "codex app-server",

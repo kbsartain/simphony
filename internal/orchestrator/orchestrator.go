@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kbsartain/simphony/internal/preflight"
 	"github.com/kbsartain/simphony/internal/workspace"
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -77,6 +78,7 @@ type Orchestrator struct {
 
 	lastDispatchDeferredReason string
 	lastDispatchDeferredAt     time.Time
+	preflightHealth            api.ProjectHealth
 }
 
 // New creates a new Orchestrator. Call Start() to begin polling.
@@ -213,6 +215,7 @@ func (o *Orchestrator) Start() {
 	o.state.CodexRateLimits = make(map[string]interface{})
 	o.state.PollIntervalMs = o.cfg.Polling.IntervalMs
 	o.state.MaxConcurrentAgents = o.cfg.Agent.MaxConcurrentAgents
+	o.preflightHealth = preflight.Check(o.cfg)
 	o.workerCancels = make(map[string]context.CancelFunc)
 	o.terminalDone = make(map[string]struct{})
 	o.reviewAttempts = make(map[string]int)
@@ -226,6 +229,14 @@ func (o *Orchestrator) Start() {
 	o.ticker = time.NewTicker(time.Duration(o.cfg.Polling.IntervalMs) * time.Millisecond)
 	o.wg.Add(1)
 	go o.loop()
+}
+
+func (o *Orchestrator) runPreflight(runtime runtimeSnapshot) api.ProjectHealth {
+	health := preflight.Check(runtime.cfg)
+	o.mu.Lock()
+	o.preflightHealth = health
+	o.mu.Unlock()
+	return health
 }
 
 // Stop signals shutdown and waits for workers to finish.
@@ -517,6 +528,12 @@ func (o *Orchestrator) removeRunningLocked(id string) {
 
 func (o *Orchestrator) dispatchEligibleIssues() {
 	runtime := o.runtimeSnapshot()
+	health := o.runPreflight(runtime)
+	if health.Status == preflight.StatusBlocked {
+		o.logf("action=preflight status=blocked summary=%q", health.Summary)
+		o.setDispatchDeferred("project_preflight_blocked", time.Now())
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -682,6 +699,14 @@ func (o *Orchestrator) dispatch(issue api.Issue) bool {
 	o.mu.Unlock()
 
 	stage := o.pipelineStage(issue, runtime.cfg)
+	workspace, err := runtime.workspaceMgr.PrepareWorkspace(issue)
+	if err != nil {
+		o.logf("issue_id=%s issue_identifier=%s action=workspace_prepare failed=%v", issue.ID, issue.Identifier, err)
+		o.releaseSupervisorSlot(supervisorSlotAcquired)
+		o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("workspace prepare: %v", err))
+		return true
+	}
+
 	if runtime.cfg.Tracker.WorkingState != "" && stage.Kind == "coding" && !strings.EqualFold(issue.State, runtime.cfg.Tracker.WorkingState) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		updated, err := runtime.tracker.TransitionIssueState(ctx, issue, runtime.cfg.Tracker.WorkingState)
@@ -694,14 +719,6 @@ func (o *Orchestrator) dispatch(issue api.Issue) bool {
 		}
 		o.logf("issue_id=%s issue_identifier=%s action=working_state_transition from=%q to=%q", issue.ID, issue.Identifier, issue.State, updated.State)
 		issue = updated
-	}
-
-	workspace, err := runtime.workspaceMgr.PrepareWorkspace(issue)
-	if err != nil {
-		o.logf("issue_id=%s issue_identifier=%s action=workspace_prepare failed=%v", issue.ID, issue.Identifier, err)
-		o.releaseSupervisorSlot(supervisorSlotAcquired)
-		o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("workspace prepare: %v", err))
-		return true
 	}
 
 	// after_create hook (fatal to workspace creation).
@@ -1673,6 +1690,7 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 		MaxConcurrentAgents:        o.state.MaxConcurrentAgents,
 		LastDispatchDeferredReason: o.lastDispatchDeferredReason,
 		LastDispatchDeferredAt:     lastDeferredAt,
+		Health:                     o.preflightHealth,
 		Counts: api.StateCounts{
 			Running:   len(o.state.Running),
 			Retrying:  len(o.state.RetryAttempts),
@@ -1730,6 +1748,7 @@ func (o *Orchestrator) UpdateConfig(cfg *api.WorkflowConfig) {
 	o.cfg = cfg
 	o.state.PollIntervalMs = cfg.Polling.IntervalMs
 	o.state.MaxConcurrentAgents = cfg.Agent.MaxConcurrentAgents
+	o.preflightHealth = preflight.Check(cfg)
 
 	if o.ticker != nil && cfg.Polling.IntervalMs > 0 {
 		o.ticker.Reset(time.Duration(cfg.Polling.IntervalMs) * time.Millisecond)
@@ -1747,6 +1766,7 @@ func (o *Orchestrator) UpdateRuntime(cfg *api.WorkflowConfig, tracker api.Tracke
 	o.workspaceMgr = workspaceMgr
 	o.state.PollIntervalMs = cfg.Polling.IntervalMs
 	o.state.MaxConcurrentAgents = cfg.Agent.MaxConcurrentAgents
+	o.preflightHealth = preflight.Check(cfg)
 
 	if o.ticker != nil && cfg.Polling.IntervalMs > 0 {
 		o.ticker.Reset(time.Duration(cfg.Polling.IntervalMs) * time.Millisecond)

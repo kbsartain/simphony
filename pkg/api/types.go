@@ -259,6 +259,7 @@ type StateSnapshot struct {
 	PollIntervalMs             int                    `json:"poll_interval_ms"`
 	MaxConcurrentAgents        int                    `json:"max_concurrent_agents"`
 	Counts                     StateCounts            `json:"counts"`
+	Health                     ProjectHealth          `json:"health"`
 	Running                    []RunningSnapshot      `json:"running"`
 	Retrying                   []RetrySnapshot        `json:"retrying"`
 	CodexTotals                CodexTotals            `json:"codex_totals"`
@@ -273,6 +274,23 @@ type StateCounts struct {
 	Retrying  int `json:"retrying"`
 	Claimed   int `json:"claimed"`
 	Completed int `json:"completed"`
+}
+
+// HealthIssue describes one project environment preflight finding.
+type HealthIssue struct {
+	Code       string `json:"code"`
+	Severity   string `json:"severity"`
+	Message    string `json:"message"`
+	Detail     string `json:"detail,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
+// ProjectHealth reports whether the local environment can safely dispatch work.
+type ProjectHealth struct {
+	Status    string        `json:"status"`
+	CheckedAt *time.Time    `json:"checked_at,omitempty"`
+	Summary   string        `json:"summary,omitempty"`
+	Issues    []HealthIssue `json:"issues,omitempty"`
 }
 
 // RunningSnapshot represents a single running session for the API.
@@ -365,18 +383,19 @@ type RefreshResponse struct {
 
 // ProjectSummary describes one configured project runtime in multi-project mode.
 type ProjectSummary struct {
-	ID                       string      `json:"id"`
-	Name                     string      `json:"name"`
-	WorkflowPath             string      `json:"workflow_path"`
-	Enabled                  bool        `json:"enabled"`
-	Running                  bool        `json:"running"`
-	LastError                string      `json:"last_error,omitempty"`
-	MaxConcurrentAgents      int         `json:"max_concurrent_agents,omitempty"`
-	Counts                   StateCounts `json:"counts"`
-	WaitingOnSupervisor      bool        `json:"waiting_on_supervisor,omitempty"`
-	LastSupervisorDeferredAt *time.Time  `json:"last_supervisor_deferred_at,omitempty"`
-	WorkflowWatcherRunning   bool        `json:"workflow_watcher_running"`
-	WorkflowWatcherError     string      `json:"workflow_watcher_error,omitempty"`
+	ID                       string        `json:"id"`
+	Name                     string        `json:"name"`
+	WorkflowPath             string        `json:"workflow_path"`
+	Enabled                  bool          `json:"enabled"`
+	Running                  bool          `json:"running"`
+	LastError                string        `json:"last_error,omitempty"`
+	Health                   ProjectHealth `json:"health"`
+	MaxConcurrentAgents      int           `json:"max_concurrent_agents,omitempty"`
+	Counts                   StateCounts   `json:"counts"`
+	WaitingOnSupervisor      bool          `json:"waiting_on_supervisor,omitempty"`
+	LastSupervisorDeferredAt *time.Time    `json:"last_supervisor_deferred_at,omitempty"`
+	WorkflowWatcherRunning   bool          `json:"workflow_watcher_running"`
+	WorkflowWatcherError     string        `json:"workflow_watcher_error,omitempty"`
 }
 
 // SupervisorConcurrency reports shared multi-project agent capacity.

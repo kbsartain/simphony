@@ -169,6 +169,7 @@ function normalizeProjectSummary(project: ProjectSummary): ProjectSummary {
     enabled: Boolean(project.enabled),
     running: Boolean(project.running),
     last_error: project.last_error || '',
+    health: normalizeProjectHealth(project.health),
     max_concurrent_agents: project.max_concurrent_agents || 0,
     counts: normalizeCounts(project.counts),
     waiting_on_supervisor: Boolean(project.waiting_on_supervisor),
@@ -230,12 +231,28 @@ function normalizeStateSnapshot(snapshot: StateSnapshot): StateSnapshot {
     poll_interval_ms: snapshot.poll_interval_ms || 0,
     max_concurrent_agents: snapshot.max_concurrent_agents || 0,
     counts: normalizeCounts(snapshot.counts),
+    health: normalizeProjectHealth(snapshot.health),
     running: (snapshot.running || []).map(normalizeRunningSnapshot),
     retrying: (snapshot.retrying || []).map(normalizeRetrySnapshot),
     codex_totals: snapshot.codex_totals || { input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0 },
     rate_limits: snapshot.rate_limits || null,
     last_dispatch_deferred_reason: snapshot.last_dispatch_deferred_reason || '',
     last_dispatch_deferred_at: snapshot.last_dispatch_deferred_at || '',
+  }
+}
+
+function normalizeProjectHealth(health: StateSnapshot['health'] | undefined): StateSnapshot['health'] {
+  return {
+    status: health?.status || 'unknown',
+    checked_at: health?.checked_at || '',
+    summary: health?.summary || '',
+    issues: (health?.issues || []).map(issue => ({
+      code: issue.code || '',
+      severity: issue.severity || '',
+      message: issue.message || '',
+      detail: issue.detail || '',
+      suggestion: issue.suggestion || '',
+    })),
   }
 }
 

@@ -148,6 +148,8 @@ projects:
 
 The dashboard Project Setup page can create a starter registry from a single `WORKFLOW.md`, add/edit/remove registry project entries, and edit safe registry-level defaults such as server binding, global/project concurrency caps, isolation guardrails, and global agent runtime defaults. Registry changes are persisted to `simphony.yaml`; restarting with `-config` applies them to running project runtimes. Existing runtime secrets are preserved unless a replacement API key or auth token is explicitly entered.
 
+Each running project performs a local preflight before dispatch. If the agent command, workspace configuration, Git repository, or host filesystem is not ready, Simphony marks the project blocked in the dashboard and skips issue claiming until the problem is corrected. On Windows, repositories with POSIX-only tracked paths should be run from WSL/Linux or cleaned upstream before using `git_worktree` mode.
+
 Useful registry commands:
 
 ```bash

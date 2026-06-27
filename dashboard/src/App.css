@@ -246,11 +246,13 @@ a:focus-visible {
 }
 
 .status-dot.retrying,
-.status-dot.waiting {
+.status-dot.waiting,
+.status-dot.warning {
   background: #f0b750;
 }
 
-.status-dot.failed {
+.status-dot.failed,
+.status-dot.blocked {
   background: #ff7777;
 }
 
@@ -642,11 +644,13 @@ h3 {
   border-top: 0;
 }
 
-.project-health-row.failed {
+.project-health-row.failed,
+.project-health-row.blocked {
   background: #fffafa;
 }
 
-.project-health-row.waiting {
+.project-health-row.waiting,
+.project-health-row.warning {
   background: #fffdf5;
 }
 
@@ -681,7 +685,8 @@ h3 {
   font-weight: 800;
 }
 
-.project-health-row.failed .project-health-copy em {
+.project-health-row.failed .project-health-copy em,
+.project-health-row.blocked .project-health-copy em {
   color: #ad4646;
 }
 
@@ -756,11 +761,17 @@ h3 {
   color: #68726d;
 }
 
-.project-card.failed {
+.project-card.failed,
+.project-card.blocked {
   border-color: rgba(173, 70, 70, 0.45);
 }
 
-.project-card.waiting {
+.project-card.blocked {
+  background: rgba(255, 246, 246, 0.82);
+}
+
+.project-card.waiting,
+.project-card.warning {
   border-color: rgba(148, 114, 38, 0.45);
   background: rgba(255, 250, 235, 0.72);
 }
@@ -826,12 +837,14 @@ h3 {
   color: #9a6b1f;
 }
 
-.project-status.waiting {
+.project-status.waiting,
+.project-status.warning {
   background: #fff1d6;
   color: #7a5b13;
 }
 
-.project-status.failed {
+.project-status.failed,
+.project-status.blocked {
   background: #fdecec;
   color: #ad4646;
 }

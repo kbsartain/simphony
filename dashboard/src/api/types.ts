@@ -26,6 +26,21 @@ export interface StateCounts {
   completed: number;
 }
 
+export interface HealthIssue {
+  code: string;
+  severity: string;
+  message: string;
+  detail?: string;
+  suggestion?: string;
+}
+
+export interface ProjectHealth {
+  status: string;
+  checked_at?: string;
+  summary?: string;
+  issues?: HealthIssue[];
+}
+
 export interface TokenSnapshot {
   input_tokens: number;
   output_tokens: number;
@@ -70,6 +85,7 @@ export interface StateSnapshot {
   poll_interval_ms: number;
   max_concurrent_agents: number;
   counts: StateCounts;
+  health: ProjectHealth;
   running: RunningSnapshot[];
   retrying: RetrySnapshot[];
   codex_totals: CodexTotals;
@@ -101,6 +117,7 @@ export interface ProjectSummary {
   enabled: boolean;
   running: boolean;
   last_error?: string;
+  health: ProjectHealth;
   max_concurrent_agents?: number;
   counts: StateCounts;
   waiting_on_supervisor?: boolean;

@@ -64,3 +64,22 @@ Keep checked-in examples generic, using placeholders such as `your-linear-projec
 ## Hook Credentials
 
 Lifecycle hooks inherit the Simphony process environment. If a hook clones a private repository, prefer credentials supplied by the environment or the host Git credential manager instead of embedding tokens in `WORKFLOW.md`.
+
+## Project Preflight
+
+Before dispatching work, Simphony runs a local environment preflight for each running project. Blocking failures prevent candidate issue fetch and dispatch, so tracker state is not changed when the local machine cannot safely prepare a workspace.
+
+The preflight currently checks:
+
+- agent runtime command availability,
+- workspace root configuration,
+- Git repository readability for `git_worktree` projects,
+- Windows-incompatible tracked paths when running on Windows.
+
+The dashboard shows each project as `Ready`, `Warning`, or `Blocked` with the concrete finding. A blocked project is skipped until the configuration or host environment is corrected.
+
+## Windows And WSL
+
+Windows is supported for projects whose repositories can be checked out on Windows. Some repositories contain POSIX-only tracked paths, such as filenames with `?`, `*`, trailing periods, or reserved Windows device names. Windows cannot create those paths, so `git worktree add` fails before an agent can start.
+
+For those projects, run the project runtime from WSL/Linux or rename/remove the incompatible tracked paths upstream. Simphony reports incompatible tracked paths as a blocking preflight failure with WSL/Linux as the recommended host workaround.

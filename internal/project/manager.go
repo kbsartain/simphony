@@ -75,6 +75,7 @@ type RuntimeSummary struct {
 	Enabled                bool
 	Running                bool
 	LastError              string
+	Health                 api.ProjectHealth
 	MaxConcurrentAgents    int
 	WorkflowWatcherRunning bool
 	WorkflowWatcherError   string
@@ -219,6 +220,7 @@ func (m *Manager) Summaries() []RuntimeSummary {
 			Enabled:                project.Enabled,
 			Running:                false,
 			LastError:              lastError,
+			Health:                 startupHealth(project.Enabled, lastError),
 			MaxConcurrentAgents:    project.MaxConcurrentAgents,
 			WorkflowWatcherRunning: false,
 		})
@@ -288,6 +290,12 @@ func summaryFromRuntime(runtime ManagedRuntime, running bool, lastError string) 
 	if watchable, ok := runtime.(WatchableRuntime); ok {
 		watcherRunning, watcherError = watchable.WatcherStatus()
 	}
+	health := api.ProjectHealth{Status: "unknown", Summary: "Project health has not been checked"}
+	if observable, ok := runtime.(ObservableRuntime); ok {
+		if snapshot, snapshotOK := observable.Snapshot(); snapshotOK {
+			health = snapshot.Health
+		}
+	}
 	return RuntimeSummary{
 		ID:                     project.ID,
 		Name:                   project.Name,
@@ -295,8 +303,28 @@ func summaryFromRuntime(runtime ManagedRuntime, running bool, lastError string) 
 		Enabled:                project.Enabled,
 		Running:                running,
 		LastError:              lastError,
+		Health:                 health,
 		MaxConcurrentAgents:    project.MaxConcurrentAgents,
 		WorkflowWatcherRunning: watcherRunning,
 		WorkflowWatcherError:   watcherError,
 	}
+}
+
+func startupHealth(enabled bool, lastError string) api.ProjectHealth {
+	if !enabled {
+		return api.ProjectHealth{Status: "disabled", Summary: "Project is disabled"}
+	}
+	if strings.TrimSpace(lastError) != "" {
+		return api.ProjectHealth{
+			Status:  "blocked",
+			Summary: "Project runtime failed to start",
+			Issues: []api.HealthIssue{{
+				Code:     "project_start_failed",
+				Severity: "blocker",
+				Message:  "Project runtime failed to start",
+				Detail:   lastError,
+			}},
+		}
+	}
+	return api.ProjectHealth{Status: "unknown", Summary: "Project runtime is not running"}
 }

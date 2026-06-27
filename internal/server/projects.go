@@ -306,6 +306,7 @@ func (s *ProjectServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 			Enabled:                summary.Enabled,
 			Running:                summary.Running,
 			LastError:              summary.LastError,
+			Health:                 summary.Health,
 			MaxConcurrentAgents:    summary.MaxConcurrentAgents,
 			WorkflowWatcherRunning: summary.WorkflowWatcherRunning,
 			WorkflowWatcherError:   summary.WorkflowWatcherError,
@@ -313,6 +314,7 @@ func (s *ProjectServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if runtime, ok := s.manager.Runtime(summary.ID); ok {
 			if snapshot, ok := runtime.Snapshot(); ok {
 				projectSummary.Counts = snapshot.Counts
+				projectSummary.Health = snapshot.Health
 				if snapshot.LastDispatchDeferredReason == "no_supervisor_slots" {
 					projectSummary.WaitingOnSupervisor = true
 					projectSummary.LastSupervisorDeferredAt = snapshot.LastDispatchDeferredAt

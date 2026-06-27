@@ -1159,6 +1159,14 @@ function ProjectHealthPanel(props: {
                 </div>
                 <span>{project.workflow_path}</span>
                 {project.last_error && <em>{project.last_error}</em>}
+                {project.health.summary && <em>{project.health.summary}</em>}
+                {project.health.issues?.slice(0, 2).map(issue => (
+                  <em key={`${issue.code}-${issue.message}`}>
+                    {issue.message}
+                    {issue.detail ? `: ${issue.detail}` : ''}
+                    {issue.suggestion ? ` ${issue.suggestion}` : ''}
+                  </em>
+                ))}
                 {project.running && (
                   <em>
                     Watcher {project.workflow_watcher_running ? 'active' : 'inactive'}
@@ -2010,6 +2018,8 @@ function ProjectCard(props: { project: ProjectSummary; active: boolean; onSelect
         </span>
       )}
       {project.last_error && <span className="project-card-error">{project.last_error}</span>}
+      {project.health.status === 'blocked' && <span className="project-card-error">{project.health.summary || 'Project preflight blocked'}</span>}
+      {project.health.status === 'warning' && <span className="project-card-waiting">{project.health.summary || 'Project preflight warning'}</span>}
     </button>
   )
 }
@@ -3246,6 +3256,9 @@ function projectStatus(project: ProjectSummary) {
   if (!project.enabled) {
     return { label: 'Disabled', tone: 'disabled' as const }
   }
+  if (project.health.status === 'blocked') {
+    return { label: 'Blocked', tone: 'blocked' as const }
+  }
   if (project.waiting_on_supervisor) {
     return { label: 'Waiting', tone: 'waiting' as const }
   }
@@ -3257,6 +3270,9 @@ function projectStatus(project: ProjectSummary) {
   }
   if (project.counts.running > 0) {
     return { label: 'Running', tone: 'running' as const }
+  }
+  if (project.health.status === 'warning') {
+    return { label: 'Warning', tone: 'warning' as const }
   }
   return { label: 'Idle', tone: 'idle' as const }
 }
