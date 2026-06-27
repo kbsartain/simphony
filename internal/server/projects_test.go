@@ -297,6 +297,93 @@ projects:
 	}
 }
 
+func TestProjectServerUpdatesRegistryProject(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	betaWorkflow := filepath.Join(dir, "beta", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	writeServerTestWorkflow(t, betaWorkflow, filepath.Join(dir, "..", "beta-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+    max_concurrent_agents: 3
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	s := newTestProjectServer(&fakeProjectManager{registry: registry})
+
+	payload := `{"name":"Alpha Disabled","workflow_path":"beta/WORKFLOW.md","enabled":false,"max_concurrent_agents":0}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/registry/projects/alpha", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.RegistryProjectUpdateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Project.Name != "Alpha Disabled" || body.Project.Enabled || body.Project.MaxConcurrentAgents != 0 {
+		t.Fatalf("updated project = %+v, want disabled project with cleared cap", body.Project)
+	}
+	if !body.ChangeRequiresRestart {
+		t.Fatalf("change_requires_restart = false, want true")
+	}
+	if registry.Projects[0].WorkflowPath != betaWorkflow {
+		t.Fatalf("manager registry workflow = %q, want %q", registry.Projects[0].WorkflowPath, betaWorkflow)
+	}
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "name: Alpha Disabled") || !strings.Contains(text, "workflow_path: beta/WORKFLOW.md") || !strings.Contains(text, "enabled: false") {
+		t.Fatalf("registry file = %q, want updated project", text)
+	}
+	if strings.Contains(text, "max_concurrent_agents") {
+		t.Fatalf("registry file = %q, want cleared max_concurrent_agents", text)
+	}
+}
+
+func TestProjectServerRejectsUnknownRegistryProjectUpdate(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	s := newTestProjectServer(&fakeProjectManager{registry: registry})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/registry/projects/missing", strings.NewReader(`{"workflow_path":"alpha/WORKFLOW.md"}`))
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	var body api.APIErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if body.Error.Code != "project_not_found" {
+		t.Fatalf("error code = %q, want project_not_found", body.Error.Code)
+	}
+}
+
 func writeServerTestWorkflow(t *testing.T, path string, workspaceRoot string) {
 	t.Helper()
 	content := "---\ntracker:\n  kind: linear\n  api_key: test-linear-key\n  project_slug: shared-project\nworkspace:\n  root: " + filepath.ToSlash(workspaceRoot) + "\n---\n\nWork on {{ issue.identifier }}.\n"

@@ -433,6 +433,22 @@ type RegistryProjectCreateResponse struct {
 	ChangeRequiresRestart bool                   `json:"change_requires_restart"`
 }
 
+// RegistryProjectUpdateRequest updates an existing registry project entry.
+type RegistryProjectUpdateRequest struct {
+	Name                string `json:"name,omitempty"`
+	WorkflowPath        string `json:"workflow_path"`
+	Enabled             *bool  `json:"enabled,omitempty"`
+	MaxConcurrentAgents *int   `json:"max_concurrent_agents,omitempty"`
+}
+
+// RegistryProjectUpdateResponse reports a persisted registry project update.
+type RegistryProjectUpdateResponse struct {
+	Registry              RegistryResponse       `json:"registry"`
+	Project               RegistryProjectSummary `json:"project"`
+	Command               string                 `json:"command"`
+	ChangeRequiresRestart bool                   `json:"change_requires_restart"`
+}
+
 // RegistryServerSummary describes the aggregate multi-project server config.
 type RegistryServerSummary struct {
 	BindAddress      string `json:"bind_address"`

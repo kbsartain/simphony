@@ -4,6 +4,8 @@ import {
   RegistryBootstrapResponse,
   RegistryProjectCreateRequest,
   RegistryProjectCreateResponse,
+  RegistryProjectUpdateRequest,
+  RegistryProjectUpdateResponse,
   ProjectSummary,
   ProjectsResponse,
   RegistryResponse,
@@ -71,6 +73,20 @@ export async function createRegistryProject(request: RegistryProjectCreateReques
       enabled: Boolean(response.project?.enabled),
       max_concurrent_agents: response.project?.max_concurrent_agents || 0,
     },
+    command: response.command || '',
+    change_requires_restart: Boolean(response.change_requires_restart),
+  }
+}
+
+export async function updateRegistryProject(projectID: string, request: RegistryProjectUpdateRequest): Promise<RegistryProjectUpdateResponse> {
+  const response = await fetchJSON<RegistryProjectUpdateResponse>(`/api/v1/registry/projects/${encodeURIComponent(projectID)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  return {
+    registry: normalizeRegistry(response.registry),
+    project: normalizeRegistryProject(response.project),
     command: response.command || '',
     change_requires_restart: Boolean(response.change_requires_restart),
   }
@@ -162,14 +178,18 @@ function normalizeRegistry(registry: RegistryResponse): RegistryResponse {
       disallowed_tools: registry.agent_runtime?.disallowed_tools || [],
       setting_sources: registry.agent_runtime?.setting_sources || [],
     },
-    projects: (registry.projects || []).map(project => ({
-      id: project.id || '',
-      name: project.name || project.id || 'Unnamed project',
-      workflow_path: project.workflow_path || '',
-      enabled: Boolean(project.enabled),
-      max_concurrent_agents: project.max_concurrent_agents || 0,
-    })),
+    projects: (registry.projects || []).map(normalizeRegistryProject),
     warnings: registry.warnings || [],
+  }
+}
+
+function normalizeRegistryProject(project: RegistryResponse['projects'][number]) {
+  return {
+    id: project?.id || '',
+    name: project?.name || project?.id || 'Unnamed project',
+    workflow_path: project?.workflow_path || '',
+    enabled: Boolean(project?.enabled),
+    max_concurrent_agents: project?.max_concurrent_agents || 0,
   }
 }
 

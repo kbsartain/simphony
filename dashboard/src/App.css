@@ -938,6 +938,14 @@ h3 {
   margin-bottom: 0;
 }
 
+.registry-project-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .registry-project-fields {
   display: grid;
   grid-template-columns: minmax(120px, 0.7fr) minmax(140px, 1fr) minmax(220px, 1.6fr) minmax(120px, 0.7fr);
@@ -996,6 +1004,11 @@ h3 {
   font-size: 0.74rem;
   font-style: normal;
   font-weight: 900;
+}
+
+.setup-edit-button {
+  justify-self: start;
+  margin: 0 4px;
 }
 
 .setup-project-list {
@@ -1131,6 +1144,26 @@ h3 {
 .secondary-button:disabled {
   cursor: wait;
   opacity: 0.7;
+}
+
+.ghost-button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.ghost-button:hover {
+  color: var(--ink);
 }
 
 .segment {
@@ -2047,6 +2080,10 @@ h3 {
   .registry-project-form-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .registry-project-actions {
+    justify-content: flex-start;
   }
 
   .queue-toolbar {

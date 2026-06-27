@@ -150,6 +150,20 @@ export interface RegistryProjectCreateResponse {
   change_requires_restart: boolean;
 }
 
+export interface RegistryProjectUpdateRequest {
+  name?: string;
+  workflow_path: string;
+  enabled?: boolean;
+  max_concurrent_agents?: number;
+}
+
+export interface RegistryProjectUpdateResponse {
+  registry: RegistryResponse;
+  project: RegistryProjectSummary;
+  command: string;
+  change_requires_restart: boolean;
+}
+
 export interface RegistryServerSummary {
   bind_address: string;
   port: number;

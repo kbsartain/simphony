@@ -76,6 +76,7 @@ func (s *ProjectServer) registerRoutes() {
 	s.mux.HandleFunc(s.apiPrefix+"/runtime-mode", s.withCORS(s.handleRuntimeMode))
 	s.mux.HandleFunc(s.apiPrefix+"/registry", s.withCORS(s.handleRegistry))
 	s.mux.HandleFunc(s.apiPrefix+"/registry/projects", s.withCORS(s.handleRegistryProjects))
+	s.mux.HandleFunc(s.apiPrefix+"/registry/projects/", s.withCORS(s.handleRegistryProjectRoute))
 	s.mux.HandleFunc(s.apiPrefix+"/state", s.withCORS(s.handleDefaultProjectState))
 	s.mux.HandleFunc(s.apiPrefix+"/refresh", s.withCORS(s.handleDefaultProjectRefresh))
 	s.mux.HandleFunc(s.apiPrefix+"/settings/validate-tracker", s.withCORS(s.handleDefaultProjectValidateTrackerSettings))
@@ -125,7 +126,7 @@ func (s *ProjectServer) withCORS(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *ProjectServer) setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
@@ -217,6 +218,41 @@ func (s *ProjectServer) handleRegistryProjects(w http.ResponseWriter, r *http.Re
 		return
 	}
 	s.writeJSON(w, http.StatusCreated, response)
+}
+
+func (s *ProjectServer) handleRegistryProjectRoute(w http.ResponseWriter, r *http.Request) {
+	prefix := s.apiPrefix + "/registry/projects/"
+	trimmed := strings.TrimPrefix(r.URL.Path, prefix)
+	projectID, err := url.PathUnescape(strings.Trim(trimmed, "/"))
+	if err != nil || strings.TrimSpace(projectID) == "" || strings.Contains(projectID, "/") {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "bad_project_id", Message: "Project ID is invalid"},
+		})
+		return
+	}
+	if r.Method != http.MethodPut {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only PUT is allowed"},
+		})
+		return
+	}
+
+	var req api.RegistryProjectUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "bad_request", Message: "Request body must be valid JSON"},
+		})
+		return
+	}
+
+	response, status, errCode, err := s.updateRegistryProject(projectID, req)
+	if err != nil {
+		s.writeJSON(w, status, api.APIErrorResponse{
+			Error: api.APIError{Code: errCode, Message: err.Error()},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, response)
 }
 
 func (s *ProjectServer) handleProjects(w http.ResponseWriter, r *http.Request) {
@@ -765,6 +801,110 @@ func (s *ProjectServer) createRegistryProject(req api.RegistryProjectCreateReque
 	}, 0, "", nil
 }
 
+func (s *ProjectServer) updateRegistryProject(projectID string, req api.RegistryProjectUpdateRequest) (api.RegistryProjectUpdateResponse, int, string, error) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+
+	registry := s.manager.Registry()
+	if registry == nil {
+		return api.RegistryProjectUpdateResponse{}, http.StatusNotFound, "registry_not_available", fmt.Errorf("no project registry is active")
+	}
+	if strings.TrimSpace(registry.SourcePath) == "" {
+		return api.RegistryProjectUpdateResponse{}, http.StatusInternalServerError, "registry_source_missing", fmt.Errorf("active project registry has no source path")
+	}
+
+	projectID = strings.TrimSpace(projectID)
+	projectIndex := -1
+	for i, existing := range registry.Projects {
+		if strings.EqualFold(existing.ID, projectID) {
+			projectIndex = i
+			break
+		}
+	}
+	if projectIndex < 0 {
+		return api.RegistryProjectUpdateResponse{}, http.StatusNotFound, "project_not_found", fmt.Errorf("project %q was not found", projectID)
+	}
+
+	workflowPathForYAML := strings.TrimSpace(req.WorkflowPath)
+	if workflowPathForYAML == "" {
+		return api.RegistryProjectUpdateResponse{}, http.StatusBadRequest, "workflow_path_required", fmt.Errorf("workflow path is required")
+	}
+	registryDir := filepath.Dir(registry.SourcePath)
+	resolvedWorkflowPath := workflowPathForYAML
+	if !filepath.IsAbs(resolvedWorkflowPath) {
+		resolvedWorkflowPath = filepath.Join(registryDir, resolvedWorkflowPath)
+	}
+	resolvedWorkflowPath, err := filepath.Abs(resolvedWorkflowPath)
+	if err != nil {
+		return api.RegistryProjectUpdateResponse{}, http.StatusBadRequest, "workflow_path_invalid", fmt.Errorf("resolve workflow path: %w", err)
+	}
+	info, err := os.Stat(resolvedWorkflowPath)
+	if err != nil {
+		return api.RegistryProjectUpdateResponse{}, http.StatusBadRequest, "workflow_path_not_found", fmt.Errorf("workflow path %q: %w", resolvedWorkflowPath, err)
+	}
+	if info.IsDir() {
+		return api.RegistryProjectUpdateResponse{}, http.StatusBadRequest, "workflow_path_is_directory", fmt.Errorf("workflow path %q is a directory", resolvedWorkflowPath)
+	}
+	if _, err := config.LoadWorkflow(resolvedWorkflowPath); err != nil {
+		return api.RegistryProjectUpdateResponse{}, http.StatusBadRequest, "workflow_load_error", err
+	}
+
+	maxConcurrentAgents := registry.Projects[projectIndex].MaxConcurrentAgents
+	if req.MaxConcurrentAgents != nil {
+		if *req.MaxConcurrentAgents < 0 {
+			return api.RegistryProjectUpdateResponse{}, http.StatusBadRequest, "max_concurrent_agents_invalid", fmt.Errorf("max_concurrent_agents must be positive")
+		}
+		maxConcurrentAgents = *req.MaxConcurrentAgents
+	}
+	enabled := registry.Projects[projectIndex].Enabled
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = registry.Projects[projectIndex].ID
+	}
+
+	nextRegistry := cloneRegistryForAppend(registry)
+	nextProject := nextRegistry.Projects[projectIndex]
+	nextProject.Name = name
+	nextProject.WorkflowPath = resolvedWorkflowPath
+	nextProject.Enabled = enabled
+	nextProject.MaxConcurrentAgents = maxConcurrentAgents
+	nextRegistry.Projects[projectIndex] = nextProject
+	if _, err := config.ValidateProjectIsolation(nextRegistry); err != nil {
+		return api.RegistryProjectUpdateResponse{}, http.StatusBadRequest, "registry_validation_error", err
+	}
+
+	if err := updateRegistryProjectInFile(registry.SourcePath, projectID, api.RegistryProjectUpdateRequest{
+		Name:                name,
+		WorkflowPath:        filepath.ToSlash(workflowPathForYAML),
+		Enabled:             &enabled,
+		MaxConcurrentAgents: &maxConcurrentAgents,
+	}); err != nil {
+		return api.RegistryProjectUpdateResponse{}, http.StatusInternalServerError, "registry_write_error", err
+	}
+
+	registry.Projects[projectIndex] = nextProject
+	registrySummary, err := registryResponse(registry)
+	if err != nil {
+		return api.RegistryProjectUpdateResponse{}, http.StatusInternalServerError, "registry_validation_error", err
+	}
+	projectSummary := api.RegistryProjectSummary{
+		ID:                  nextProject.ID,
+		Name:                nextProject.Name,
+		WorkflowPath:        nextProject.WorkflowPath,
+		Enabled:             nextProject.Enabled,
+		MaxConcurrentAgents: nextProject.MaxConcurrentAgents,
+	}
+	return api.RegistryProjectUpdateResponse{
+		Registry:              registrySummary,
+		Project:               projectSummary,
+		Command:               fmt.Sprintf("simphony -config %s", registry.SourcePath),
+		ChangeRequiresRestart: true,
+	}, 0, "", nil
+}
+
 func cloneRegistryForAppend(registry *config.ProjectRegistry) *config.ProjectRegistry {
 	next := *registry
 	next.Projects = append([]config.RegistryProject(nil), registry.Projects...)
@@ -810,6 +950,71 @@ func appendRegistryProjectToFile(registryPath string, req api.RegistryProjectCre
 	return nil
 }
 
+func updateRegistryProjectInFile(registryPath string, projectID string, req api.RegistryProjectUpdateRequest) error {
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		return fmt.Errorf("read registry: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse registry yaml: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("registry root must be a mapping")
+	}
+	projectsNode := mappingValue(doc.Content[0], "projects")
+	if projectsNode == nil || projectsNode.Kind != yaml.SequenceNode {
+		return fmt.Errorf("projects must be a list")
+	}
+
+	var projectNode *yaml.Node
+	for _, candidate := range projectsNode.Content {
+		if candidate.Kind != yaml.MappingNode {
+			continue
+		}
+		idNode := mappingValue(candidate, "id")
+		if idNode != nil && strings.EqualFold(idNode.Value, projectID) {
+			projectNode = candidate
+			break
+		}
+	}
+	if projectNode == nil {
+		return fmt.Errorf("project %q was not found", projectID)
+	}
+
+	setMappingValue(projectNode, "name", scalarNode(req.Name))
+	setMappingValue(projectNode, "workflow_path", scalarNode(req.WorkflowPath))
+	if req.Enabled != nil {
+		if *req.Enabled {
+			removeMappingValue(projectNode, "enabled")
+		} else {
+			setMappingValue(projectNode, "enabled", boolNode(false))
+		}
+	}
+	if req.MaxConcurrentAgents != nil {
+		if *req.MaxConcurrentAgents > 0 {
+			setMappingValue(projectNode, "max_concurrent_agents", intNode(*req.MaxConcurrentAgents))
+		} else {
+			removeMappingValue(projectNode, "max_concurrent_agents")
+		}
+	}
+
+	file, err := os.OpenFile(registryPath, os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("open registry for write: %w", err)
+	}
+	defer file.Close()
+	encoder := yaml.NewEncoder(file)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&doc); err != nil {
+		return fmt.Errorf("write registry yaml: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return fmt.Errorf("finish registry yaml: %w", err)
+	}
+	return nil
+}
+
 func registryProjectNode(req api.RegistryProjectCreateRequest) *yaml.Node {
 	content := []*yaml.Node{
 		scalarNode("id"), scalarNode(req.ID),
@@ -832,6 +1037,25 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+func setMappingValue(node *yaml.Node, key string, value *yaml.Node) {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content[i+1] = value
+			return
+		}
+	}
+	node.Content = append(node.Content, scalarNode(key), value)
+}
+
+func removeMappingValue(node *yaml.Node, key string) {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return
+		}
+	}
 }
 
 func scalarNode(value string) *yaml.Node {

@@ -4,6 +4,7 @@ import {
   ProjectSummary,
   RegistryBootstrapResponse,
   RegistryProjectCreateResponse,
+  RegistryProjectUpdateResponse,
   RegistryResponse,
   RefreshResponse,
   RetrySnapshot,
@@ -25,6 +26,7 @@ import {
   fetchState,
   requestRefresh as requestRefreshAPI,
   saveSettings,
+  updateRegistryProject,
   validateTrackerSettings,
 } from './api/client'
 import './App.css'
@@ -226,6 +228,8 @@ function App() {
   const [runtimeMode, setRuntimeMode] = useState<RuntimeModeResponse | null>(null)
   const [registryBootstrap, setRegistryBootstrap] = useState<RegistryBootstrapResponse | null>(null)
   const [registryProjectResult, setRegistryProjectResult] = useState<RegistryProjectCreateResponse | null>(null)
+  const [registryProjectUpdateResult, setRegistryProjectUpdateResult] = useState<RegistryProjectUpdateResponse | null>(null)
+  const [editingRegistryProjectId, setEditingRegistryProjectId] = useState<string | null>(null)
   const [registryProjectDraft, setRegistryProjectDraft] = useState<RegistryProjectDraft>({
     id: '',
     name: '',
@@ -412,7 +416,7 @@ function App() {
     }
   }
 
-  const addRegistryProject = async () => {
+  const saveRegistryProject = async () => {
     setCreatingRegistryProject(true)
     setNotice(null)
     try {
@@ -422,23 +426,55 @@ function App() {
       if (Number.isNaN(maxConcurrentAgents) || maxConcurrentAgents < 0) {
         throw new Error('Project cap must be a positive whole number.')
       }
-      const result = await createRegistryProject({
-        id: registryProjectDraft.id.trim(),
+      const request = {
         name: registryProjectDraft.name.trim(),
         workflow_path: registryProjectDraft.workflowPath.trim(),
         enabled: registryProjectDraft.enabled,
-        max_concurrent_agents: maxConcurrentAgents || undefined,
-      })
-      setRegistry(result.registry)
-      setRegistryProjectResult(result)
+        max_concurrent_agents: editingRegistryProjectId ? maxConcurrentAgents : maxConcurrentAgents || undefined,
+      }
+      if (editingRegistryProjectId) {
+        const result = await updateRegistryProject(editingRegistryProjectId, request)
+        setRegistry(result.registry)
+        setRegistryProjectResult(null)
+        setRegistryProjectUpdateResult(result)
+        setNotice('Project updated in registry')
+      } else {
+        const result = await createRegistryProject({
+          id: registryProjectDraft.id.trim(),
+          ...request,
+        })
+        setRegistry(result.registry)
+        setRegistryProjectResult(result)
+        setRegistryProjectUpdateResult(null)
+        setNotice('Project added to registry')
+      }
       setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, maxConcurrentAgents: '' })
-      setNotice('Project added to registry')
+      setEditingRegistryProjectId(null)
       setError(null)
     } catch (err) {
       setError(normalizeError(err))
     } finally {
       setCreatingRegistryProject(false)
     }
+  }
+
+  const editRegistryProject = (project: { id: string; name: string; workflow_path: string; enabled: boolean; max_concurrent_agents?: number }) => {
+    setEditingRegistryProjectId(project.id)
+    setRegistryProjectDraft({
+      id: project.id,
+      name: project.name || project.id,
+      workflowPath: project.workflow_path || '',
+      enabled: project.enabled,
+      maxConcurrentAgents: project.max_concurrent_agents ? String(project.max_concurrent_agents) : '',
+    })
+    setRegistryProjectResult(null)
+    setRegistryProjectUpdateResult(null)
+    setNotice(null)
+  }
+
+  const cancelRegistryProjectEdit = () => {
+    setEditingRegistryProjectId(null)
+    setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, maxConcurrentAgents: '' })
   }
 
   const saveWorkflowSettings = async () => {
@@ -845,13 +881,17 @@ function App() {
             registryBootstrap={registryBootstrap}
             registryProjectDraft={registryProjectDraft}
             registryProjectResult={registryProjectResult}
+            registryProjectUpdateResult={registryProjectUpdateResult}
+            editingRegistryProjectId={editingRegistryProjectId}
             bootstrappingRegistry={bootstrappingRegistry}
             creatingRegistryProject={creatingRegistryProject}
             projectOverview={projectOverview}
             supervisorConcurrency={supervisorConcurrency}
             onBootstrapRegistry={createStarterRegistry}
             onRegistryProjectDraftChange={setRegistryProjectDraft}
-            onCreateRegistryProject={addRegistryProject}
+            onSaveRegistryProject={saveRegistryProject}
+            onEditRegistryProject={editRegistryProject}
+            onCancelRegistryProjectEdit={cancelRegistryProjectEdit}
             onSelectProject={projectID => {
               changeProject(projectID)
               setPage('settings')
@@ -981,13 +1021,17 @@ function ProjectSetupView(props: {
   registryBootstrap: RegistryBootstrapResponse | null
   registryProjectDraft: RegistryProjectDraft
   registryProjectResult: RegistryProjectCreateResponse | null
+  registryProjectUpdateResult: RegistryProjectUpdateResponse | null
+  editingRegistryProjectId: string | null
   bootstrappingRegistry: boolean
   creatingRegistryProject: boolean
   projectOverview: ProjectOverview | null
   supervisorConcurrency: SupervisorConcurrency | null
   onBootstrapRegistry: () => void
   onRegistryProjectDraftChange: (draft: RegistryProjectDraft) => void
-  onCreateRegistryProject: () => void
+  onSaveRegistryProject: () => void
+  onEditRegistryProject: (project: { id: string; name: string; workflow_path: string; enabled: boolean; max_concurrent_agents?: number }) => void
+  onCancelRegistryProjectEdit: () => void
   onSelectProject: (projectID: string) => void
 }) {
   const configuredCount = props.registry?.projects.length ?? props.projects.length
@@ -1007,7 +1051,7 @@ function ProjectSetupView(props: {
             <p className="eyebrow">Registry</p>
             <h2>Project contexts</h2>
           </div>
-          <span className="setup-badge">Read-only in this build</span>
+          <span className="setup-badge">Restart required</span>
         </div>
         <div className="setup-intro">
           <h3>{props.projectMode ? `${configuredCount} configured project${configuredCount === 1 ? '' : 's'}` : 'Single-project mode'}</h3>
@@ -1112,17 +1156,24 @@ function ProjectSetupView(props: {
             className="registry-project-form"
             onSubmit={event => {
               event.preventDefault()
-              props.onCreateRegistryProject()
+              props.onSaveRegistryProject()
             }}
           >
             <div className="registry-project-form-heading">
               <div>
                 <p className="eyebrow">Registry</p>
-                <h3>Add project</h3>
+                <h3>{props.editingRegistryProjectId ? 'Edit project' : 'Add project'}</h3>
               </div>
-              <button className="secondary-button" type="submit" disabled={props.creatingRegistryProject}>
-                {props.creatingRegistryProject ? 'Adding project' : 'Add project'}
-              </button>
+              <div className="registry-project-actions">
+                {props.editingRegistryProjectId && (
+                  <button className="ghost-button" type="button" onClick={props.onCancelRegistryProjectEdit}>
+                    Cancel
+                  </button>
+                )}
+                <button className="secondary-button" type="submit" disabled={props.creatingRegistryProject}>
+                  {props.creatingRegistryProject ? 'Saving project' : props.editingRegistryProjectId ? 'Save project' : 'Add project'}
+                </button>
+              </div>
             </div>
             <div className="registry-project-fields">
               <label className="form-field">
@@ -1131,6 +1182,7 @@ function ProjectSetupView(props: {
                   value={props.registryProjectDraft.id}
                   onChange={event => props.onRegistryProjectDraftChange({ ...props.registryProjectDraft, id: event.target.value })}
                   placeholder="conjit"
+                  disabled={Boolean(props.editingRegistryProjectId)}
                   required
                 />
               </label>
@@ -1176,6 +1228,13 @@ function ProjectSetupView(props: {
                 <code>{props.registryProjectResult.command}</code>
               </div>
             )}
+            {props.registryProjectUpdateResult && (
+              <div className="bootstrap-result" role="status">
+                <strong>Project updated in registry</strong>
+                <span>{props.registryProjectUpdateResult.project.workflow_path}</span>
+                <code>{props.registryProjectUpdateResult.command}</code>
+              </div>
+            )}
           </form>
         )}
         {props.projectMode ? (
@@ -1204,6 +1263,11 @@ function ProjectSetupView(props: {
                       <dd>{registryProject?.max_concurrent_agents ? registryProject.max_concurrent_agents.toLocaleString() : 'Default'}</dd>
                     </div>
                   </dl>
+                  {registryProject && (
+                    <button className="ghost-button setup-edit-button" type="button" onClick={() => props.onEditRegistryProject(registryProject)}>
+                      Edit
+                    </button>
+                  )}
                 </div>
               )
             })}
