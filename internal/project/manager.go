@@ -144,7 +144,11 @@ func (m *Manager) StartProject(ctx context.Context, id string) StartReport {
 }
 
 func (m *Manager) startProject(ctx context.Context, project config.RegistryProject, report *StartReport) {
-	runtime := m.factory(m.registry, project, m.limiter)
+	var limiter orchestrator.DispatchLimiter
+	if m.limiter != nil {
+		limiter = m.limiter
+	}
+	runtime := m.factory(m.registry, project, limiter)
 	if err := runtime.Start(ctx); err != nil {
 		log.Printf("project_id=%s project_name=%q action=project_start status=failed error=%v", project.ID, project.Name, err)
 		report.Failed[project.ID] = err

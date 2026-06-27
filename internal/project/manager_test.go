@@ -211,6 +211,31 @@ func TestManagerSharesGlobalLimiterAcrossRuntimes(t *testing.T) {
 	}
 }
 
+func TestManagerDoesNotCreateLimiterWithoutGlobalCap(t *testing.T) {
+	registry := &config.ProjectRegistry{
+		Projects: []config.RegistryProject{
+			{ID: "alpha", Name: "Alpha", WorkflowPath: "alpha/WORKFLOW.md", Enabled: true},
+		},
+	}
+	received := map[string]orchestrator.DispatchLimiter{}
+	manager := NewManagerWithFactory(registry, func(_ *config.ProjectRegistry, project config.RegistryProject, limiter orchestrator.DispatchLimiter) ManagedRuntime {
+		received[project.ID] = limiter
+		return &fakeRuntime{project: project}
+	})
+
+	report := manager.Start(context.Background())
+	if len(report.Failed) != 0 {
+		t.Fatalf("Failed = %v, want empty", report.Failed)
+	}
+	if received["alpha"] != nil {
+		t.Fatalf("limiter = %#v, want nil when registry has no global cap", received["alpha"])
+	}
+	concurrency := manager.Concurrency()
+	if concurrency.MaxConcurrentAgents != 0 || concurrency.UsedAgents != 0 || concurrency.AvailableAgents != 0 {
+		t.Fatalf("Concurrency = %+v, want zero-valued unlimited signal", concurrency)
+	}
+}
+
 func TestManagerReportsConcurrencyUsage(t *testing.T) {
 	registry := &config.ProjectRegistry{
 		Concurrency: config.RegistryConcurrencyConfig{MaxConcurrentAgents: 2},
