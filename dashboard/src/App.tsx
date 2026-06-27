@@ -4,6 +4,7 @@ import {
   ProjectSummary,
   RegistryBootstrapResponse,
   RegistryProjectCreateResponse,
+  RegistryProjectDeleteResponse,
   RegistryProjectUpdateResponse,
   RegistryResponse,
   RefreshResponse,
@@ -18,6 +19,7 @@ import {
 import {
   bootstrapRegistry,
   createRegistryProject,
+  deleteRegistryProject,
   fetchIssueDetail,
   fetchProjects,
   fetchRegistry,
@@ -229,6 +231,7 @@ function App() {
   const [registryBootstrap, setRegistryBootstrap] = useState<RegistryBootstrapResponse | null>(null)
   const [registryProjectResult, setRegistryProjectResult] = useState<RegistryProjectCreateResponse | null>(null)
   const [registryProjectUpdateResult, setRegistryProjectUpdateResult] = useState<RegistryProjectUpdateResponse | null>(null)
+  const [registryProjectDeleteResult, setRegistryProjectDeleteResult] = useState<RegistryProjectDeleteResponse | null>(null)
   const [editingRegistryProjectId, setEditingRegistryProjectId] = useState<string | null>(null)
   const [registryProjectDraft, setRegistryProjectDraft] = useState<RegistryProjectDraft>({
     id: '',
@@ -249,6 +252,7 @@ function App() {
   const [refreshing, setRefreshing] = useState(false)
   const [bootstrappingRegistry, setBootstrappingRegistry] = useState(false)
   const [creatingRegistryProject, setCreatingRegistryProject] = useState(false)
+  const [deletingRegistryProjectId, setDeletingRegistryProjectId] = useState<string | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
   const [validatingTracker, setValidatingTracker] = useState(false)
   const [trackerValidation, setTrackerValidation] = useState<SettingsValidationResponse | null>(null)
@@ -437,6 +441,7 @@ function App() {
         setRegistry(result.registry)
         setRegistryProjectResult(null)
         setRegistryProjectUpdateResult(result)
+        setRegistryProjectDeleteResult(null)
         setNotice('Project updated in registry')
       } else {
         const result = await createRegistryProject({
@@ -446,6 +451,7 @@ function App() {
         setRegistry(result.registry)
         setRegistryProjectResult(result)
         setRegistryProjectUpdateResult(null)
+        setRegistryProjectDeleteResult(null)
         setNotice('Project added to registry')
       }
       setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, maxConcurrentAgents: '' })
@@ -475,6 +481,31 @@ function App() {
   const cancelRegistryProjectEdit = () => {
     setEditingRegistryProjectId(null)
     setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, maxConcurrentAgents: '' })
+  }
+
+  const removeRegistryProject = async (project: { id: string; name: string }) => {
+    const label = project.name || project.id
+    if (!window.confirm(`Remove ${label} from simphony.yaml? The running server will not change until restart.`)) {
+      return
+    }
+    setDeletingRegistryProjectId(project.id)
+    setNotice(null)
+    try {
+      const result = await deleteRegistryProject(project.id)
+      setRegistry(result.registry)
+      setRegistryProjectDeleteResult(result)
+      setRegistryProjectResult(null)
+      setRegistryProjectUpdateResult(null)
+      if (editingRegistryProjectId === project.id) {
+        cancelRegistryProjectEdit()
+      }
+      setNotice('Project removed from registry')
+      setError(null)
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setDeletingRegistryProjectId(null)
+    }
   }
 
   const saveWorkflowSettings = async () => {
@@ -882,9 +913,11 @@ function App() {
             registryProjectDraft={registryProjectDraft}
             registryProjectResult={registryProjectResult}
             registryProjectUpdateResult={registryProjectUpdateResult}
+            registryProjectDeleteResult={registryProjectDeleteResult}
             editingRegistryProjectId={editingRegistryProjectId}
             bootstrappingRegistry={bootstrappingRegistry}
             creatingRegistryProject={creatingRegistryProject}
+            deletingRegistryProjectId={deletingRegistryProjectId}
             projectOverview={projectOverview}
             supervisorConcurrency={supervisorConcurrency}
             onBootstrapRegistry={createStarterRegistry}
@@ -892,6 +925,7 @@ function App() {
             onSaveRegistryProject={saveRegistryProject}
             onEditRegistryProject={editRegistryProject}
             onCancelRegistryProjectEdit={cancelRegistryProjectEdit}
+            onRemoveRegistryProject={removeRegistryProject}
             onSelectProject={projectID => {
               changeProject(projectID)
               setPage('settings')
@@ -1022,9 +1056,11 @@ function ProjectSetupView(props: {
   registryProjectDraft: RegistryProjectDraft
   registryProjectResult: RegistryProjectCreateResponse | null
   registryProjectUpdateResult: RegistryProjectUpdateResponse | null
+  registryProjectDeleteResult: RegistryProjectDeleteResponse | null
   editingRegistryProjectId: string | null
   bootstrappingRegistry: boolean
   creatingRegistryProject: boolean
+  deletingRegistryProjectId: string | null
   projectOverview: ProjectOverview | null
   supervisorConcurrency: SupervisorConcurrency | null
   onBootstrapRegistry: () => void
@@ -1032,6 +1068,7 @@ function ProjectSetupView(props: {
   onSaveRegistryProject: () => void
   onEditRegistryProject: (project: { id: string; name: string; workflow_path: string; enabled: boolean; max_concurrent_agents?: number }) => void
   onCancelRegistryProjectEdit: () => void
+  onRemoveRegistryProject: (project: { id: string; name: string }) => void
   onSelectProject: (projectID: string) => void
 }) {
   const configuredCount = props.registry?.projects.length ?? props.projects.length
@@ -1235,6 +1272,13 @@ function ProjectSetupView(props: {
                 <code>{props.registryProjectUpdateResult.command}</code>
               </div>
             )}
+            {props.registryProjectDeleteResult && (
+              <div className="bootstrap-result" role="status">
+                <strong>Project removed from registry</strong>
+                <span>{props.registryProjectDeleteResult.project_name || props.registryProjectDeleteResult.project_id}</span>
+                <code>{props.registryProjectDeleteResult.command}</code>
+              </div>
+            )}
           </form>
         )}
         {props.projectMode ? (
@@ -1264,9 +1308,19 @@ function ProjectSetupView(props: {
                     </div>
                   </dl>
                   {registryProject && (
-                    <button className="ghost-button setup-edit-button" type="button" onClick={() => props.onEditRegistryProject(registryProject)}>
-                      Edit
-                    </button>
+                    <div className="setup-project-actions">
+                      <button className="ghost-button" type="button" onClick={() => props.onEditRegistryProject(registryProject)}>
+                        Edit
+                      </button>
+                      <button
+                        className="ghost-button danger"
+                        type="button"
+                        onClick={() => props.onRemoveRegistryProject(registryProject)}
+                        disabled={props.deletingRegistryProjectId === registryProject.id}
+                      >
+                        {props.deletingRegistryProjectId === registryProject.id ? 'Removing' : 'Remove'}
+                      </button>
+                    </div>
                   )}
                 </div>
               )

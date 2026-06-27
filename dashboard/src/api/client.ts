@@ -4,6 +4,7 @@ import {
   RegistryBootstrapResponse,
   RegistryProjectCreateRequest,
   RegistryProjectCreateResponse,
+  RegistryProjectDeleteResponse,
   RegistryProjectUpdateRequest,
   RegistryProjectUpdateResponse,
   ProjectSummary,
@@ -87,6 +88,19 @@ export async function updateRegistryProject(projectID: string, request: Registry
   return {
     registry: normalizeRegistry(response.registry),
     project: normalizeRegistryProject(response.project),
+    command: response.command || '',
+    change_requires_restart: Boolean(response.change_requires_restart),
+  }
+}
+
+export async function deleteRegistryProject(projectID: string): Promise<RegistryProjectDeleteResponse> {
+  const response = await fetchJSON<RegistryProjectDeleteResponse>(`/api/v1/registry/projects/${encodeURIComponent(projectID)}`, {
+    method: 'DELETE',
+  })
+  return {
+    registry: normalizeRegistry(response.registry),
+    project_id: response.project_id || projectID,
+    project_name: response.project_name || response.project_id || projectID,
     command: response.command || '',
     change_requires_restart: Boolean(response.change_requires_restart),
   }

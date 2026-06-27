@@ -126,7 +126,7 @@ func (s *ProjectServer) withCORS(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *ProjectServer) setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
@@ -230,9 +230,20 @@ func (s *ProjectServer) handleRegistryProjectRoute(w http.ResponseWriter, r *htt
 		})
 		return
 	}
+	if r.Method == http.MethodDelete {
+		response, status, errCode, err := s.deleteRegistryProject(projectID)
+		if err != nil {
+			s.writeJSON(w, status, api.APIErrorResponse{
+				Error: api.APIError{Code: errCode, Message: err.Error()},
+			})
+			return
+		}
+		s.writeJSON(w, http.StatusOK, response)
+		return
+	}
 	if r.Method != http.MethodPut {
 		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
-			Error: api.APIError{Code: "method_not_allowed", Message: "Only PUT is allowed"},
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only PUT or DELETE is allowed"},
 		})
 		return
 	}
@@ -905,6 +916,58 @@ func (s *ProjectServer) updateRegistryProject(projectID string, req api.Registry
 	}, 0, "", nil
 }
 
+func (s *ProjectServer) deleteRegistryProject(projectID string) (api.RegistryProjectDeleteResponse, int, string, error) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+
+	registry := s.manager.Registry()
+	if registry == nil {
+		return api.RegistryProjectDeleteResponse{}, http.StatusNotFound, "registry_not_available", fmt.Errorf("no project registry is active")
+	}
+	if strings.TrimSpace(registry.SourcePath) == "" {
+		return api.RegistryProjectDeleteResponse{}, http.StatusInternalServerError, "registry_source_missing", fmt.Errorf("active project registry has no source path")
+	}
+	if len(registry.Projects) <= 1 {
+		return api.RegistryProjectDeleteResponse{}, http.StatusConflict, "registry_requires_project", fmt.Errorf("project registry must contain at least one project")
+	}
+
+	projectID = strings.TrimSpace(projectID)
+	projectIndex := -1
+	for i, existing := range registry.Projects {
+		if strings.EqualFold(existing.ID, projectID) {
+			projectIndex = i
+			break
+		}
+	}
+	if projectIndex < 0 {
+		return api.RegistryProjectDeleteResponse{}, http.StatusNotFound, "project_not_found", fmt.Errorf("project %q was not found", projectID)
+	}
+	removed := registry.Projects[projectIndex]
+
+	nextRegistry := cloneRegistryForAppend(registry)
+	nextRegistry.Projects = append(nextRegistry.Projects[:projectIndex], nextRegistry.Projects[projectIndex+1:]...)
+	if _, err := config.ValidateProjectIsolation(nextRegistry); err != nil {
+		return api.RegistryProjectDeleteResponse{}, http.StatusBadRequest, "registry_validation_error", err
+	}
+
+	if err := deleteRegistryProjectFromFile(registry.SourcePath, projectID); err != nil {
+		return api.RegistryProjectDeleteResponse{}, http.StatusInternalServerError, "registry_write_error", err
+	}
+
+	registry.Projects = append(registry.Projects[:projectIndex], registry.Projects[projectIndex+1:]...)
+	registrySummary, err := registryResponse(registry)
+	if err != nil {
+		return api.RegistryProjectDeleteResponse{}, http.StatusInternalServerError, "registry_validation_error", err
+	}
+	return api.RegistryProjectDeleteResponse{
+		Registry:              registrySummary,
+		ProjectID:             removed.ID,
+		ProjectName:           removed.Name,
+		Command:               fmt.Sprintf("simphony -config %s", registry.SourcePath),
+		ChangeRequiresRestart: true,
+	}, 0, "", nil
+}
+
 func cloneRegistryForAppend(registry *config.ProjectRegistry) *config.ProjectRegistry {
 	next := *registry
 	next.Projects = append([]config.RegistryProject(nil), registry.Projects...)
@@ -998,6 +1061,58 @@ func updateRegistryProjectInFile(registryPath string, projectID string, req api.
 			removeMappingValue(projectNode, "max_concurrent_agents")
 		}
 	}
+
+	file, err := os.OpenFile(registryPath, os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("open registry for write: %w", err)
+	}
+	defer file.Close()
+	encoder := yaml.NewEncoder(file)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&doc); err != nil {
+		return fmt.Errorf("write registry yaml: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return fmt.Errorf("finish registry yaml: %w", err)
+	}
+	return nil
+}
+
+func deleteRegistryProjectFromFile(registryPath string, projectID string) error {
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		return fmt.Errorf("read registry: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse registry yaml: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("registry root must be a mapping")
+	}
+	projectsNode := mappingValue(doc.Content[0], "projects")
+	if projectsNode == nil || projectsNode.Kind != yaml.SequenceNode {
+		return fmt.Errorf("projects must be a list")
+	}
+
+	removeIndex := -1
+	for i, candidate := range projectsNode.Content {
+		if candidate.Kind != yaml.MappingNode {
+			continue
+		}
+		idNode := mappingValue(candidate, "id")
+		if idNode != nil && strings.EqualFold(idNode.Value, projectID) {
+			removeIndex = i
+			break
+		}
+	}
+	if removeIndex < 0 {
+		return fmt.Errorf("project %q was not found", projectID)
+	}
+	if len(projectsNode.Content) <= 1 {
+		return fmt.Errorf("project registry must contain at least one project")
+	}
+	projectsNode.Content = append(projectsNode.Content[:removeIndex], projectsNode.Content[removeIndex+1:]...)
 
 	file, err := os.OpenFile(registryPath, os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {

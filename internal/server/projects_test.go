@@ -384,6 +384,88 @@ projects:
 	}
 }
 
+func TestProjectServerDeletesRegistryProject(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	betaWorkflow := filepath.Join(dir, "beta", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	writeServerTestWorkflow(t, betaWorkflow, filepath.Join(dir, "..", "beta-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+  - id: beta
+    name: Beta
+    workflow_path: beta/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	s := newTestProjectServer(&fakeProjectManager{registry: registry})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/registry/projects/beta", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.RegistryProjectDeleteResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.ProjectID != "beta" || body.ProjectName != "Beta" || len(body.Registry.Projects) != 1 {
+		t.Fatalf("delete response = %+v, want beta removed and one project", body)
+	}
+	if len(registry.Projects) != 1 || registry.Projects[0].ID != "alpha" {
+		t.Fatalf("manager registry projects = %+v, want alpha only", registry.Projects)
+	}
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "id: beta") || !strings.Contains(text, "id: alpha") {
+		t.Fatalf("registry file = %q, want beta removed and alpha retained", text)
+	}
+}
+
+func TestProjectServerRejectsDeletingLastRegistryProject(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
+	registryPath := filepath.Join(dir, "simphony.yaml")
+	writeServerTestFile(t, registryPath, `
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: alpha/WORKFLOW.md
+`)
+	registry, err := config.LoadProjectRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("LoadProjectRegistry returned error: %v", err)
+	}
+	s := newTestProjectServer(&fakeProjectManager{registry: registry})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/registry/projects/alpha", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	var body api.APIErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if body.Error.Code != "registry_requires_project" {
+		t.Fatalf("error code = %q, want registry_requires_project", body.Error.Code)
+	}
+}
+
 func writeServerTestWorkflow(t *testing.T, path string, workspaceRoot string) {
 	t.Helper()
 	content := "---\ntracker:\n  kind: linear\n  api_key: test-linear-key\n  project_slug: shared-project\nworkspace:\n  root: " + filepath.ToSlash(workspaceRoot) + "\n---\n\nWork on {{ issue.identifier }}.\n"

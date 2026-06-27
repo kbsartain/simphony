@@ -164,6 +164,14 @@ export interface RegistryProjectUpdateResponse {
   change_requires_restart: boolean;
 }
 
+export interface RegistryProjectDeleteResponse {
+  registry: RegistryResponse;
+  project_id: string;
+  project_name: string;
+  command: string;
+  change_requires_restart: boolean;
+}
+
 export interface RegistryServerSummary {
   bind_address: string;
   port: number;

@@ -1006,8 +1006,12 @@ h3 {
   font-weight: 900;
 }
 
-.setup-edit-button {
-  justify-self: start;
+.setup-project-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
   margin: 0 4px;
 }
 
@@ -1164,6 +1168,20 @@ h3 {
 
 .ghost-button:hover {
   color: var(--ink);
+}
+
+.ghost-button.danger {
+  color: #9b3838;
+}
+
+.ghost-button.danger:hover {
+  border-color: #e1b7b7;
+  background: #fff7f7;
+}
+
+.ghost-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
 }
 
 .segment {

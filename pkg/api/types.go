@@ -449,6 +449,15 @@ type RegistryProjectUpdateResponse struct {
 	ChangeRequiresRestart bool                   `json:"change_requires_restart"`
 }
 
+// RegistryProjectDeleteResponse reports a removed registry project entry.
+type RegistryProjectDeleteResponse struct {
+	Registry              RegistryResponse `json:"registry"`
+	ProjectID             string           `json:"project_id"`
+	ProjectName           string           `json:"project_name"`
+	Command               string           `json:"command"`
+	ChangeRequiresRestart bool             `json:"change_requires_restart"`
+}
+
 // RegistryServerSummary describes the aggregate multi-project server config.
 type RegistryServerSummary struct {
 	BindAddress      string `json:"bind_address"`
