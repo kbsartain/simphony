@@ -3,10 +3,15 @@ package project
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/kbsartain/simphony/internal/agent"
 	"github.com/kbsartain/simphony/internal/config"
 	"github.com/kbsartain/simphony/internal/orchestrator"
+	"github.com/kbsartain/simphony/internal/workspace"
 )
 
 type fakeRuntime struct {
@@ -248,5 +253,98 @@ func TestManagerReportsConcurrencyUsage(t *testing.T) {
 	concurrency := manager.Concurrency()
 	if concurrency.MaxConcurrentAgents != 2 || concurrency.UsedAgents != 1 || concurrency.AvailableAgents != 1 {
 		t.Fatalf("Concurrency = %+v, want capacity 2 used 1 available 1", concurrency)
+	}
+}
+
+func TestRuntimeReloadFailureDoesNotPoisonSiblingProject(t *testing.T) {
+	dir := t.TempDir()
+	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
+	betaWorkflow := filepath.Join(dir, "beta", "WORKFLOW.md")
+	writeRuntimeWorkflow(t, alphaWorkflow, "alpha-initial", filepath.Join(dir, "workspaces", "alpha"))
+	writeRuntimeWorkflow(t, betaWorkflow, "beta-initial", filepath.Join(dir, "workspaces", "beta"))
+
+	registry := &config.ProjectRegistry{
+		SourcePath: filepath.Join(dir, "simphony.yaml"),
+		Projects: []config.RegistryProject{
+			{ID: "alpha", Name: "Alpha", WorkflowPath: alphaWorkflow, Enabled: true},
+			{ID: "beta", Name: "Beta", WorkflowPath: betaWorkflow, Enabled: true},
+		},
+	}
+	alpha := newStartedRuntimeForTest(t, registry, registry.Projects[0])
+	beta := newStartedRuntimeForTest(t, registry, registry.Projects[1])
+
+	writeRawWorkflow(t, alphaWorkflow, `---
+tracker:
+  kind: linear
+  project_slug: alpha-broken
+---
+
+Broken alpha workflow.
+`)
+	if err := alpha.Reload(); err == nil {
+		t.Fatal("alpha Reload succeeded, want validation error")
+	}
+	if alpha.cfg.Tracker.ProjectSlug != "alpha-initial" {
+		t.Fatalf("alpha project slug = %q, want unchanged alpha-initial", alpha.cfg.Tracker.ProjectSlug)
+	}
+
+	writeRuntimeWorkflow(t, betaWorkflow, "beta-updated", filepath.Join(dir, "workspaces", "beta-updated"))
+	if err := beta.Reload(); err != nil {
+		t.Fatalf("beta Reload returned error: %v", err)
+	}
+	if beta.cfg.Tracker.ProjectSlug != "beta-updated" {
+		t.Fatalf("beta project slug = %q, want beta-updated", beta.cfg.Tracker.ProjectSlug)
+	}
+	if alpha.cfg.Tracker.ProjectSlug != "alpha-initial" {
+		t.Fatalf("alpha project slug after beta reload = %q, want unchanged alpha-initial", alpha.cfg.Tracker.ProjectSlug)
+	}
+}
+
+func newStartedRuntimeForTest(t *testing.T, registry *config.ProjectRegistry, project config.RegistryProject) *Runtime {
+	t.Helper()
+	def, cfg, err := config.ResolveProjectWorkflow(registry, project)
+	if err != nil {
+		t.Fatalf("resolve workflow for %s: %v", project.ID, err)
+	}
+	wsMgr, err := workspace.NewManagerWithConfig(cfg.Workspace)
+	if err != nil {
+		t.Fatalf("new workspace manager for %s: %v", project.ID, err)
+	}
+	runner := agent.NewRunner(def.PromptTemplate)
+	orch := orchestrator.New(cfg, nil, wsMgr, runner)
+	orch.SetLogContext(project.ID, project.Name)
+	return &Runtime{
+		registry: registry,
+		project:  project,
+		def:      def,
+		cfg:      cfg,
+		runner:   runner,
+		orch:     orch,
+		started:  true,
+	}
+}
+
+func writeRuntimeWorkflow(t *testing.T, path string, projectSlug string, workspaceRoot string) {
+	t.Helper()
+	writeRawWorkflow(t, path, fmt.Sprintf(`---
+tracker:
+  kind: linear
+  api_key: test-linear-key
+  project_slug: %s
+workspace:
+  root: %q
+---
+
+Work on {{ issue.identifier }}.
+`, projectSlug, filepath.ToSlash(workspaceRoot)))
+}
+
+func writeRawWorkflow(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir workflow dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write workflow: %v", err)
 	}
 }
