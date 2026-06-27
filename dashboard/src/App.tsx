@@ -822,6 +822,7 @@ function App() {
 
   const visibleRunning = (filter === 'retrying' ? [] : state.running).filter(item => matchesIssueQuery(item, query))
   const visibleRetrying = (filter === 'running' ? [] : state.retrying).filter(item => matchesIssueQuery(item, query))
+  const showAggregateProjectHealth = projectMode && projects.length > 1
 
   const changeProject = (projectID: string) => {
     setSelectedProjectId(projectID)
@@ -901,7 +902,7 @@ function App() {
 
         {page === 'runtime' && (
           <>
-            {projectMode && projectOverview && (
+            {showAggregateProjectHealth && projectOverview && (
               <section className="project-overview" aria-label="Project overview">
                 <div className="project-overview-heading">
                   <div>
@@ -924,7 +925,7 @@ function App() {
                 </div>
               </section>
             )}
-            {projectMode && projectOverview && (
+            {showAggregateProjectHealth && projectOverview && (
               <ProjectHealthPanel
                 projects={projects}
                 supervisorConcurrency={supervisorConcurrency}
@@ -1220,6 +1221,7 @@ function ProjectSidebar(props: {
   onProjectSelect: (projectID: string) => void
 }) {
   const activeIssues = props.projectOverview ? props.projectOverview.runningIssues + props.projectOverview.retryingIssues : 0
+  const singleRegistryProject = props.projectMode && props.projects.length === 1
   return (
     <aside className="project-sidebar" aria-label="Project navigation">
       <div className="sidebar-brand">
@@ -1260,7 +1262,7 @@ function ProjectSidebar(props: {
 
       <div className="project-nav-section">
         <div className="project-nav-heading">
-          <span>Projects</span>
+          <span>{singleRegistryProject ? 'Project context' : 'Projects'}</span>
           <button className="add-project-button" type="button" onClick={() => props.onPageChange('setup')} title="Open project setup">
             +
           </button>
