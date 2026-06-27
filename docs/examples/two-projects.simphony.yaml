@@ -1,0 +1,36 @@
+# Example multi-project registry for a local developer workstation.
+#
+# Each project owns its WORKFLOW.md, Linear settings, workspace root, hooks, and
+# runtime state. Global agent_runtime values fill defaults that individual
+# project workflows can override.
+
+agent_runtime:
+  provider: codex
+  model: kimi-k2
+  endpoint_url: $OPENAI_BASE_URL
+  api_key: $OPENAI_API_KEY
+
+server:
+  bind_address: 127.0.0.1
+  port: 8080
+  api_prefix: /api/v1
+
+concurrency:
+  max_concurrent_agents: 10
+  default_project_max_concurrent_agents: 5
+
+security:
+  allow_workspace_overlap: false
+  allow_workspace_under_registry_dir: false
+  allow_remote_dashboard: false
+
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: ../../projects/alpha/WORKFLOW.md
+    max_concurrent_agents: 4
+
+  - id: beta
+    name: Beta
+    workflow_path: ../../projects/beta/WORKFLOW.md
+    max_concurrent_agents: 2

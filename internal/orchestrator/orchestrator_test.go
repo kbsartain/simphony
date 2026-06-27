@@ -152,6 +152,37 @@ type mockRunner struct {
 	emitSession  bool
 	agentMessage string
 	err          error
+	panicValue   interface{}
+}
+
+type countingLimiter struct {
+	mu       sync.Mutex
+	capacity int
+	used     int
+}
+
+func (l *countingLimiter) TryAcquire() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.used >= l.capacity {
+		return false
+	}
+	l.used++
+	return true
+}
+
+func (l *countingLimiter) Release() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.used > 0 {
+		l.used--
+	}
+}
+
+func (l *countingLimiter) Used() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.used
 }
 
 func (m *mockRunner) Run(ctx context.Context, issue api.Issue, w *api.Workspace, attempt *int, cfg *api.CodexConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), cb func(api.AgentEvent)) error {
@@ -211,6 +242,9 @@ func (m *mockRunner) Run(ctx context.Context, issue api.Issue, w *api.Workspace,
 		}
 	}
 
+	if m.panicValue != nil {
+		panic(m.panicValue)
+	}
 	if m.err != nil {
 		return m.err
 	}
@@ -379,6 +413,82 @@ func TestOrchestrator_ConcurrencyLimit(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_SharedLimiterCapsDispatchAndReleasesOnStop(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Todo"},
+			{ID: "2", Identifier: "A-2", Title: "Second", State: "Todo"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{delay: 500 * time.Millisecond}
+	cfg := defaultConfig()
+	cfg.Agent.MaxConcurrentAgents = 10
+	limiter := &countingLimiter{capacity: 1}
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.SetDispatchLimiter(limiter)
+	orch.Start()
+
+	time.Sleep(100 * time.Millisecond)
+
+	runner.mu.Lock()
+	runs := len(runner.runs)
+	runner.mu.Unlock()
+	if runs != 1 {
+		t.Fatalf("runs = %d, want 1 while shared limiter is full", runs)
+	}
+	if used := limiter.Used(); used != 1 {
+		t.Fatalf("limiter used = %d, want 1", used)
+	}
+	snap := orch.Snapshot()
+	if snap.LastDispatchDeferredReason != "no_supervisor_slots" || snap.LastDispatchDeferredAt == nil {
+		t.Fatalf("deferred snapshot reason=%q at=%v, want supervisor deferral", snap.LastDispatchDeferredReason, snap.LastDispatchDeferredAt)
+	}
+
+	orch.Stop()
+	if used := limiter.Used(); used != 0 {
+		t.Fatalf("limiter used after stop = %d, want 0", used)
+	}
+}
+
+func TestOrchestrator_SharedLimiterReleasesAfterWorkerPanic(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "Todo"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{panicValue: "boom"}
+	cfg := defaultConfig()
+	cfg.Agent.MaxConcurrentAgents = 1
+	cfg.Agent.MaxRetryBackoffMs = 5000
+	limiter := &countingLimiter{capacity: 1}
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.SetDispatchLimiter(limiter)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	if used := limiter.Used(); used != 0 {
+		t.Fatalf("limiter used after worker panic = %d, want 0", used)
+	}
+	snap := orch.Snapshot()
+	if snap.Counts.Retrying != 1 {
+		t.Fatalf("retrying count = %d, want 1", snap.Counts.Retrying)
+	}
+
+	orch.mu.Lock()
+	if entry := orch.state.RetryAttempts["1"]; entry != nil {
+		if timer, ok := entry.TimerHandle.(*time.Timer); ok {
+			timer.Stop()
+		}
+	}
+	orch.mu.Unlock()
+}
+
 func TestOrchestrator_PerStateLimit(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{
@@ -532,6 +642,8 @@ func TestOrchestrator_PreRunFailureKeepsClaimDuringBackoff(t *testing.T) {
 	}
 
 	orch := New(cfg, tracker, wsMgr, runner)
+	limiter := &countingLimiter{capacity: 1}
+	orch.SetDispatchLimiter(limiter)
 	orch.Start()
 	defer orch.Stop()
 
@@ -554,6 +666,9 @@ func TestOrchestrator_PreRunFailureKeepsClaimDuringBackoff(t *testing.T) {
 	}
 	if retryCount != 1 {
 		t.Fatalf("expected retry queued, got %d", retryCount)
+	}
+	if used := limiter.Used(); used != 0 {
+		t.Fatalf("limiter used after before_run failure = %d, want 0", used)
 	}
 
 	orch.tick()

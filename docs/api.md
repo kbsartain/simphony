@@ -9,6 +9,61 @@ server:
 
 The server allows cross-origin requests and returns JSON for all API responses.
 
+In multi-project `-config` mode, a registry-level `server:` block enables the aggregate project API:
+
+- `GET /api/v1/projects`
+- `GET /api/v1/projects/{project_id}/state`
+- `GET /api/v1/projects/{project_id}/issues/{issue_identifier}`
+- `POST /api/v1/projects/{project_id}/refresh`
+- `GET /api/v1/projects/{project_id}/settings`
+- `PUT /api/v1/projects/{project_id}/settings`
+- `POST /api/v1/projects/{project_id}/settings/validate-tracker`
+
+The dashboard uses these routes to discover projects, select the active project, and scope runtime/settings calls.
+
+When exactly one project runtime is running in multi-project mode, the aggregate server also accepts the single-project compatibility routes `/api/v1/state`, `/api/v1/refresh`, `/api/v1/settings`, `/api/v1/settings/validate-tracker`, and `/api/v1/{issue_identifier}`. When zero or multiple projects are running, callers must use project-scoped routes.
+
+Project-scoped routes return `project_disabled` for configured disabled projects and `project_not_running` for enabled projects that failed to start or are stopped.
+
+## List Projects
+
+```http
+GET /api/v1/projects
+```
+
+Returns configured projects, per-project runtime counts, and shared supervisor concurrency usage.
+
+```json
+{
+  "generated_at": "2026-05-01T12:00:00Z",
+  "concurrency": {
+    "max_concurrent_agents": 10,
+    "used_agents": 7,
+    "available_agents": 3
+  },
+  "projects": [
+    {
+      "id": "alpha",
+      "name": "Alpha",
+      "workflow_path": "C:\\work\\alpha\\WORKFLOW.md",
+      "enabled": true,
+      "running": true,
+      "max_concurrent_agents": 2,
+      "counts": {
+        "running": 2,
+        "retrying": 0,
+        "claimed": 2,
+        "completed": 4
+      },
+      "waiting_on_supervisor": true,
+      "last_supervisor_deferred_at": "2026-05-01T11:59:30Z"
+    }
+  ]
+}
+```
+
+`waiting_on_supervisor` means that project's last dispatch pass had eligible work but could not acquire a shared global slot. It clears when the project successfully dispatches again.
+
 ## Get State
 
 ```http

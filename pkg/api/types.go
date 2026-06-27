@@ -236,12 +236,13 @@ type OrchestratorState struct {
 
 // RunningEntry tracks an active worker run.
 type RunningEntry struct {
-	Issue         Issue         `json:"issue"`
-	Session       AgentSession  `json:"session"`
-	StartedAt     time.Time     `json:"started_at"`
-	TurnCount     int           `json:"turn_count"`
-	WorkspacePath string        `json:"workspace_path"`
-	RecentEvents  []EventDetail `json:"recent_events"`
+	Issue                  Issue         `json:"issue"`
+	Session                AgentSession  `json:"session"`
+	StartedAt              time.Time     `json:"started_at"`
+	TurnCount              int           `json:"turn_count"`
+	WorkspacePath          string        `json:"workspace_path"`
+	RecentEvents           []EventDetail `json:"recent_events"`
+	SupervisorSlotAcquired bool          `json:"-"`
 }
 
 // CodexTotals holds aggregate token and runtime accounting.
@@ -254,14 +255,16 @@ type CodexTotals struct {
 
 // StateSnapshot is returned by the optional HTTP API for dashboard consumption.
 type StateSnapshot struct {
-	GeneratedAt         time.Time              `json:"generated_at"`
-	PollIntervalMs      int                    `json:"poll_interval_ms"`
-	MaxConcurrentAgents int                    `json:"max_concurrent_agents"`
-	Counts              StateCounts            `json:"counts"`
-	Running             []RunningSnapshot      `json:"running"`
-	Retrying            []RetrySnapshot        `json:"retrying"`
-	CodexTotals         CodexTotals            `json:"codex_totals"`
-	RateLimits          map[string]interface{} `json:"rate_limits"`
+	GeneratedAt                time.Time              `json:"generated_at"`
+	PollIntervalMs             int                    `json:"poll_interval_ms"`
+	MaxConcurrentAgents        int                    `json:"max_concurrent_agents"`
+	Counts                     StateCounts            `json:"counts"`
+	Running                    []RunningSnapshot      `json:"running"`
+	Retrying                   []RetrySnapshot        `json:"retrying"`
+	CodexTotals                CodexTotals            `json:"codex_totals"`
+	RateLimits                 map[string]interface{} `json:"rate_limits"`
+	LastDispatchDeferredReason string                 `json:"last_dispatch_deferred_reason,omitempty"`
+	LastDispatchDeferredAt     *time.Time             `json:"last_dispatch_deferred_at,omitempty"`
 }
 
 // StateCounts provides summary counts.
@@ -358,6 +361,34 @@ type RefreshResponse struct {
 	Coalesced   bool      `json:"coalesced"`
 	RequestedAt time.Time `json:"requested_at"`
 	Operations  []string  `json:"operations"`
+}
+
+// ProjectSummary describes one configured project runtime in multi-project mode.
+type ProjectSummary struct {
+	ID                       string      `json:"id"`
+	Name                     string      `json:"name"`
+	WorkflowPath             string      `json:"workflow_path"`
+	Enabled                  bool        `json:"enabled"`
+	Running                  bool        `json:"running"`
+	LastError                string      `json:"last_error,omitempty"`
+	MaxConcurrentAgents      int         `json:"max_concurrent_agents,omitempty"`
+	Counts                   StateCounts `json:"counts"`
+	WaitingOnSupervisor      bool        `json:"waiting_on_supervisor,omitempty"`
+	LastSupervisorDeferredAt *time.Time  `json:"last_supervisor_deferred_at,omitempty"`
+}
+
+// SupervisorConcurrency reports shared multi-project agent capacity.
+type SupervisorConcurrency struct {
+	MaxConcurrentAgents int `json:"max_concurrent_agents"`
+	UsedAgents          int `json:"used_agents"`
+	AvailableAgents     int `json:"available_agents"`
+}
+
+// ProjectsResponse lists configured project runtimes.
+type ProjectsResponse struct {
+	GeneratedAt time.Time             `json:"generated_at"`
+	Projects    []ProjectSummary      `json:"projects"`
+	Concurrency SupervisorConcurrency `json:"concurrency"`
 }
 
 // APIError is a structured API error.

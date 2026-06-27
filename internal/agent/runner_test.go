@@ -287,6 +287,69 @@ func mockClaudeEnv() []string {
 	}
 }
 
+func TestScrubInheritedAgentEnvRemovesProviderAndTrackerValues(t *testing.T) {
+	env := []string{
+		"OPENAI_API_KEY=parent-openai",
+		"openai_base_url=https://parent-openai.example/v1",
+		"ANTHROPIC_API_KEY=parent-anthropic",
+		"LINEAR_API_KEY=parent-linear",
+		"PATH=/usr/bin",
+		"CUSTOM=value",
+	}
+
+	got := scrubInheritedAgentEnv(env)
+	if getEnv(got, "OPENAI_API_KEY") != "" {
+		t.Fatal("OPENAI_API_KEY was inherited")
+	}
+	if getEnv(got, "OPENAI_BASE_URL") != "" {
+		t.Fatal("OPENAI_BASE_URL was inherited")
+	}
+	if getEnv(got, "ANTHROPIC_API_KEY") != "" {
+		t.Fatal("ANTHROPIC_API_KEY was inherited")
+	}
+	if getEnv(got, "LINEAR_API_KEY") != "" {
+		t.Fatal("LINEAR_API_KEY was inherited")
+	}
+	if getEnv(got, "PATH") != "/usr/bin" || getEnv(got, "CUSTOM") != "value" {
+		t.Fatalf("non-secret env was not preserved: %+v", got)
+	}
+}
+
+func TestRuntimeEnvAppliesProjectScopedValuesAfterScrub(t *testing.T) {
+	env := scrubInheritedAgentEnv([]string{
+		"OPENAI_API_KEY=parent-openai",
+		"ANTHROPIC_API_KEY=parent-anthropic",
+		"LINEAR_API_KEY=parent-linear",
+		"PATH=/usr/bin",
+	})
+	cfg := &api.AgentRuntimeConfig{
+		Provider:    "codex",
+		APIKey:      "project-openai",
+		EndpointURL: "https://project-openai.example/v1",
+		AuthToken:   "project-auth",
+		Env: map[string]string{
+			"LINEAR_API_KEY": "project-linear",
+		},
+	}
+
+	got := applyRuntimeEnv(env, cfg)
+	if getEnv(got, "OPENAI_API_KEY") != "project-openai" {
+		t.Fatalf("OPENAI_API_KEY = %q, want project-openai", getEnv(got, "OPENAI_API_KEY"))
+	}
+	if getEnv(got, "OPENAI_BASE_URL") != "https://project-openai.example/v1" {
+		t.Fatalf("OPENAI_BASE_URL = %q, want project endpoint", getEnv(got, "OPENAI_BASE_URL"))
+	}
+	if getEnv(got, "OPENAI_AUTH_TOKEN") != "project-auth" {
+		t.Fatalf("OPENAI_AUTH_TOKEN = %q, want project-auth", getEnv(got, "OPENAI_AUTH_TOKEN"))
+	}
+	if getEnv(got, "ANTHROPIC_API_KEY") != "" {
+		t.Fatal("ANTHROPIC_API_KEY was inherited into codex runtime")
+	}
+	if getEnv(got, "LINEAR_API_KEY") != "project-linear" {
+		t.Fatalf("LINEAR_API_KEY = %q, want explicit project env", getEnv(got, "LINEAR_API_KEY"))
+	}
+}
+
 func TestRunnerSuccessfulSession(t *testing.T) {
 	// Set up environment so that the mock server runs.
 	for _, e := range mockEnv(mockModeNormal) {

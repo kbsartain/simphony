@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   IssueDetailResponse,
+  ProjectSummary,
   RefreshResponse,
   RetrySnapshot,
   RunningSnapshot,
   SettingsResponse,
   SettingsValidationResponse,
   StateSnapshot,
+  SupervisorConcurrency,
 } from './api/types'
 import {
   fetchIssueDetail,
+  fetchProjects,
   fetchSettings,
   fetchState,
   requestRefresh as requestRefreshAPI,
@@ -190,6 +193,11 @@ const SKILL_STAGE_OPTIONS: SkillStageOption[] = [
 
 function App() {
   const [page, setPage] = useState<Page>('runtime')
+  const [projectDiscoveryComplete, setProjectDiscoveryComplete] = useState(false)
+  const [projectMode, setProjectMode] = useState(false)
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [supervisorConcurrency, setSupervisorConcurrency] = useState<SupervisorConcurrency | null>(null)
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [state, setState] = useState<StateSnapshot | null>(null)
   const [settings, setSettings] = useState<SettingsResponse | null>(null)
   const [settingsDraft, setSettingsDraft] = useState('')
@@ -208,12 +216,45 @@ function App() {
   const stateRequestID = useRef(0)
   const detailRequestID = useRef(0)
   const pollIntervalMs = Math.max(state?.poll_interval_ms || DEFAULT_POLL_INTERVAL_MS, MIN_UI_POLL_INTERVAL_MS)
+  const selectedProject = projects.find(project => project.id === selectedProjectId) || null
+  const selectedAPIProjectId = projectMode ? selectedProjectId || undefined : undefined
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const data = await fetchProjects()
+      const nextProjects = data.projects
+      setProjects(nextProjects)
+      setSupervisorConcurrency(data.concurrency)
+      setProjectMode(true)
+      setSelectedProjectId(current => {
+        if (current && nextProjects.some(project => project.id === current)) {
+          return current
+        }
+        return defaultProjectID(nextProjects)
+      })
+    } catch {
+      setProjects([])
+      setSupervisorConcurrency(null)
+      setProjectMode(false)
+      setSelectedProjectId(null)
+    } finally {
+      setProjectDiscoveryComplete(true)
+    }
+  }, [])
 
   const loadState = useCallback(async () => {
+    if (!projectDiscoveryComplete) {
+      return
+    }
+    if (projectMode && !selectedProjectId) {
+      setState(null)
+      setError('No project is available to display.')
+      return
+    }
     const requestID = stateRequestID.current + 1
     stateRequestID.current = requestID
     try {
-      const data = await fetchState()
+      const data = await fetchState(projectMode ? selectedProjectId || undefined : undefined)
       if (stateRequestID.current === requestID) {
         setState(data)
         setLastUpdated(new Date())
@@ -224,16 +265,35 @@ function App() {
         setError(normalizeError(err))
       }
     }
-  }, [])
+  }, [projectDiscoveryComplete, projectMode, selectedProjectId])
 
   const loadSettings = useCallback(async () => {
-    const data = await fetchSettings()
+    const data = await fetchSettings(projectMode ? selectedProjectId || undefined : undefined)
     setSettings(data)
     setSettingsDraft(JSON.stringify(data.config || {}, null, 2))
     setPromptDraft(data.prompt_template || '')
     setTrackerValidation(null)
     setError(null)
-  }, [])
+  }, [projectMode, selectedProjectId])
+
+  useEffect(() => {
+    void loadProjects()
+  }, [loadProjects])
+
+  useEffect(() => {
+    if (!projectMode) {
+      return
+    }
+    stateRequestID.current += 1
+    detailRequestID.current += 1
+    setState(null)
+    setSettings(null)
+    setTrackerValidation(null)
+    setRefreshResult(null)
+    setDetailState({ status: 'idle' })
+    setError(null)
+    setNotice(null)
+  }, [projectMode, selectedProjectId])
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -244,8 +304,20 @@ function App() {
   }, [loadState, pollIntervalMs])
 
   useEffect(() => {
-    void loadState()
-  }, [loadState])
+    if (!projectMode) {
+      return undefined
+    }
+    const interval = window.setInterval(() => {
+      void loadProjects()
+    }, pollIntervalMs)
+    return () => window.clearInterval(interval)
+  }, [loadProjects, pollIntervalMs, projectMode])
+
+  useEffect(() => {
+    if (projectDiscoveryComplete) {
+      void loadState()
+    }
+  }, [loadState, projectDiscoveryComplete])
 
   useEffect(() => {
     if (page === 'settings' && !settings) {
@@ -257,7 +329,10 @@ function App() {
     setRefreshing(true)
     setRefreshResult(null)
     try {
-      setRefreshResult(await requestRefreshAPI())
+      setRefreshResult(await requestRefreshAPI(selectedAPIProjectId))
+      if (projectMode) {
+        await loadProjects()
+      }
       await loadState()
       setNotice(null)
     } catch (err) {
@@ -275,7 +350,7 @@ function App() {
       if (!isPlainObject(config)) {
         throw new Error('Workflow config must be a JSON object.')
       }
-      const data = await saveSettings({ config, prompt_template: promptDraft })
+      const data = await saveSettings({ config, prompt_template: promptDraft }, selectedAPIProjectId)
       setSettings(data)
       setSettingsDraft(JSON.stringify(data.config || {}, null, 2))
       setPromptDraft(data.prompt_template || '')
@@ -298,7 +373,7 @@ function App() {
       if (!isPlainObject(config)) {
         throw new Error('Workflow config must be a JSON object.')
       }
-      const result = await validateTrackerSettings({ config, prompt_template: promptDraft })
+      const result = await validateTrackerSettings({ config, prompt_template: promptDraft }, selectedAPIProjectId)
       setTrackerValidation(result)
       setNotice('Linear settings validated')
       setError(null)
@@ -321,7 +396,7 @@ function App() {
       setDetailState({ status: 'loading', identifier })
     }
     try {
-      const detail = await fetchIssueDetail(identifier)
+      const detail = await fetchIssueDetail(identifier, projectMode ? selectedProjectId || undefined : undefined)
       if (detailRequestID.current === requestID) {
         setDetailState({ status: 'ready', detail })
       }
@@ -330,7 +405,7 @@ function App() {
         setDetailState({ status: 'error', identifier, message: normalizeError(err) })
       }
     }
-  }, [])
+  }, [projectMode, selectedProjectId])
 
   const openIssue = useCallback((identifier: string) => {
     void loadIssueDetail(identifier, true)
@@ -395,6 +470,23 @@ function App() {
       .slice(0, 8)
   }, [state])
 
+  const projectOverview = useMemo(() => {
+    if (!projectMode || projects.length === 0) {
+      return null
+    }
+    return {
+      runningProjects: projects.filter(project => project.running).length,
+      disabledProjects: projects.filter(project => !project.enabled).length,
+      errorProjects: projects.filter(project => project.enabled && !project.running && project.last_error).length,
+      waitingProjects: projects.filter(project => project.waiting_on_supervisor).length,
+      runningIssues: projects.reduce((sum, project) => sum + (project.counts?.running || 0), 0),
+      retryingIssues: projects.reduce((sum, project) => sum + (project.counts?.retrying || 0), 0),
+      supervisorCapacity: supervisorConcurrency?.max_concurrent_agents || 0,
+      supervisorUsed: supervisorConcurrency?.used_agents || 0,
+      supervisorAvailable: supervisorConcurrency?.available_agents || 0,
+    }
+  }, [projectMode, projects, supervisorConcurrency])
+
   if (!state || !summary) {
     return (
       <main className="app-shell loading-shell">
@@ -420,6 +512,10 @@ function App() {
   const visibleRunning = (filter === 'retrying' ? [] : state.running).filter(item => matchesIssueQuery(item, query))
   const visibleRetrying = (filter === 'running' ? [] : state.retrying).filter(item => matchesIssueQuery(item, query))
 
+  const changeProject = (projectID: string) => {
+    setSelectedProjectId(projectID)
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -433,11 +529,25 @@ function App() {
           </div>
         </div>
         <div className="topbar-actions">
+          {projectMode && (
+            <label className="project-select">
+              <span className="sr-only">Project</span>
+              <select value={selectedProjectId || ''} onChange={event => changeProject(event.target.value)} aria-label="Project">
+                {projects.map(project => (
+                  <option key={project.id} value={project.id}>
+                    {project.name || project.id}
+                    {!project.enabled ? ' (disabled)' : project.running ? '' : ' (stopped)'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <div className="segment-control" role="group" aria-label="Dashboard page">
             <FilterButton active={page === 'runtime'} label="Runtime" onClick={() => setPage('runtime')} />
             <FilterButton active={page === 'settings'} label="Settings" onClick={() => setPage('settings')} />
           </div>
           <div className="sync-copy">
+            {selectedProject && <span>{selectedProject.name || selectedProject.id}</span>}
             <span>Snapshot {formatDateTime(state.generated_at)}</span>
             <span>UI {lastUpdated ? lastUpdated.toLocaleTimeString() : 'never'}</span>
           </div>
@@ -473,6 +583,40 @@ function App() {
 
       {page === 'runtime' ? (
         <>
+          {projectMode && projectOverview && (
+            <section className="project-overview" aria-label="Project overview">
+              <div className="project-overview-heading">
+                <div>
+                  <p className="eyebrow">Projects</p>
+                  <h2>Runtime overview</h2>
+                </div>
+                <div className="project-overview-stats">
+                  <span>{projectOverview.runningProjects} running</span>
+                  <span>{projectOverview.runningIssues} active</span>
+                  <span>{projectOverview.retryingIssues} retrying</span>
+                  {projectOverview.supervisorCapacity > 0 && (
+                    <span>
+                      {projectOverview.supervisorUsed}/{projectOverview.supervisorCapacity} global slots
+                    </span>
+                  )}
+                  {projectOverview.waitingProjects > 0 && <span>{projectOverview.waitingProjects} waiting</span>}
+                  {projectOverview.disabledProjects > 0 && <span>{projectOverview.disabledProjects} disabled</span>}
+                  {projectOverview.errorProjects > 0 && <span>{projectOverview.errorProjects} failed</span>}
+                </div>
+              </div>
+              <div className="project-card-grid">
+                {projects.map(project => (
+                  <ProjectCard
+                    key={project.id}
+                    project={project}
+                    active={project.id === selectedProjectId}
+                    onSelect={() => changeProject(project.id)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
           <section className="metrics-grid" aria-label="Runtime metrics">
             <MetricCard label="Active issues" value={summary.active.toLocaleString()} detail="Running plus retry queue" tone="green" />
             <MetricCard label="Running" value={summary.running.toLocaleString()} detail="Live Codex sessions" tone="blue" />
@@ -611,6 +755,38 @@ function FilterButton(props: { active: boolean; label: string; onClick: () => vo
   return (
     <button className={props.active ? 'segment active' : 'segment'} type="button" onClick={props.onClick} aria-pressed={props.active}>
       {props.label}
+    </button>
+  )
+}
+
+function ProjectCard(props: { project: ProjectSummary; active: boolean; onSelect: () => void }) {
+  const { project } = props
+  const status = projectStatus(project)
+  const activeCount = project.counts.running + project.counts.retrying
+  return (
+    <button
+      className={`project-card ${props.active ? 'active' : ''} ${status.tone}`}
+      type="button"
+      onClick={props.onSelect}
+      aria-pressed={props.active}
+      title={project.workflow_path}
+    >
+      <span className="project-card-topline">
+        <strong>{project.name || project.id}</strong>
+        <span className={`project-status ${status.tone}`}>{status.label}</span>
+      </span>
+      <span className="project-card-id">{project.id}</span>
+      <span className="project-card-metrics">
+        <span>{activeCount.toLocaleString()} active</span>
+        <span>{project.counts.completed.toLocaleString()} done</span>
+        {project.max_concurrent_agents ? <span>cap {project.max_concurrent_agents.toLocaleString()}</span> : null}
+      </span>
+      {project.waiting_on_supervisor && (
+        <span className="project-card-waiting">
+          Waiting for global slot{project.last_supervisor_deferred_at ? ` since ${formatDateTime(project.last_supervisor_deferred_at)}` : ''}
+        </span>
+      )}
+      {project.last_error && <span className="project-card-error">{project.last_error}</span>}
     </button>
   )
 }
@@ -1766,6 +1942,34 @@ function matchesIssueQuery(item: RunningSnapshot | RetrySnapshot, query: string)
       : [item.issue_identifier, item.issue_id, item.error || '', `attempt ${item.attempt}`]
 
   return values.some(value => value.toLowerCase().includes(normalized))
+}
+
+function defaultProjectID(projects: ProjectSummary[]) {
+  return (
+    projects.find(project => project.running)?.id ||
+    projects.find(project => project.enabled)?.id ||
+    projects[0]?.id ||
+    null
+  )
+}
+
+function projectStatus(project: ProjectSummary) {
+  if (!project.enabled) {
+    return { label: 'Disabled', tone: 'disabled' as const }
+  }
+  if (project.waiting_on_supervisor) {
+    return { label: 'Waiting', tone: 'waiting' as const }
+  }
+  if (!project.running) {
+    return { label: project.last_error ? 'Failed' : 'Stopped', tone: project.last_error ? 'failed' as const : 'stopped' as const }
+  }
+  if (project.counts.retrying > 0) {
+    return { label: 'Retrying', tone: 'retrying' as const }
+  }
+  if (project.counts.running > 0) {
+    return { label: 'Running', tone: 'running' as const }
+  }
+  return { label: 'Idle', tone: 'idle' as const }
 }
 
 function normalizeError(err: unknown) {

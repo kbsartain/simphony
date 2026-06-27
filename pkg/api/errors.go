@@ -4,6 +4,8 @@ package api
 const (
 	ErrMissingWorkflowFile       = "missing_workflow_file"
 	ErrWorkflowParseError        = "workflow_parse_error"
+	ErrMissingProjectRegistry    = "missing_project_registry_file"
+	ErrProjectRegistryParseError = "project_registry_parse_error"
 	ErrWorkflowFrontMatterNotMap = "workflow_front_matter_not_a_map"
 	ErrTemplateParseError        = "template_parse_error"
 	ErrTemplateRenderError       = "template_render_error"

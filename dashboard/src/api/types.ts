@@ -74,6 +74,8 @@ export interface StateSnapshot {
   retrying: RetrySnapshot[];
   codex_totals: CodexTotals;
   rate_limits: Record<string, unknown> | null;
+  last_dispatch_deferred_reason?: string;
+  last_dispatch_deferred_at?: string;
 }
 
 export interface APIError {
@@ -90,6 +92,31 @@ export interface RefreshResponse {
   coalesced: boolean;
   requested_at: string;
   operations: string[];
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  workflow_path: string;
+  enabled: boolean;
+  running: boolean;
+  last_error?: string;
+  max_concurrent_agents?: number;
+  counts: StateCounts;
+  waiting_on_supervisor?: boolean;
+  last_supervisor_deferred_at?: string;
+}
+
+export interface SupervisorConcurrency {
+  max_concurrent_agents: number;
+  used_agents: number;
+  available_agents: number;
+}
+
+export interface ProjectsResponse {
+  generated_at: string;
+  projects: ProjectSummary[];
+  concurrency: SupervisorConcurrency;
 }
 
 export interface IssueDetailResponse {

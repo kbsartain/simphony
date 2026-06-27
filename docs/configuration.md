@@ -15,6 +15,50 @@ You are working on issue {{ issue.identifier }}: {{ issue.title }}.
 
 Unknown front matter keys are ignored so workflow files can evolve without breaking older versions of Simphony.
 
+## Multi-Project Registry
+
+Single-project mode starts one active project with `-workflow`. Multi-project mode starts enabled project runtimes from a global registry with `-config`:
+
+```yaml
+agent_runtime:
+  provider: codex
+  model: kimi-k2
+  endpoint_url: $OPENAI_BASE_URL
+  api_key: $OPENAI_API_KEY
+server:
+  bind_address: 127.0.0.1
+  port: 8080
+concurrency:
+  max_concurrent_agents: 10
+  default_project_max_concurrent_agents: 5
+security:
+  allow_workspace_overlap: false
+  allow_workspace_under_registry_dir: false
+  allow_remote_dashboard: false
+projects:
+  - id: alpha
+    name: Alpha
+    workflow_path: ./projects/alpha/WORKFLOW.md
+  - id: beta
+    name: Beta
+    workflow_path: ./projects/beta/WORKFLOW.md
+    max_concurrent_agents: 2
+```
+
+`projects[].workflow_path` is resolved relative to the registry file. Project IDs must start with a letter or number and can contain letters, numbers, dots, underscores, and hyphens. Global `agent_runtime` values are applied as defaults when validating project workflows; a project's own `agent_runtime` fields override individual global fields.
+
+Use `simphony validate -config ./simphony.yaml` to validate the registry and enabled project workflows without starting workers. Use `simphony projects -config ./simphony.yaml` to list resolved project settings. A registry-level `server` block enables the aggregate project API and dashboard project selector.
+
+Registry-level `concurrency.max_concurrent_agents` is a supervisor-owned cap across all enabled projects. For example, `max_concurrent_agents: 10` means at most ten total agent sessions can run across the full multi-project process, even if each project's `WORKFLOW.md` allows more local concurrency.
+
+`concurrency.default_project_max_concurrent_agents` fills `agent.max_concurrent_agents` for project workflows that do not set their own local limit. `projects[].max_concurrent_agents` is stricter: it caps that specific project even if its `WORKFLOW.md` requests a higher value.
+
+Multi-project validation resolves every enabled project workflow before startup. By default, Simphony refuses workspace roots that overlap another enabled project or live under the registry directory. Set `security.allow_workspace_overlap: true` or `security.allow_workspace_under_registry_dir: true` only when the operator has intentionally accepted that risk. Registry servers also refuse non-loopback `server.bind_address` values unless `security.allow_remote_dashboard: true` is set. Simphony also warns when multiple enabled projects point at the same Linear project slug.
+
+Each enabled project's `WORKFLOW.md` should set a unique `workspace.root`; the single-project default temp root is shared and will be rejected when more than one enabled project resolves to it.
+
+See [Running multiple projects today](multi-instance.md) for the supported multi-process approach.
+
 ## Tracker
 
 ```yaml

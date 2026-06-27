@@ -919,7 +919,7 @@ func quoteCommandArg(arg string) string {
 }
 
 func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentRuntimeConfig) error {
-	env := os.Environ()
+	env := scrubInheritedAgentEnv(os.Environ())
 
 	gitConfigPath, err := writeGitSafeDirectoryConfig(workspacePath)
 	if err != nil {
@@ -935,6 +935,33 @@ func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentR
 
 	cmd.Env = env
 	return nil
+}
+
+var inheritedAgentEnvKeys = map[string]struct{}{
+	"ANTHROPIC_API_KEY":    {},
+	"ANTHROPIC_AUTH_TOKEN": {},
+	"ANTHROPIC_BASE_URL":   {},
+	"LINEAR_API_KEY":       {},
+	"LINEAR_AUTH_TOKEN":    {},
+	"OPENAI_API_KEY":       {},
+	"OPENAI_AUTH_TOKEN":    {},
+	"OPENAI_BASE_URL":      {},
+}
+
+func scrubInheritedAgentEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		if _, drop := inheritedAgentEnvKeys[strings.ToUpper(key)]; drop {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func applyRuntimeEnv(env []string, cfg *api.AgentRuntimeConfig) []string {

@@ -1,6 +1,8 @@
 import {
   APIErrorResponse,
   IssueDetailResponse,
+  ProjectSummary,
+  ProjectsResponse,
   RefreshResponse,
   RetrySnapshot,
   RunningSnapshot,
@@ -10,36 +12,72 @@ import {
   StateSnapshot,
 } from './types'
 
-export async function fetchState(): Promise<StateSnapshot> {
-  return normalizeStateSnapshot(await fetchJSON<StateSnapshot>('/api/v1/state'))
+export async function fetchProjects(): Promise<ProjectsResponse> {
+  const response = await fetchJSON<ProjectsResponse>('/api/v1/projects')
+  return {
+    generated_at: response.generated_at || '',
+    projects: (response.projects || []).map(normalizeProjectSummary),
+    concurrency: {
+      max_concurrent_agents: response.concurrency?.max_concurrent_agents || 0,
+      used_agents: response.concurrency?.used_agents || 0,
+      available_agents: response.concurrency?.available_agents || 0,
+    },
+  }
 }
 
-export async function requestRefresh(): Promise<RefreshResponse> {
-  return fetchJSON<RefreshResponse>('/api/v1/refresh', { method: 'POST' })
+export async function fetchState(projectID?: string): Promise<StateSnapshot> {
+  return normalizeStateSnapshot(await fetchJSON<StateSnapshot>(projectPath(projectID, 'state')))
 }
 
-export async function fetchIssueDetail(identifier: string): Promise<IssueDetailResponse> {
-  return normalizeIssueDetail(await fetchJSON<IssueDetailResponse>(`/api/v1/${encodeURIComponent(identifier)}`))
+export async function requestRefresh(projectID?: string): Promise<RefreshResponse> {
+  return fetchJSON<RefreshResponse>(projectPath(projectID, 'refresh'), { method: 'POST' })
 }
 
-export async function fetchSettings(): Promise<SettingsResponse> {
-  return fetchJSON<SettingsResponse>('/api/v1/settings')
+export async function fetchIssueDetail(identifier: string, projectID?: string): Promise<IssueDetailResponse> {
+  const path = projectID
+    ? `/api/v1/projects/${encodeURIComponent(projectID)}/issues/${encodeURIComponent(identifier)}`
+    : `/api/v1/${encodeURIComponent(identifier)}`
+  return normalizeIssueDetail(await fetchJSON<IssueDetailResponse>(path))
 }
 
-export async function saveSettings(request: SettingsUpdateRequest): Promise<SettingsResponse> {
-  return fetchJSON<SettingsResponse>('/api/v1/settings', {
+export async function fetchSettings(projectID?: string): Promise<SettingsResponse> {
+  return fetchJSON<SettingsResponse>(projectPath(projectID, 'settings'))
+}
+
+export async function saveSettings(request: SettingsUpdateRequest, projectID?: string): Promise<SettingsResponse> {
+  return fetchJSON<SettingsResponse>(projectPath(projectID, 'settings'), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   })
 }
 
-export async function validateTrackerSettings(request: SettingsUpdateRequest): Promise<SettingsValidationResponse> {
-  return fetchJSON<SettingsValidationResponse>('/api/v1/settings/validate-tracker', {
+export async function validateTrackerSettings(request: SettingsUpdateRequest, projectID?: string): Promise<SettingsValidationResponse> {
+  return fetchJSON<SettingsValidationResponse>(projectPath(projectID, 'settings/validate-tracker'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   })
+}
+
+function projectPath(projectID: string | undefined, suffix: string) {
+  return projectID ? `/api/v1/projects/${encodeURIComponent(projectID)}/${suffix}` : `/api/v1/${suffix}`
+}
+
+function normalizeProjectSummary(project: ProjectSummary): ProjectSummary {
+  return {
+    ...project,
+    id: project.id || '',
+    name: project.name || project.id || 'Unnamed project',
+    workflow_path: project.workflow_path || '',
+    enabled: Boolean(project.enabled),
+    running: Boolean(project.running),
+    last_error: project.last_error || '',
+    max_concurrent_agents: project.max_concurrent_agents || 0,
+    counts: normalizeCounts(project.counts),
+    waiting_on_supervisor: Boolean(project.waiting_on_supervisor),
+    last_supervisor_deferred_at: project.last_supervisor_deferred_at || '',
+  }
 }
 
 function normalizeStateSnapshot(snapshot: StateSnapshot): StateSnapshot {
@@ -52,6 +90,8 @@ function normalizeStateSnapshot(snapshot: StateSnapshot): StateSnapshot {
     retrying: (snapshot.retrying || []).map(normalizeRetrySnapshot),
     codex_totals: snapshot.codex_totals || { input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0 },
     rate_limits: snapshot.rate_limits || null,
+    last_dispatch_deferred_reason: snapshot.last_dispatch_deferred_reason || '',
+    last_dispatch_deferred_at: snapshot.last_dispatch_deferred_at || '',
   }
 }
 

@@ -20,6 +20,12 @@ type AgentRunner interface {
 	Run(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.AgentRuntimeConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error
 }
 
+// DispatchLimiter optionally coordinates agent launch capacity across orchestrators.
+type DispatchLimiter interface {
+	TryAcquire() bool
+	Release()
+}
+
 type workerResult struct {
 	issueID string
 	err     error
@@ -30,6 +36,7 @@ type runtimeSnapshot struct {
 	tracker      api.Tracker
 	workspaceMgr *workspace.Manager
 	runner       AgentRunner
+	limiter      DispatchLimiter
 }
 
 const (
@@ -44,6 +51,7 @@ type Orchestrator struct {
 	tracker      api.Tracker
 	workspaceMgr *workspace.Manager
 	runner       AgentRunner
+	limiter      DispatchLimiter
 
 	mu             sync.Mutex
 	ticker         *time.Ticker
@@ -56,6 +64,9 @@ type Orchestrator struct {
 	completedCh    chan workerResult
 	retryCh        chan string
 	refreshCh      chan struct{}
+
+	lastDispatchDeferredReason string
+	lastDispatchDeferredAt     time.Time
 }
 
 // New creates a new Orchestrator. Call Start() to begin polling.
@@ -67,6 +78,13 @@ func New(cfg *api.WorkflowConfig, tracker api.Tracker, workspaceMgr *workspace.M
 		runner:       runner,
 		stopCh:       make(chan struct{}),
 	}
+}
+
+// SetDispatchLimiter configures an optional shared dispatch limiter.
+func (o *Orchestrator) SetDispatchLimiter(limiter DispatchLimiter) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.limiter = limiter
 }
 
 // Start initializes state, performs startup cleanup, and begins the poll loop.
@@ -180,6 +198,7 @@ func (o *Orchestrator) runtimeSnapshot() runtimeSnapshot {
 		tracker:      o.tracker,
 		workspaceMgr: o.workspaceMgr,
 		runner:       o.runner,
+		limiter:      o.limiter,
 	}
 }
 
@@ -302,6 +321,34 @@ func (o *Orchestrator) terminateWorkerLocked(issueID string) {
 	}
 }
 
+func (o *Orchestrator) releaseSupervisorSlot(acquired bool) {
+	if !acquired {
+		return
+	}
+	o.mu.Lock()
+	limiter := o.limiter
+	o.mu.Unlock()
+	if limiter != nil {
+		limiter.Release()
+	}
+}
+
+func (o *Orchestrator) setDispatchDeferred(reason string, at time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.lastDispatchDeferredReason = reason
+	o.lastDispatchDeferredAt = at
+}
+
+func (o *Orchestrator) clearDispatchDeferred(reason string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if reason == "" || o.lastDispatchDeferredReason == reason {
+		o.lastDispatchDeferredReason = ""
+		o.lastDispatchDeferredAt = time.Time{}
+	}
+}
+
 // removeRunningLocked removes a running entry and updates cumulative totals.
 // Callers must hold o.mu.
 func (o *Orchestrator) removeRunningLocked(id string) {
@@ -310,6 +357,10 @@ func (o *Orchestrator) removeRunningLocked(id string) {
 		return
 	}
 	delete(o.state.Running, id)
+	if entry.SupervisorSlotAcquired && o.limiter != nil {
+		entry.SupervisorSlotAcquired = false
+		o.limiter.Release()
+	}
 	elapsedSec := time.Since(entry.StartedAt).Seconds()
 	o.state.CodexTotals.SecondsRunning += elapsedSec
 	o.state.CodexTotals.InputTokens += entry.Session.CodexInputTokens
@@ -339,7 +390,9 @@ func (o *Orchestrator) dispatchEligibleIssues() {
 			log.Printf("action=dispatch_deferred reason=no_global_slots")
 			break
 		}
-		o.dispatch(issue)
+		if !o.dispatch(issue) {
+			break
+		}
 	}
 }
 
@@ -456,11 +509,21 @@ func issueSequence(identifier string) (string, int, bool) {
 	return strings.ToUpper(identifier[:idx]), seq, true
 }
 
-func (o *Orchestrator) dispatch(issue api.Issue) {
+func (o *Orchestrator) dispatch(issue api.Issue) bool {
 	runtime := o.runtimeSnapshot()
 	if o.perStateSlots(issue.State) <= 0 {
 		log.Printf("issue_id=%s issue_identifier=%s action=dispatch_deferred reason=no_state_slots state=%q", issue.ID, issue.Identifier, issue.State)
-		return
+		return true
+	}
+
+	supervisorSlotAcquired := false
+	if runtime.limiter != nil {
+		if !runtime.limiter.TryAcquire() {
+			log.Printf("issue_id=%s issue_identifier=%s action=dispatch_deferred reason=no_supervisor_slots", issue.ID, issue.Identifier)
+			o.setDispatchDeferred("no_supervisor_slots", time.Now())
+			return false
+		}
+		supervisorSlotAcquired = true
 	}
 
 	o.mu.Lock()
@@ -474,8 +537,9 @@ func (o *Orchestrator) dispatch(issue api.Issue) {
 		cancel()
 		if err != nil {
 			log.Printf("issue_id=%s issue_identifier=%s action=working_state_transition failed=%v", issue.ID, issue.Identifier, err)
+			o.releaseSupervisorSlot(supervisorSlotAcquired)
 			o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("working state transition: %v", err))
-			return
+			return true
 		}
 		log.Printf("issue_id=%s issue_identifier=%s action=working_state_transition from=%q to=%q", issue.ID, issue.Identifier, issue.State, updated.State)
 		issue = updated
@@ -484,8 +548,9 @@ func (o *Orchestrator) dispatch(issue api.Issue) {
 	workspace, err := runtime.workspaceMgr.PrepareWorkspace(issue)
 	if err != nil {
 		log.Printf("issue_id=%s issue_identifier=%s action=workspace_prepare failed=%v", issue.ID, issue.Identifier, err)
+		o.releaseSupervisorSlot(supervisorSlotAcquired)
 		o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("workspace prepare: %v", err))
-		return
+		return true
 	}
 
 	// after_create hook (fatal to workspace creation).
@@ -493,8 +558,9 @@ func (o *Orchestrator) dispatch(issue api.Issue) {
 		if err := runtime.workspaceMgr.RunHook("after_create", *runtime.cfg.Hooks.AfterCreate, workspace.Path, runtime.cfg.Hooks.TimeoutMs); err != nil {
 			log.Printf("issue_id=%s issue_identifier=%s action=after_create failed=%v", issue.ID, issue.Identifier, err)
 			_ = runtime.workspaceMgr.RemoveWorkspace(issue.Identifier)
+			o.releaseSupervisorSlot(supervisorSlotAcquired)
 			o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("after_create hook: %v", err))
-			return
+			return true
 		}
 	}
 
@@ -502,18 +568,21 @@ func (o *Orchestrator) dispatch(issue api.Issue) {
 	if runtime.cfg.Hooks.BeforeRun != nil {
 		if err := runtime.workspaceMgr.RunHook("before_run", *runtime.cfg.Hooks.BeforeRun, workspace.Path, runtime.cfg.Hooks.TimeoutMs); err != nil {
 			log.Printf("issue_id=%s issue_identifier=%s action=before_run failed=%v", issue.ID, issue.Identifier, err)
+			o.releaseSupervisorSlot(supervisorSlotAcquired)
 			o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("before_run hook: %v", err))
-			return
+			return true
 		}
 	}
 
 	o.mu.Lock()
 	o.state.Running[issue.ID] = &api.RunningEntry{
-		Issue:         issue,
-		StartedAt:     time.Now(),
-		WorkspacePath: workspace.Path,
+		Issue:                  issue,
+		StartedAt:              time.Now(),
+		WorkspacePath:          workspace.Path,
+		SupervisorSlotAcquired: supervisorSlotAcquired,
 	}
 	o.mu.Unlock()
+	o.clearDispatchDeferred("no_supervisor_slots")
 	log.Printf("issue_id=%s issue_identifier=%s action=dispatch_started state=%q workspace=%q", issue.ID, issue.Identifier, issue.State, workspace.Path)
 	if stage.Kind == "review_resolution" {
 		o.postStatusComment(issue, runtime, "Simphony review resolution started", fmt.Sprintf("Autonomous PR/code-review resolution is running.\n\nPolicy:\n- Require checks green: %t\n- Require review approval: %t\n- Unresolved comments: %s",
@@ -531,8 +600,14 @@ func (o *Orchestrator) dispatch(issue api.Issue) {
 	o.workerWg.Add(1)
 	go func() {
 		defer o.workerWg.Done()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				o.completedCh <- workerResult{issueID: issue.ID, err: fmt.Errorf("worker panic: %v", recovered)}
+			}
+		}()
 		o.runWorker(ctx, issue, workspace, runtime)
 	}()
+	return true
 }
 
 func (o *Orchestrator) runWorker(ctx context.Context, issue api.Issue, workspace *api.Workspace, runtime runtimeSnapshot) {
@@ -826,17 +901,9 @@ func (o *Orchestrator) handleWorkerResult(result workerResult) {
 		o.mu.Unlock()
 		return
 	}
-	delete(o.state.Running, result.issueID)
-	delete(o.workerCancels, result.issueID)
-
-	// Update cumulative runtime.
-	elapsedSec := time.Since(entry.StartedAt).Seconds()
-	o.state.CodexTotals.SecondsRunning += elapsedSec
-	o.state.CodexTotals.InputTokens += entry.Session.CodexInputTokens
-	o.state.CodexTotals.OutputTokens += entry.Session.CodexOutputTokens
-	o.state.CodexTotals.TotalTokens += entry.Session.CodexTotalTokens
-
 	identifier := entry.Issue.Identifier
+	o.removeRunningLocked(result.issueID)
+	delete(o.workerCancels, result.issueID)
 	o.mu.Unlock()
 
 	if result.err != nil {
@@ -1443,10 +1510,18 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 		return retrying[i].IssueIdentifier < retrying[j].IssueIdentifier
 	})
 
+	var lastDeferredAt *time.Time
+	if !o.lastDispatchDeferredAt.IsZero() {
+		at := o.lastDispatchDeferredAt
+		lastDeferredAt = &at
+	}
+
 	return api.StateSnapshot{
-		GeneratedAt:         now,
-		PollIntervalMs:      o.state.PollIntervalMs,
-		MaxConcurrentAgents: o.state.MaxConcurrentAgents,
+		GeneratedAt:                now,
+		PollIntervalMs:             o.state.PollIntervalMs,
+		MaxConcurrentAgents:        o.state.MaxConcurrentAgents,
+		LastDispatchDeferredReason: o.lastDispatchDeferredReason,
+		LastDispatchDeferredAt:     lastDeferredAt,
 		Counts: api.StateCounts{
 			Running:   len(o.state.Running),
 			Retrying:  len(o.state.RetryAttempts),
