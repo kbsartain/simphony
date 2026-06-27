@@ -12,6 +12,7 @@ Start with the root [README](../README.md) for the project overview and quick st
 - [Two-project registry example](examples/two-projects.simphony.yaml): sample global config for a local workstation.
 - [Architecture](architecture.md): runtime flow and package responsibilities.
 - [Multi-project backlog](multi-project-backlog.md): phased plan for isolated project runtimes and aggregate UI support.
+- [Future enhancements backlog](future-enhancements.md): post-E2E follow-up ideas for auth, observability, onboarding, provider diagnostics, and operational hardening.
 - [HTTP API](api.md): state, issue detail, refresh, and error responses.
 - [Operations](operations.md): startup, logs, refreshes, hot reload, shutdown, and retries.
 - [Development](development.md): local backend and dashboard workflows.

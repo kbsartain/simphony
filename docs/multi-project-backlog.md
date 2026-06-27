@@ -6,6 +6,8 @@ This backlog captures the phased path for supporting multiple concurrent Simphon
 
 Support multiple long-running coding projects from one Simphony installation while keeping each project's workflow, Linear configuration, workspaces, agent sessions, retry state, hooks, and secrets isolated.
 
+Status: this implementation backlog is complete for the current iteration. Follow-on ideas are tracked in [Future Enhancements Backlog](future-enhancements.md), and the next step is wiring a real project to Linear for end-to-end validation.
+
 The preferred architecture is a supervisor plus isolated project runtimes:
 
 ```text
