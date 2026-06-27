@@ -255,7 +255,7 @@ Acceptance:
 ## Open Questions
 
 - Answered: global agent defaults fill missing values; project `agent_runtime` fields override individual global fields.
-- Should disabled projects be hidden by default or shown as inactive in the dashboard?
+- Answered: disabled projects are shown as inactive so operators can edit, re-enable, or remove them from Project Setup.
 - Should project IDs be manually chosen, derived from folder names, or both?
 - Should multi-project mode require dashboard authentication before binding outside localhost?
 - Should the global concurrency gate use strict FIFO fairness or lightweight best-effort fairness?

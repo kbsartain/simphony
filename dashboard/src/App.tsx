@@ -1353,8 +1353,8 @@ function ProjectSetupView(props: {
         <div className="setup-intro">
           <h3>{props.projectMode ? `${configuredCount} configured project${configuredCount === 1 ? '' : 's'}` : 'Single-project mode'}</h3>
           <p>
-            Project setup is the future home for adding projects, editing registry defaults, and controlling project lifecycle. Today, it reflects
-            the configured registry and links into each project's editable workflow settings.
+            Project setup manages the registry file, project entries, supervisor defaults, isolation guardrails, and shared agent runtime defaults.
+            Registry changes are saved immediately and apply to workers after restart.
           </p>
         </div>
         <div className="startup-mode-panel">
