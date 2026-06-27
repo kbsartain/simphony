@@ -185,6 +185,27 @@ func (l *countingLimiter) Used() int {
 	return l.used
 }
 
+type ownerRecordingLimiter struct {
+	acquireOwner string
+	forgotOwner  string
+}
+
+func (l *ownerRecordingLimiter) TryAcquire() bool {
+	l.acquireOwner = "<unowned>"
+	return true
+}
+
+func (l *ownerRecordingLimiter) TryAcquireFor(owner string) bool {
+	l.acquireOwner = owner
+	return true
+}
+
+func (l *ownerRecordingLimiter) ForgetOwner(owner string) {
+	l.forgotOwner = owner
+}
+
+func (l *ownerRecordingLimiter) Release() {}
+
 func (m *mockRunner) Run(ctx context.Context, issue api.Issue, w *api.Workspace, attempt *int, cfg *api.CodexConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), cb func(api.AgentEvent)) error {
 	m.mu.Lock()
 	m.runs = append(m.runs, issue)
@@ -352,6 +373,25 @@ func TestOrchestrator_RedactsConfiguredSecretsFromLogs(t *testing.T) {
 	}
 	if !strings.Contains(got, "visible-value") {
 		t.Fatalf("redacted message removed non-secret value: %s", got)
+	}
+}
+
+func TestOrchestrator_UsesProjectIDForOwnerAwareLimiter(t *testing.T) {
+	orch := New(defaultConfig(), nil, nil, nil)
+	orch.SetLogContext("alpha", "Alpha")
+	limiter := &ownerRecordingLimiter{}
+
+	if !orch.tryAcquireSupervisorSlot(limiter) {
+		t.Fatal("tryAcquireSupervisorSlot returned false")
+	}
+	if limiter.acquireOwner != "alpha" {
+		t.Fatalf("acquire owner = %q, want alpha", limiter.acquireOwner)
+	}
+
+	orch.SetDispatchLimiter(limiter)
+	orch.forgetSupervisorWait()
+	if limiter.forgotOwner != "alpha" {
+		t.Fatalf("forgot owner = %q, want alpha", limiter.forgotOwner)
 	}
 }
 

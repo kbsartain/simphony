@@ -176,7 +176,7 @@ Backlog:
 Status:
 
 - Done: `MP-5.1`, `MP-5.2`, `MP-5.3`, `MP-5.4`, and `MP-5.5`. The supervisor now creates one shared non-blocking slot limiter from `concurrency.max_concurrent_agents`, passes it to every project runtime, and each orchestrator acquires a slot immediately before claiming and launching an agent. Slots are released on normal cleanup, cancellation/stop, pre-run failure, and recovered worker panic. Registry `default_project_max_concurrent_agents` fills missing workflow limits, and `projects[].max_concurrent_agents` caps one project even if its workflow requests more. The project API and dashboard expose global slot usage and projects waiting on supervisor capacity.
-- Partial: `MP-5.6`; limiter edge cases, optional global-cap behavior, shared limiter wiring, stop release, panic release, and before-run failure release are covered. Strict fairness/starvation coverage remains a future hardening test.
+- Done: `MP-5.6`; limiter edge cases, optional global-cap behavior, shared limiter wiring, stop release, panic release, before-run failure release, FIFO waiting order, stale-waiter cleanup, and owner-aware orchestrator acquisition are covered.
 
 Acceptance:
 

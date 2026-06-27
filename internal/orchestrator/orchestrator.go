@@ -26,6 +26,11 @@ type DispatchLimiter interface {
 	Release()
 }
 
+type ownerAwareDispatchLimiter interface {
+	TryAcquireFor(owner string) bool
+	ForgetOwner(owner string)
+}
+
 type workerResult struct {
 	issueID string
 	err     error
@@ -228,6 +233,7 @@ func (o *Orchestrator) Stop() {
 	if o.ticker != nil {
 		o.ticker.Stop()
 	}
+	o.forgetSupervisorWait()
 	close(o.stopCh)
 
 	o.mu.Lock()
@@ -443,6 +449,37 @@ func (o *Orchestrator) releaseSupervisorSlot(acquired bool) {
 	}
 }
 
+func (o *Orchestrator) tryAcquireSupervisorSlot(limiter DispatchLimiter) bool {
+	if limiter == nil {
+		return true
+	}
+	if ownerAware, ok := limiter.(ownerAwareDispatchLimiter); ok {
+		if owner := o.projectLogID(); owner != "" {
+			return ownerAware.TryAcquireFor(owner)
+		}
+	}
+	return limiter.TryAcquire()
+}
+
+func (o *Orchestrator) forgetSupervisorWait() {
+	o.mu.Lock()
+	limiter := o.limiter
+	o.mu.Unlock()
+	ownerAware, ok := limiter.(ownerAwareDispatchLimiter)
+	if !ok {
+		return
+	}
+	if owner := o.projectLogID(); owner != "" {
+		ownerAware.ForgetOwner(owner)
+	}
+}
+
+func (o *Orchestrator) projectLogID() string {
+	o.logMu.RLock()
+	defer o.logMu.RUnlock()
+	return o.logProjectID
+}
+
 func (o *Orchestrator) setDispatchDeferred(reason string, at time.Time) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -494,10 +531,14 @@ func (o *Orchestrator) dispatchEligibleIssues() {
 	eligibleCount := len(candidates)
 	o.logf("action=candidate_fetch result_count=%d eligible_count=%d", candidateCount, eligibleCount)
 	candidates = o.sortIssues(candidates)
+	if eligibleCount == 0 {
+		o.forgetSupervisorWait()
+	}
 
 	for _, issue := range candidates {
 		if !o.canDispatch() {
 			o.logf("action=dispatch_deferred reason=no_global_slots")
+			o.forgetSupervisorWait()
 			break
 		}
 		if !o.dispatch(issue) {
@@ -628,7 +669,7 @@ func (o *Orchestrator) dispatch(issue api.Issue) bool {
 
 	supervisorSlotAcquired := false
 	if runtime.limiter != nil {
-		if !runtime.limiter.TryAcquire() {
+		if !o.tryAcquireSupervisorSlot(runtime.limiter) {
 			o.logf("issue_id=%s issue_identifier=%s action=dispatch_deferred reason=no_supervisor_slots", issue.ID, issue.Identifier)
 			o.setDispatchDeferred("no_supervisor_slots", time.Now())
 			return false
