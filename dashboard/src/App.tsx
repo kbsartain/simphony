@@ -249,7 +249,7 @@ const SKILL_STAGE_OPTIONS: SkillStageOption[] = [
 ]
 
 function App() {
-  const [page, setPage] = useState<Page>('runtime')
+  const [page, setPage] = useState<Page>(() => initialDashboardLocation().page)
   const [projectDiscoveryComplete, setProjectDiscoveryComplete] = useState(false)
   const [projectMode, setProjectMode] = useState(false)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
@@ -272,7 +272,7 @@ function App() {
   const [registrySettingsDraft, setRegistrySettingsDraft] = useState<RegistrySettingsDraft>(emptyRegistrySettingsDraft())
   const [registryRuntimeDraft, setRegistryRuntimeDraft] = useState<RegistryRuntimeDraft>(emptyRegistryRuntimeDraft())
   const [supervisorConcurrency, setSupervisorConcurrency] = useState<SupervisorConcurrency | null>(null)
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => initialDashboardLocation().projectId)
   const [state, setState] = useState<StateSnapshot | null>(null)
   const [settings, setSettings] = useState<SettingsResponse | null>(null)
   const [settingsDraft, setSettingsDraft] = useState('')
@@ -374,6 +374,23 @@ function App() {
     void loadRuntimeMode()
     void loadProjects()
   }, [loadProjects, loadRuntimeMode])
+
+  useEffect(() => {
+    const onPopState = () => {
+      const location = initialDashboardLocation()
+      setPage(location.page)
+      setSelectedProjectId(location.projectId)
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  useEffect(() => {
+    if (!projectDiscoveryComplete) {
+      return
+    }
+    syncDashboardLocation(page, projectMode ? selectedProjectId : null)
+  }, [page, projectDiscoveryComplete, projectMode, selectedProjectId])
 
   useEffect(() => {
     if (!projectMode) {
@@ -3149,6 +3166,44 @@ function normalizeError(err: unknown) {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function initialDashboardLocation(): { page: Page; projectId: string | null } {
+  const params = new URLSearchParams(window.location.search)
+  const page = normalizePage(params.get('view') || params.get('page'))
+  const projectId = cleanProjectParam(params.get('project'))
+  return { page, projectId }
+}
+
+function syncDashboardLocation(page: Page, projectId: string | null) {
+  const url = new URL(window.location.href)
+  if (page === 'runtime') {
+    url.searchParams.delete('view')
+  } else {
+    url.searchParams.set('view', page)
+  }
+  if (projectId) {
+    url.searchParams.set('project', projectId)
+  } else {
+    url.searchParams.delete('project')
+  }
+  const next = `${url.pathname}${url.search}${url.hash}`
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  if (next !== current) {
+    window.history.replaceState(null, '', next)
+  }
+}
+
+function normalizePage(value: string | null): Page {
+  if (value === 'settings' || value === 'setup') {
+    return value
+  }
+  return 'runtime'
+}
+
+function cleanProjectParam(value: string | null) {
+  const trimmed = value?.trim() || ''
+  return trimmed || null
 }
 
 function percentOf(value: number, total: number) {
