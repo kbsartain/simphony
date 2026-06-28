@@ -196,21 +196,32 @@ Global `agent_runtime` defaults can also live in `simphony.yaml`; each project `
 
 Set `codex.model` to pass a model name to Codex app-server. Set `codex.model_provider` when your Codex installation needs an explicit provider name. These values are optional; when omitted, Codex uses its own configured defaults.
 
-Set `codex.reasoning_effort` to control per-turn reasoning globally. Use `codex.stage_overrides` to change model, provider, or reasoning by pipeline stage:
+Set `codex.reasoning_effort` to control per-turn reasoning globally. Use `agent_runtime.stage_overrides` or `codex.stage_overrides` to change model routing by pipeline stage. The SDK provider itself remains project-level, but model, provider label, endpoint URL, API key, auth token, environment values, reasoning effort, and skills can vary by stage:
 
 ```yaml
-codex:
+agent_runtime:
+  provider: codex
   model: gpt-5.4
+  model_provider: openai
+  endpoint_url: $OPENAI_BASE_URL
+  api_key: $OPENAI_API_KEY
   reasoning_effort: high
   skills:
     - architecture-standards
   stage_overrides:
     coding:
+      model_provider: kimi
+      model: kimi-k2-coder
+      endpoint_url: $KIMI_BASE_URL
+      api_key: $KIMI_API_KEY
       reasoning_effort: medium
       skills:
         - conjit-product-ui
     review:
+      model_provider: openai
       model: gpt-5.5
+      endpoint_url: $OPENAI_BASE_URL
+      api_key: $OPENAI_API_KEY
       reasoning_effort: xhigh
       skills:
         - code-review
@@ -225,9 +236,9 @@ codex:
       reasoning_effort: high
 ```
 
-The model and provider fields are free-form strings. That lets a workflow select configured alternatives such as Claude, Gemini, Kimi, GLM, or DeepSeek through whatever provider/router your Codex installation supports.
+The model, provider, and endpoint fields are free-form strings. That lets a workflow select configured alternatives such as Claude, Gemini, Kimi, GLM, or DeepSeek through direct compatible endpoints or through whatever provider/router your Codex installation supports.
 
-`codex.skills` and `codex.stage_overrides.<stage>.skills` let you attach default skills by stage. Skill names are resolved through Codex at runtime when possible; use `{ name, path }` entries to pin a specific local skill file.
+`agent_runtime.skills`, `codex.skills`, and `stage_overrides.<stage>.skills` let you attach default skills by stage. Skill names are resolved through Codex at runtime when possible; use `{ name, path }` entries to pin a specific local skill file.
 
 Enable autonomous PR review handling with:
 

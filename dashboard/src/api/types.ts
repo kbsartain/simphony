@@ -392,6 +392,10 @@ export interface CodexStageOverride {
   model?: string;
   model_provider?: string;
   reasoning_effort?: string;
+  endpoint_url?: string;
+  api_key_configured?: boolean;
+  auth_token_configured?: boolean;
+  env?: Record<string, string>;
   skills?: CodexSkillRef[];
 }
 

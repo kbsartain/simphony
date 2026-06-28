@@ -1202,6 +1202,27 @@ func effectiveCodexConfig(cfg *api.CodexConfig, stage api.PipelineStage) api.Cod
 	if override.ReasoningEffort != "" {
 		effective.ReasoningEffort = override.ReasoningEffort
 	}
+	if override.EndpointURL != "" {
+		effective.EndpointURL = override.EndpointURL
+	}
+	if override.APIKeyConfigured {
+		effective.APIKey = override.APIKey
+		effective.APIKeyConfigured = true
+	}
+	if override.AuthTokenConfigured {
+		effective.AuthToken = override.AuthToken
+		effective.AuthTokenConfigured = true
+	}
+	if len(override.Env) > 0 {
+		env := make(map[string]string, len(effective.Env)+len(override.Env))
+		for key, value := range effective.Env {
+			env[key] = value
+		}
+		for key, value := range override.Env {
+			env[key] = value
+		}
+		effective.Env = env
+	}
 	if len(override.Skills) > 0 {
 		effective.Skills = appendUniqueSkills(effective.Skills, override.Skills...)
 	}

@@ -725,11 +725,21 @@ func TestBuildParamsIncludeModelSelection(t *testing.T) {
 		Model:           "gpt-5.4",
 		ModelProvider:   "openai",
 		ReasoningEffort: "high",
+		EndpointURL:     "https://openai.example/v1",
+		APIKey:          "openai-key",
+		AuthToken:       "openai-token",
+		Env:             map[string]string{"ROUTER_MODE": "default"},
 		StageOverrides: map[string]api.CodexStageOverride{
 			"review": {
-				Model:           "claude-opus-4.1",
-				ModelProvider:   "anthropic",
-				ReasoningEffort: "xhigh",
+				Model:               "claude-opus-4.1",
+				ModelProvider:       "anthropic",
+				ReasoningEffort:     "xhigh",
+				EndpointURL:         "https://anthropic.example/v1",
+				APIKey:              "anthropic-key",
+				APIKeyConfigured:    true,
+				AuthToken:           "anthropic-token",
+				AuthTokenConfigured: true,
+				Env:                 map[string]string{"ROUTER_MODE": "review", "STAGE_ONLY": "1"},
 			},
 		},
 	}
@@ -759,6 +769,12 @@ func TestBuildParamsIncludeModelSelection(t *testing.T) {
 	}
 	if reviewCfg.ReasoningEffort != "xhigh" {
 		t.Fatalf("review reasoning = %q, want xhigh", reviewCfg.ReasoningEffort)
+	}
+	if reviewCfg.EndpointURL != "https://anthropic.example/v1" || reviewCfg.APIKey != "anthropic-key" || reviewCfg.AuthToken != "anthropic-token" {
+		t.Fatalf("review routing = endpoint %q api %q auth %q, want stage routing", reviewCfg.EndpointURL, reviewCfg.APIKey, reviewCfg.AuthToken)
+	}
+	if reviewCfg.Env["ROUTER_MODE"] != "review" || reviewCfg.Env["STAGE_ONLY"] != "1" {
+		t.Fatalf("review env = %+v, want merged stage env", reviewCfg.Env)
 	}
 	reviewTurnParams := buildTurnStartParams("thread-1", workspace, &reviewCfg, "review", nil, nil)
 	if reviewTurnParams["model"] != "claude-opus-4.1" || reviewTurnParams["effort"] != "xhigh" {

@@ -979,12 +979,29 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 			}
 			override.ReasoningEffort = reasoningEffort
 		}
+		if v, ok := getString(stageMap, "endpoint_url"); ok {
+			override.EndpointURL = strings.TrimSpace(ResolveEnvVar(v))
+		}
+		if v, ok := getString(stageMap, "api_key"); ok {
+			override.APIKey = ResolveEnvVar(strings.TrimSpace(v))
+			override.APIKeyConfigured = strings.TrimSpace(v) != ""
+		}
+		if v, ok := getString(stageMap, "auth_token"); ok {
+			override.AuthToken = ResolveEnvVar(strings.TrimSpace(v))
+			override.AuthTokenConfigured = strings.TrimSpace(v) != ""
+		}
+		if env, ok := getStringMap(stageMap, "env"); ok {
+			override.Env = make(map[string]string, len(env))
+			for k, v := range env {
+				override.Env[k] = v
+			}
+		}
 		skills, err := getSkillRefs(stageMap, "skills")
 		if err != nil {
 			return nil, fmt.Errorf("%s: %s.stage_overrides.%s.skills %w", api.ErrWorkflowParseError, section, stageName, err)
 		}
 		override.Skills = skills
-		if override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && len(override.Skills) == 0 {
+		if override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && override.EndpointURL == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured && len(override.Env) == 0 && len(override.Skills) == 0 {
 			continue
 		}
 		overrides[stageKey] = override

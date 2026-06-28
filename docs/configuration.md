@@ -200,6 +200,17 @@ agent_runtime:
   reasoning_effort: high
   endpoint_url: $OPENAI_BASE_URL
   api_key: $OPENAI_API_KEY
+  stage_overrides:
+    coding:
+      model_provider: kimi
+      model: kimi-k2-coder
+      endpoint_url: $KIMI_BASE_URL
+      api_key: $KIMI_API_KEY
+    review:
+      model_provider: openai
+      model: gpt-5.5
+      endpoint_url: $OPENAI_BASE_URL
+      api_key: $OPENAI_API_KEY
   env:
     OPENAI_ORG_ID: $OPENAI_ORG_ID
 ```
@@ -212,6 +223,8 @@ agent_runtime:
 Common fields in `agent_runtime` override provider-specific defaults from `codex:` or `claude:`. This lets a workflow switch SDKs by changing one selector while keeping shared model, endpoint, token, timeout, and stage settings in one place.
 
 `endpoint_url`, `api_key`, `auth_token`, and `env` values beginning with `$` are resolved from environment variables. Secrets are passed only to the agent subprocess environment and are omitted from the resolved API JSON. For `provider: codex`, `api_key` maps to `OPENAI_API_KEY` and `endpoint_url` maps to `OPENAI_BASE_URL`. For `provider: claude`, `api_key` maps to `ANTHROPIC_API_KEY` and `endpoint_url` maps to `ANTHROPIC_BASE_URL`.
+
+`agent_runtime.provider` is selected once per project and applies to every stage in that project. `stage_overrides` can change model routing within that SDK for `coding`, `review`, `review_resolution`, and `merge`. Stage overrides support `model`, `model_provider`, `reasoning_effort`, `endpoint_url`, `api_key`, `auth_token`, `env`, and `skills`. Use stage-level endpoint and credential overrides when stages target different direct provider endpoints, such as Kimi for coding and OpenAI for review. If all models are available through one router endpoint, the top-level endpoint and key can be shared.
 
 Use these fields for OpenAI-compatible or Anthropic-compatible gateways:
 
@@ -278,7 +291,7 @@ The runner appends `--listen stdio://` when it is not already present. The subpr
 
 `reasoning_effort` is optional and is passed to Codex as the per-turn `effort` override. Accepted values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`; `x-high` and `x_high` are normalized to `xhigh`.
 
-`stage_overrides` can override `model`, `model_provider`, and `reasoning_effort` for a pipeline stage. Known stage keys are `coding`, `review`, `review_resolution`, and `merge`; unknown stage keys are accepted for forward compatibility and ignored until a matching stage exists.
+`stage_overrides` can override `model`, `model_provider`, `reasoning_effort`, `endpoint_url`, `api_key`, `auth_token`, `env`, and `skills` for a pipeline stage. Known stage keys are `coding`, `review`, `review_resolution`, and `merge`; unknown stage keys are accepted for forward compatibility and ignored until a matching stage exists. Provider-specific `codex.stage_overrides` and `claude.stage_overrides` use the same stage override shape as `agent_runtime.stage_overrides`.
 
 `skills` selects default Codex skills for every stage. `stage_overrides.<stage>.skills` adds stage-specific skills. Skill entries can be simple names, which Simphony resolves through Codex `skills/list` at runtime, or objects with `name` and `path` when you want to pin a specific local `SKILL.md`. Resolved skills are sent as Codex skill input items on each turn; unresolved names are included in the prompt as visible guidance.
 

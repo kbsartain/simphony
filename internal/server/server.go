@@ -592,6 +592,18 @@ func runtimeConfigForResponse(runtime api.AgentRuntimeConfig) api.AgentRuntimeCo
 	if len(runtime.Env) > 0 {
 		runtime.Env = maskEnvMap(runtime.Env)
 	}
+	if len(runtime.StageOverrides) > 0 {
+		masked := make(map[string]api.AgentStageOverride, len(runtime.StageOverrides))
+		for stage, override := range runtime.StageOverrides {
+			override.APIKey = ""
+			override.AuthToken = ""
+			if len(override.Env) > 0 {
+				override.Env = maskEnvMap(override.Env)
+			}
+			masked[stage] = override
+		}
+		runtime.StageOverrides = masked
+	}
 	return runtime
 }
 
@@ -602,6 +614,7 @@ func sanitizeSettingsConfigForResponse(configMap map[string]interface{}) map[str
 		maskNestedString(cloned, []string{section, "api_key"})
 		maskNestedString(cloned, []string{section, "auth_token"})
 		maskNestedEnv(cloned, []string{section, "env"})
+		maskStageOverrideSecrets(cloned, section)
 	}
 	return cloned
 }
@@ -630,7 +643,52 @@ func mergeMaskedSecrets(next map[string]interface{}, current map[string]interfac
 	} {
 		mergeMaskedEnvValues(merged, current, path)
 	}
+	for _, section := range []string{"agent_runtime", "codex", "claude"} {
+		mergeMaskedStageOverrideSecrets(merged, current, section)
+	}
 	return merged
+}
+
+func maskStageOverrideSecrets(configMap map[string]interface{}, section string) {
+	overrides := nestedMap(configMap, []string{section, "stage_overrides"})
+	if overrides == nil {
+		return
+	}
+	for _, rawStage := range overrides {
+		stageMap, ok := rawStage.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		maskNestedString(stageMap, []string{"api_key"})
+		maskNestedString(stageMap, []string{"auth_token"})
+		maskNestedEnv(stageMap, []string{"env"})
+	}
+}
+
+func mergeMaskedStageOverrideSecrets(next map[string]interface{}, current map[string]interface{}, section string) {
+	nextOverrides := nestedMap(next, []string{section, "stage_overrides"})
+	currentOverrides := nestedMap(current, []string{section, "stage_overrides"})
+	if nextOverrides == nil || currentOverrides == nil {
+		return
+	}
+	for stageName, rawNext := range nextOverrides {
+		nextStage, ok := rawNext.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		currentStage, ok := currentOverrides[stageName].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"api_key", "auth_token"} {
+			if nestedString(nextStage, []string{key}) == settingsSecretMask {
+				if currentValue := nestedString(currentStage, []string{key}); currentValue != "" {
+					setNestedString(nextStage, []string{key}, currentValue)
+				}
+			}
+		}
+		mergeMaskedEnvValues(nextStage, currentStage, []string{"env"})
+	}
 }
 
 func mergeMaskedEnvValues(next map[string]interface{}, current map[string]interface{}, path []string) {

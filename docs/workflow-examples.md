@@ -154,6 +154,17 @@ agent_runtime:
   model: qwen-coder
   endpoint_url: https://openai-compatible.example/v1
   api_key: $ROUTER_API_KEY
+  stage_overrides:
+    coding:
+      model_provider: kimi
+      model: kimi-k2-coder
+      endpoint_url: $KIMI_BASE_URL
+      api_key: $KIMI_API_KEY
+    review:
+      model_provider: openai
+      model: gpt-5.5
+      endpoint_url: $OPENAI_BASE_URL
+      api_key: $OPENAI_API_KEY
 ```
 
 ```yaml
@@ -163,6 +174,8 @@ agent_runtime:
   endpoint_url: https://anthropic-compatible.example
   api_key: $ANTHROPIC_COMPATIBLE_API_KEY
 ```
+
+The SDK provider is selected once per project, but each stage can override model routing fields. Use stage-level `endpoint_url`, `api_key`, or `auth_token` when a direct provider endpoint is required for a stage-specific model.
 
 ## Safer First Run
 

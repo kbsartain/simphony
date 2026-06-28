@@ -290,7 +290,13 @@ func TestResolveConfig_ModelAndPipeline(t *testing.T) {
 					"review": map[string]interface{}{
 						"model":            "claude-opus-4.1",
 						"model_provider":   "anthropic",
+						"endpoint_url":     "https://anthropic-stage.example",
+						"api_key":          "$TEST_STAGE_API_KEY",
+						"auth_token":       "$TEST_STAGE_AUTH_TOKEN",
 						"reasoning_effort": "x_high",
+						"env": map[string]interface{}{
+							"STAGE_ROUTER": "review",
+						},
 					},
 				},
 			},
@@ -322,6 +328,12 @@ func TestResolveConfig_ModelAndPipeline(t *testing.T) {
 	reviewOverride := cfg.Codex.StageOverrides["review"]
 	if reviewOverride.Model != "claude-opus-4.1" || reviewOverride.ModelProvider != "anthropic" || reviewOverride.ReasoningEffort != "xhigh" {
 		t.Fatalf("review override = %+v, want model/provider/xhigh", reviewOverride)
+	}
+	if reviewOverride.EndpointURL != "https://anthropic-stage.example" || reviewOverride.APIKey != "" || reviewOverride.AuthToken != "" || !reviewOverride.APIKeyConfigured || !reviewOverride.AuthTokenConfigured {
+		t.Fatalf("review routing override = %+v, want endpoint and configured empty env secrets", reviewOverride)
+	}
+	if reviewOverride.Env["STAGE_ROUTER"] != "review" {
+		t.Fatalf("review env override = %+v, want STAGE_ROUTER", reviewOverride.Env)
 	}
 	if cfg.Pipeline.ReviewState != "Reviewing" || cfg.Pipeline.ReviewResolutionState != "Review Resolution" || cfg.Pipeline.MergeState != "Approved" || cfg.Pipeline.DoneState != "Shipped" {
 		t.Fatalf("pipeline = %+v, want custom states", cfg.Pipeline)

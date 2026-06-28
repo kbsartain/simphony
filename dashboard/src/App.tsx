@@ -2132,7 +2132,7 @@ function SettingsView(props: {
   const draftConfig = parseSettingsConfig(props.settingsDraft)
   const selectedProviderID = draftConfig ? getSelectedProviderID(draftConfig) : ''
   const selectedModelID = draftConfig ? getSelectedModelID(draftConfig) : ''
-  const globalModels = modelOptionsForProvider(selectedProviderID, draftConfig ? getCodexStringField(draftConfig, 'model') : '')
+  const globalModels = modelOptionsForProvider(selectedProviderID, draftConfig ? getRuntimeStringField(draftConfig, 'model') : '')
   const resolvedRuntime = props.settings.resolved_config.agent_runtime || props.settings.resolved_config.codex
   const trackerValidation = props.trackerValidation
 
@@ -2155,7 +2155,7 @@ function SettingsView(props: {
   }
   const changeModel = (optionID: string) => {
     const config = draftConfig || {}
-    const nextConfig = applyModelSelection(config, selectedProviderID, getCodexStringField(config, 'model'), optionID)
+    const nextConfig = applyModelSelection(config, selectedProviderID, getRuntimeStringField(config, 'model'), optionID)
     props.onSettingsDraftChange(JSON.stringify(nextConfig, null, 2))
   }
   const changeGlobalSkills = (value: string) => {
@@ -2166,7 +2166,7 @@ function SettingsView(props: {
     const config = draftConfig || {}
     props.onSettingsDraftChange(JSON.stringify(applyStageSkills(config, stage, value), null, 2))
   }
-  const changeStageField = (stage: string, field: 'model' | 'model_provider' | 'reasoning_effort', value: string) => {
+  const changeStageField = (stage: string, field: StageRuntimeField, value: string) => {
     const config = draftConfig || {}
     props.onSettingsDraftChange(JSON.stringify(applyStageField(config, stage, field, value), null, 2))
   }
@@ -2417,6 +2417,24 @@ function SettingsView(props: {
                     </option>
                   ))}
                 </select>
+                <input
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'endpoint_url') : ''}
+                  onChange={event => changeStageField(stage.id, 'endpoint_url', event.target.value)}
+                  placeholder="Stage endpoint URL"
+                  disabled={!draftConfig || props.saving}
+                />
+                <input
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'api_key') : ''}
+                  onChange={event => changeStageField(stage.id, 'api_key', event.target.value)}
+                  placeholder="Stage API key env"
+                  disabled={!draftConfig || props.saving}
+                />
+                <input
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'auth_token') : ''}
+                  onChange={event => changeStageField(stage.id, 'auth_token', event.target.value)}
+                  placeholder="Stage auth token"
+                  disabled={!draftConfig || props.saving}
+                />
                 <textarea
                   value={draftConfig ? skillListToText(getStageSkills(draftConfig, stage.id)) : ''}
                   onChange={event => changeStageSkills(stage.id, event.target.value)}
@@ -2484,11 +2502,11 @@ function SettingsView(props: {
           </div>
           <div>
             <dt>Default Skills</dt>
-            <dd>{formatSkillSummary(props.settings.resolved_config.codex.skills)}</dd>
+            <dd>{formatSkillSummary(resolvedRuntime.skills)}</dd>
           </div>
           <div>
             <dt>Stage Overrides</dt>
-            <dd>{formatStageOverrideSummary(props.settings.resolved_config.codex.stage_overrides)}</dd>
+            <dd>{formatStageOverrideSummary(resolvedRuntime.stage_overrides)}</dd>
           </div>
         </dl>
       </aside>
@@ -2570,79 +2588,92 @@ function applyPipelineStringField(
   return nextConfig
 }
 
+type StageRuntimeField = 'model' | 'model_provider' | 'reasoning_effort' | 'endpoint_url' | 'api_key' | 'auth_token'
+
+function runtimeConfigKey(config: Record<string, unknown>) {
+  return isPlainObject(config.agent_runtime) ? 'agent_runtime' : 'codex'
+}
+
+function getRuntimeConfig(config: Record<string, unknown>) {
+  const key = runtimeConfigKey(config)
+  return isPlainObject(config[key]) ? config[key] : {}
+}
+
 function getSelectedProviderID(config: Record<string, unknown>) {
-  const codex = isPlainObject(config.codex) ? config.codex : {}
-  const model = typeof codex.model === 'string' ? codex.model : ''
-  const provider = typeof codex.model_provider === 'string' ? codex.model_provider : ''
+  const runtime = getRuntimeConfig(config)
+  const model = typeof runtime.model === 'string' ? runtime.model : ''
+  const provider = typeof runtime.model_provider === 'string' ? runtime.model_provider : ''
   return selectedProviderID(model, provider)
 }
 
 function getSelectedModelID(config: Record<string, unknown>) {
-  const codex = isPlainObject(config.codex) ? config.codex : {}
-  const model = typeof codex.model === 'string' ? codex.model : ''
-  const provider = typeof codex.model_provider === 'string' ? codex.model_provider : ''
+  const runtime = getRuntimeConfig(config)
+  const model = typeof runtime.model === 'string' ? runtime.model : ''
+  const provider = typeof runtime.model_provider === 'string' ? runtime.model_provider : ''
   return selectedModelID(model, provider)
 }
 
-function getCodexStringField(config: Record<string, unknown>, field: 'model' | 'model_provider' | 'reasoning_effort') {
-  const codex = isPlainObject(config.codex) ? config.codex : {}
-  return typeof codex[field] === 'string' ? codex[field] : ''
+function getRuntimeStringField(config: Record<string, unknown>, field: StageRuntimeField) {
+  const runtime = getRuntimeConfig(config)
+  return typeof runtime[field] === 'string' ? runtime[field] : ''
 }
 
 function applyProviderSelection(config: Record<string, unknown>, providerID: string) {
   const nextConfig = { ...config }
-  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
+  const key = runtimeConfigKey(nextConfig)
+  const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
   const provider = PROVIDER_OPTIONS.find(item => item.id === providerID)
 
   if (!provider) {
-    delete codex.model_provider
-    delete codex.model
+    delete runtime.model_provider
+    delete runtime.model
   } else {
-    codex.model_provider = provider.id
-    const currentModel = typeof codex.model === 'string' ? codex.model : ''
+    runtime.model_provider = provider.id
+    const currentModel = typeof runtime.model === 'string' ? runtime.model : ''
     if (currentModel && !provider.models.some(option => option.model === currentModel)) {
-      delete codex.model
+      delete runtime.model
     }
   }
 
-  nextConfig.codex = codex
+  nextConfig[key] = runtime
   return nextConfig
 }
 
 function applyModelSelection(config: Record<string, unknown>, providerID: string, currentModel: string, optionID: string) {
   const nextConfig = { ...config }
-  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
+  const key = runtimeConfigKey(nextConfig)
+  const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
   const option = modelOptionsForProvider(providerID, currentModel).find(item => item.id === optionID)
 
   if (!option) {
-    delete codex.model
+    delete runtime.model
     if (!providerID) {
-      delete codex.model_provider
+      delete runtime.model_provider
     }
   } else {
-    codex.model = option.model
-    codex.model_provider = option.modelProvider
+    runtime.model = option.model
+    runtime.model_provider = option.modelProvider
   }
 
-  nextConfig.codex = codex
+  nextConfig[key] = runtime
   return nextConfig
 }
 
 function getGlobalSkills(config: Record<string, unknown>) {
-  const codex = isPlainObject(config.codex) ? config.codex : {}
-  return normalizeSkillRefs(codex.skills)
+  const runtime = getRuntimeConfig(config)
+  return normalizeSkillRefs(runtime.skills)
 }
 
 function getStageSkills(config: Record<string, unknown>, stage: string) {
-  const codex = isPlainObject(config.codex) ? config.codex : {}
-  const overrides = isPlainObject(codex.stage_overrides) ? codex.stage_overrides : {}
+  const runtime = getRuntimeConfig(config)
+  const overrides = isPlainObject(runtime.stage_overrides) ? runtime.stage_overrides : {}
   const stageConfig = isPlainObject(overrides[stage]) ? overrides[stage] : {}
   return normalizeSkillRefs(stageConfig.skills)
 }
 
-function getStageStringField(config: Record<string, unknown>, stage: string, field: 'model' | 'model_provider' | 'reasoning_effort') {
-  const codex = isPlainObject(config.codex) ? config.codex : {}
-  const overrides = isPlainObject(codex.stage_overrides) ? codex.stage_overrides : {}
+function getStageStringField(config: Record<string, unknown>, stage: string, field: StageRuntimeField) {
+  const runtime = getRuntimeConfig(config)
+  const overrides = isPlainObject(runtime.stage_overrides) ? runtime.stage_overrides : {}
   const stageConfig = isPlainObject(overrides[stage]) ? overrides[stage] : {}
   return typeof stageConfig[field] === 'string' ? stageConfig[field] : ''
 }
@@ -2657,21 +2688,23 @@ function getStageModelID(config: Record<string, unknown>, stage: string) {
 
 function applyGlobalSkills(config: Record<string, unknown>, value: string) {
   const nextConfig = { ...config }
-  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
+  const key = runtimeConfigKey(nextConfig)
+  const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
   const skills = parseSkillList(value)
   if (skills.length === 0) {
-    delete codex.skills
+    delete runtime.skills
   } else {
-    codex.skills = skills
+    runtime.skills = skills
   }
-  nextConfig.codex = codex
+  nextConfig[key] = runtime
   return nextConfig
 }
 
-function applyStageField(config: Record<string, unknown>, stage: string, field: 'model' | 'model_provider' | 'reasoning_effort', value: string) {
+function applyStageField(config: Record<string, unknown>, stage: string, field: StageRuntimeField, value: string) {
   const nextConfig = { ...config }
-  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
-  const overrides = isPlainObject(codex.stage_overrides) ? { ...codex.stage_overrides } : {}
+  const key = runtimeConfigKey(nextConfig)
+  const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
+  const overrides = isPlainObject(runtime.stage_overrides) ? { ...runtime.stage_overrides } : {}
   const stageConfig = isPlainObject(overrides[stage]) ? { ...overrides[stage] } : {}
   const trimmedValue = value.trim()
 
@@ -2704,13 +2737,14 @@ function applyStageField(config: Record<string, unknown>, stage: string, field: 
       stageConfig[field] = trimmedValue
     }
   }
-  return saveStageConfig(nextConfig, codex, overrides, stage, stageConfig)
+  return saveStageConfig(nextConfig, key, runtime, overrides, stage, stageConfig)
 }
 
 function applyStageSkills(config: Record<string, unknown>, stage: string, value: string) {
   const nextConfig = { ...config }
-  const codex = isPlainObject(nextConfig.codex) ? { ...nextConfig.codex } : {}
-  const overrides = isPlainObject(codex.stage_overrides) ? { ...codex.stage_overrides } : {}
+  const key = runtimeConfigKey(nextConfig)
+  const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
+  const overrides = isPlainObject(runtime.stage_overrides) ? { ...runtime.stage_overrides } : {}
   const stageConfig = isPlainObject(overrides[stage]) ? { ...overrides[stage] } : {}
   const skills = parseSkillList(value)
   if (skills.length === 0) {
@@ -2718,12 +2752,13 @@ function applyStageSkills(config: Record<string, unknown>, stage: string, value:
   } else {
     stageConfig.skills = skills
   }
-  return saveStageConfig(nextConfig, codex, overrides, stage, stageConfig)
+  return saveStageConfig(nextConfig, key, runtime, overrides, stage, stageConfig)
 }
 
 function saveStageConfig(
   nextConfig: Record<string, unknown>,
-  codex: Record<string, unknown>,
+  runtimeKey: string,
+  runtime: Record<string, unknown>,
   overrides: Record<string, unknown>,
   stage: string,
   stageConfig: Record<string, unknown>,
@@ -2734,11 +2769,11 @@ function saveStageConfig(
     overrides[stage] = stageConfig
   }
   if (Object.keys(overrides).length === 0) {
-    delete codex.stage_overrides
+    delete runtime.stage_overrides
   } else {
-    codex.stage_overrides = overrides
+    runtime.stage_overrides = overrides
   }
-  nextConfig.codex = codex
+  nextConfig[runtimeKey] = runtime
   return nextConfig
 }
 
@@ -2856,7 +2891,18 @@ function formatSkillSummary(skills?: Array<{ name: string; path?: string }>) {
 }
 
 function formatStageOverrideSummary(
-  overrides?: Record<string, { model?: string; model_provider?: string; reasoning_effort?: string; skills?: Array<{ name: string; path?: string }> }>,
+  overrides?: Record<
+    string,
+    {
+      model?: string
+      model_provider?: string
+      reasoning_effort?: string
+      endpoint_url?: string
+      api_key_configured?: boolean
+      auth_token_configured?: boolean
+      skills?: Array<{ name: string; path?: string }>
+    }
+  >,
 ) {
   if (!overrides) {
     return 'None'
@@ -2867,6 +2913,9 @@ function formatStageOverrideSummary(
       const values = [
         override.model ? `model ${override.model}` : '',
         override.model_provider ? `provider ${override.model_provider}` : '',
+        override.endpoint_url ? `endpoint ${override.endpoint_url}` : '',
+        override.api_key_configured ? 'API key' : '',
+        override.auth_token_configured ? 'auth token' : '',
         override.reasoning_effort ? `reasoning ${override.reasoning_effort}` : '',
         skills.length > 0 ? `skills ${skills.map(skill => skill.name || skill.path || 'Unnamed').join(', ')}` : '',
       ].filter(Boolean)

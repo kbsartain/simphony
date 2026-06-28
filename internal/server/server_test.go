@@ -551,6 +551,12 @@ agent_runtime:
   provider: codex
   api_key: literal-agent-secret
   auth_token: literal-agent-token
+  stage_overrides:
+    coding:
+      api_key: literal-stage-secret
+      auth_token: literal-stage-token
+      env:
+        ROUTER_TOKEN: literal-stage-env-secret
 ---
 
 Prompt body
@@ -577,7 +583,16 @@ Prompt body
 	if runtimeConfig["api_key"] != settingsSecretMask || runtimeConfig["auth_token"] != settingsSecretMask {
 		t.Fatalf("runtime secrets = %v, want masks", runtimeConfig)
 	}
-	if strings.Contains(rec.Body.String(), "literal-linear-secret") || strings.Contains(rec.Body.String(), "literal-agent-secret") {
+	stageOverrides := runtimeConfig["stage_overrides"].(map[string]interface{})
+	coding := stageOverrides["coding"].(map[string]interface{})
+	if coding["api_key"] != settingsSecretMask || coding["auth_token"] != settingsSecretMask {
+		t.Fatalf("stage secrets = %v, want masks", coding)
+	}
+	stageEnv := coding["env"].(map[string]interface{})
+	if stageEnv["ROUTER_TOKEN"] != settingsSecretMask {
+		t.Fatalf("stage env = %v, want mask", stageEnv)
+	}
+	if strings.Contains(rec.Body.String(), "literal-linear-secret") || strings.Contains(rec.Body.String(), "literal-agent-secret") || strings.Contains(rec.Body.String(), "literal-stage-secret") || strings.Contains(rec.Body.String(), "literal-stage-env-secret") {
 		t.Fatal("response leaked literal secret")
 	}
 }
@@ -591,6 +606,10 @@ tracker:
 agent_runtime:
   provider: codex
   api_key: literal-agent-secret
+  stage_overrides:
+    coding:
+      api_key: literal-stage-secret
+      auth_token: literal-stage-token
 ---
 
 Prompt body
@@ -607,6 +626,12 @@ Prompt body
 			"agent_runtime": map[string]interface{}{
 				"provider": "codex",
 				"api_key":  settingsSecretMask,
+				"stage_overrides": map[string]interface{}{
+					"coding": map[string]interface{}{
+						"api_key":    settingsSecretMask,
+						"auth_token": settingsSecretMask,
+					},
+				},
 			},
 		},
 	}
@@ -635,7 +660,12 @@ Prompt body
 	if runtimeConfig["api_key"] != "literal-agent-secret" {
 		t.Fatalf("saved agent_runtime = %v, want preserved secret", runtimeConfig)
 	}
-	if strings.Contains(rec.Body.String(), "literal-linear-secret") || strings.Contains(rec.Body.String(), "literal-agent-secret") {
+	stageOverrides := runtimeConfig["stage_overrides"].(map[string]interface{})
+	coding := stageOverrides["coding"].(map[string]interface{})
+	if coding["api_key"] != "literal-stage-secret" || coding["auth_token"] != "literal-stage-token" {
+		t.Fatalf("saved stage override = %v, want preserved secrets", coding)
+	}
+	if strings.Contains(rec.Body.String(), "literal-linear-secret") || strings.Contains(rec.Body.String(), "literal-agent-secret") || strings.Contains(rec.Body.String(), "literal-stage-secret") {
 		t.Fatal("response leaked literal secret")
 	}
 }

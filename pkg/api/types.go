@@ -145,10 +145,16 @@ type AgentRuntimeConfig struct {
 
 // AgentStageOverride overrides selected runtime settings for a pipeline stage.
 type AgentStageOverride struct {
-	Model           string          `json:"model,omitempty"`
-	ModelProvider   string          `json:"model_provider,omitempty"`
-	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-	Skills          []AgentSkillRef `json:"skills,omitempty"`
+	Model               string            `json:"model,omitempty"`
+	ModelProvider       string            `json:"model_provider,omitempty"`
+	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
+	EndpointURL         string            `json:"endpoint_url,omitempty"`
+	APIKeyConfigured    bool              `json:"api_key_configured,omitempty"`
+	AuthTokenConfigured bool              `json:"auth_token_configured,omitempty"`
+	APIKey              string            `json:"-"`
+	AuthToken           string            `json:"-"`
+	Env                 map[string]string `json:"env,omitempty"`
+	Skills              []AgentSkillRef   `json:"skills,omitempty"`
 }
 
 // AgentSkillRef selects an agent skill by name and, when known, absolute path.
