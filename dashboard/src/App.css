@@ -927,6 +927,12 @@ h3 {
   font-weight: 800;
 }
 
+.mode-pill.pending {
+  border-color: #f1d79f;
+  background: #fff8e8;
+  color: #735719;
+}
+
 .startup-mode-control {
   display: flex;
   gap: 10px;
@@ -950,7 +956,7 @@ h3 {
   border: 1px solid #cbd4cf;
   border-radius: 999px;
   background: #e8eeeb;
-  cursor: not-allowed;
+  cursor: pointer;
 }
 
 .switch-control span {
@@ -959,12 +965,22 @@ h3 {
   border-radius: 50%;
   background: #fff;
   box-shadow: var(--shadow-soft);
+  transition: transform 160ms ease;
 }
 
 .switch-control.on {
   justify-content: flex-end;
   border-color: #8dc3a1;
   background: #4f9a69;
+}
+
+.switch-control.pending {
+  box-shadow: 0 0 0 3px rgba(241, 215, 159, 0.32);
+}
+
+.switch-control:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .startup-mode-facts {
@@ -1011,6 +1027,17 @@ h3 {
   color: #735719;
   font-size: 0.88rem;
   font-weight: 700;
+}
+
+.restart-note.pending {
+  border-color: #efbd61;
+  background: #fff3d8;
+}
+
+.restart-note code {
+  overflow-wrap: anywhere;
+  color: #4d3810;
+  font-size: 0.86rem;
 }
 
 .bootstrap-action-row {

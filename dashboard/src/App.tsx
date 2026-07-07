@@ -1333,7 +1333,7 @@ function ProjectSetupView(props: {
   deletingRegistryProjectId: string | null
   projectOverview: ProjectOverview | null
   supervisorConcurrency: SupervisorConcurrency | null
-  onBootstrapRegistry: () => void
+  onBootstrapRegistry: () => Promise<void>
   onRegistryProjectDraftChange: (draft: RegistryProjectDraft) => void
   onSaveRegistryProject: () => void
   onRegistrySettingsDraftChange: (draft: RegistrySettingsDraft) => void
@@ -1351,15 +1351,34 @@ function ProjectSetupView(props: {
   const setupProjects = props.registry?.projects || props.projects
   const startupMode = props.runtimeMode?.mode || (props.projectMode ? 'project_registry' : 'single_workflow')
   const registryEnabled = startupMode === 'project_registry'
+  const [requestedStartupMode, setRequestedStartupMode] = useState<'project_registry' | 'single_workflow' | null>(null)
+  const requestedRegistryEnabled = requestedStartupMode ? requestedStartupMode === 'project_registry' : registryEnabled
+  const modeChangePending = requestedStartupMode !== null && requestedRegistryEnabled !== registryEnabled
   const startupPath = registryEnabled
     ? props.runtimeMode?.registry_path || props.registry?.source_path || ''
     : props.runtimeMode?.workflow_path || ''
+  const requestedStartupPath = requestedRegistryEnabled
+    ? props.registry?.source_path || props.registryBootstrap?.registry_path || props.runtimeMode?.registry_path || ''
+    : props.runtimeMode?.workflow_path || ''
+  const restartCommand = startupCommandForMode(requestedRegistryEnabled, requestedStartupPath)
   const registryRuntimeModels = modelOptionsForProvider(props.registryRuntimeDraft.modelProvider, props.registryRuntimeDraft.model)
   const registryRuntimeReasoning = reasoningOptionsForSelection(
     props.registryRuntimeDraft.model,
     props.registryRuntimeDraft.modelProvider,
     props.registryRuntimeDraft.reasoningEffort,
   )
+
+  const toggleStartupMode = async () => {
+    const nextRegistryEnabled = !requestedRegistryEnabled
+    const nextMode = nextRegistryEnabled ? 'project_registry' : 'single_workflow'
+    if (nextRegistryEnabled && !props.registry?.source_path && !props.registryBootstrap?.registry_path) {
+      setRequestedStartupMode(nextMode)
+      await props.onBootstrapRegistry()
+      return
+    }
+    setRequestedStartupMode(nextRegistryEnabled === registryEnabled ? null : nextMode)
+  }
+
   return (
     <section className="setup-layout">
       <div className="panel setup-main">
@@ -1379,12 +1398,14 @@ function ProjectSetupView(props: {
         </div>
         <div className="startup-mode-panel">
           <div className="startup-mode-copy">
-            <span className="mode-pill">{registryEnabled ? 'Project registry' : 'Single workflow'}</span>
+            <span className={modeChangePending ? 'mode-pill pending' : 'mode-pill'}>
+              {requestedRegistryEnabled ? 'Project registry' : 'Single workflow'}
+            </span>
             <div>
               <h3>Startup mode</h3>
               <p>
-                Simphony currently starts in {registryEnabled ? 'project registry mode' : 'single workflow mode'}. Switching between these modes
-                changes the supervisor shape and requires a server restart.
+                Simphony is running in {registryEnabled ? 'project registry mode' : 'single workflow mode'}. Select the desired mode here; if it
+                differs from the running process, restart with the shown command.
               </p>
             </div>
           </div>
@@ -1394,12 +1415,14 @@ function ProjectSetupView(props: {
             </label>
             <button
               id="registry-mode-toggle"
-              className={`switch-control ${registryEnabled ? 'on' : ''}`}
+              className={`switch-control ${requestedRegistryEnabled ? 'on' : ''} ${modeChangePending ? 'pending' : ''}`}
               type="button"
               role="switch"
-              aria-checked={registryEnabled}
-              disabled
-              title="Changing startup mode requires restarting Simphony"
+              aria-checked={requestedRegistryEnabled}
+              aria-describedby="startup-mode-restart-note"
+              disabled={props.bootstrappingRegistry}
+              onClick={() => void toggleStartupMode()}
+              title={modeChangePending ? 'Restart Simphony to apply this startup mode' : 'Select startup mode'}
             >
               <span />
             </button>
@@ -1411,13 +1434,14 @@ function ProjectSetupView(props: {
             </div>
             <div>
               <dt>Mode changes</dt>
-              <dd>{props.runtimeMode?.change_requires_restart === false ? 'Live switch supported' : 'Restart required'}</dd>
+              <dd>{modeChangePending ? 'Pending restart' : props.runtimeMode?.change_requires_restart === false ? 'Live switch supported' : 'Restart required'}</dd>
             </div>
           </dl>
-          <p className="restart-note" role="status">
-            To change this setting, restart Simphony with {registryEnabled ? '-workflow ./WORKFLOW.md' : '-config ./simphony.yaml'}.
+          <p id="startup-mode-restart-note" className={modeChangePending ? 'restart-note pending' : 'restart-note'} role="status">
+            {modeChangePending ? 'Restart required to apply selected mode:' : 'Current startup command for selected mode:'}{' '}
+            <code>{restartCommand}</code>
           </p>
-          {!registryEnabled && (
+          {!requestedRegistryEnabled && (
             <div className="bootstrap-action-row">
               <button className="secondary-button" type="button" onClick={props.onBootstrapRegistry} disabled={props.bootstrappingRegistry}>
                 {props.bootstrappingRegistry ? 'Creating registry' : 'Create starter registry'}
@@ -3233,6 +3257,17 @@ function defaultProjectID(projects: ProjectSummary[]) {
     projects[0]?.id ||
     null
   )
+}
+
+function startupCommandForMode(useRegistry: boolean, path: string) {
+  const flag = useRegistry ? '-config' : '-workflow'
+  const fallback = useRegistry ? './simphony.yaml' : './WORKFLOW.md'
+  const value = path.trim() || fallback
+  return `simphony ${flag} ${quoteCommandPath(value)}`
+}
+
+function quoteCommandPath(path: string) {
+  return /\s/.test(path) ? `"${path.replace(/"/g, '\\"')}"` : path
 }
 
 function emptyRegistrySettingsDraft(): RegistrySettingsDraft {
