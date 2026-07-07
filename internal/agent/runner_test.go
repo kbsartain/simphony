@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -980,6 +981,68 @@ func TestRunnerRunAppliesWorkflowProviderOnlyStageOverrides(t *testing.T) {
 	assertCapturedProviderOnlyRequest(t, records[3], "turn/start", "", "xhigh")
 }
 
+func TestRunnerRunAppliesWorkflowFileStageRouting(t *testing.T) {
+	workflowPath := strings.TrimSpace(os.Getenv("SIMPHONY_WORKFLOW_UNDER_TEST"))
+	if workflowPath == "" {
+		t.Skip("set SIMPHONY_WORKFLOW_UNDER_TEST to run workflow-file stage-routing smoke test")
+	}
+	codingProvider := envOrDefault("SIMPHONY_EXPECT_CODING_MODEL_PROVIDER", "zai")
+	reviewProvider := envOrDefault("SIMPHONY_EXPECT_REVIEW_MODEL_PROVIDER", "openai")
+	codingEffort := envOrDefault("SIMPHONY_EXPECT_CODING_REASONING_EFFORT", "high")
+	reviewEffort := envOrDefault("SIMPHONY_EXPECT_REVIEW_REASONING_EFFORT", "xhigh")
+
+	for _, e := range mockEnv(mockModeNormal) {
+		parts := strings.SplitN(e, "=", 2)
+		t.Setenv(parts[0], parts[1])
+	}
+	t.Setenv("LINEAR_API_KEY", envOrDefault("LINEAR_API_KEY", "test-linear-key"))
+	capturePath := t.TempDir() + string(os.PathSeparator) + "requests.jsonl"
+	t.Setenv("SIMPHONY_MOCK_CAPTURE", capturePath)
+
+	def, err := config.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("load workflow %q: %v", workflowPath, err)
+	}
+	workflowCfg, err := config.ResolveConfig(def, filepath.Dir(workflowPath))
+	if err != nil {
+		t.Fatalf("resolve workflow %q: %v", workflowPath, err)
+	}
+	if workflowCfg.AgentRuntime.ModelProvider != codingProvider {
+		t.Fatalf("coding model_provider = %q, want %q", workflowCfg.AgentRuntime.ModelProvider, codingProvider)
+	}
+	review := workflowCfg.AgentRuntime.StageOverrides["review"]
+	if review.ModelProvider != reviewProvider {
+		t.Fatalf("review model_provider = %q, want %q", review.ModelProvider, reviewProvider)
+	}
+
+	workflowCfg.AgentRuntime.Command = mockCommand(mockModeNormal)
+	runner := NewRunner(def.PromptTemplate)
+	workspace := &api.Workspace{Path: t.TempDir()}
+	issue := api.Issue{
+		ID:         "issue-workflow-stage-routing",
+		Identifier: "TEST-WORKFLOW-STAGE-ROUTING",
+		Title:      "Verify workflow stage routing",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := runner.Run(ctx, issue, workspace, nil, &workflowCfg.AgentRuntime, api.PipelineStage{Kind: "coding"}, 1, nil, func(api.AgentEvent) {}); err != nil {
+		t.Fatalf("coding run failed: %v", err)
+	}
+	if err := runner.Run(ctx, issue, workspace, nil, &workflowCfg.AgentRuntime, api.PipelineStage{Kind: "review"}, 1, nil, func(api.AgentEvent) {}); err != nil {
+		t.Fatalf("review run failed: %v", err)
+	}
+
+	records := readCapturedMockRequests(t, capturePath)
+	if len(records) != 4 {
+		t.Fatalf("captured %d requests, want thread/start and turn/start for coding and review: %+v", len(records), records)
+	}
+	assertCapturedProviderOnlyRequest(t, records[0], "thread/start", codingProvider, "")
+	assertCapturedProviderOnlyRequest(t, records[1], "turn/start", "", codingEffort)
+	assertCapturedProviderOnlyRequest(t, records[2], "thread/start", reviewProvider, "")
+	assertCapturedProviderOnlyRequest(t, records[3], "turn/start", "", reviewEffort)
+}
+
 type capturedMockRequest struct {
 	Method string                 `json:"method"`
 	Params map[string]interface{} `json:"params"`
@@ -1003,6 +1066,13 @@ func readCapturedMockRequests(t *testing.T, path string) []capturedMockRequest {
 		records = append(records, record)
 	}
 	return records
+}
+
+func envOrDefault(key string, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func assertCapturedModelRequest(t *testing.T, record capturedMockRequest, method string, model string, modelProvider string, effort string) {
