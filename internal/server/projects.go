@@ -84,11 +84,41 @@ func (s *ProjectServer) registerRoutes() {
 	s.mux.HandleFunc(projectsPath, s.withCORS(s.handleProjects))
 	s.mux.HandleFunc(projectsPath+"/", s.withCORS(s.handleProjectRoute))
 	s.mux.HandleFunc(s.apiPrefix+"/", s.withCORS(s.handleProjectAPINotFound))
-	s.mux.HandleFunc("/", s.withCORS(func(w http.ResponseWriter, r *http.Request) {
-		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
-			Error: api.APIError{Code: "not_found", Message: "Multi-project dashboard is not built yet"},
+
+	distDir := filepath.Join("dashboard", "dist")
+	if _, err := os.Stat(distDir); err == nil {
+		fs := http.FileServer(http.Dir(distDir))
+		s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			s.setCORS(w)
+			if strings.HasPrefix(r.URL.Path, s.apiPrefix+"/") || r.URL.Path == s.apiPrefix {
+				s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+					Error: api.APIError{Code: "not_found", Message: "API endpoint not found"},
+				})
+				return
+			}
+
+			cleanPath := pathpkg.Clean("/" + r.URL.Path)
+			assetPath := filepath.Join(distDir, filepath.FromSlash(strings.TrimPrefix(cleanPath, "/")))
+			if info, err := os.Stat(assetPath); err == nil && !info.IsDir() {
+				fs.ServeHTTP(w, r)
+				return
+			}
+
+			if pathpkg.Ext(cleanPath) != "" {
+				http.NotFound(w, r)
+				return
+			}
+			r.URL.Path = "/"
+			fs.ServeHTTP(w, r)
 		})
-	}))
+	} else {
+		log.Printf("project_server warning: dashboard dist not found at %s", distDir)
+		s.mux.HandleFunc("/", s.withCORS(func(w http.ResponseWriter, r *http.Request) {
+			s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+				Error: api.APIError{Code: "not_found", Message: "Dashboard not built"},
+			})
+		}))
+	}
 }
 
 // Start begins listening until ctx is cancelled.

@@ -147,6 +147,7 @@ type mockRunner struct {
 	mu           sync.Mutex
 	runs         []api.Issue
 	stages       []api.PipelineStage
+	configs      []api.AgentRuntimeConfig
 	delay        time.Duration
 	errAfter     int // return error after N successful runs
 	emitSession  bool
@@ -210,6 +211,11 @@ func (m *mockRunner) Run(ctx context.Context, issue api.Issue, w *api.Workspace,
 	m.mu.Lock()
 	m.runs = append(m.runs, issue)
 	m.stages = append(m.stages, stage)
+	if cfg != nil {
+		m.configs = append(m.configs, *cfg)
+	} else {
+		m.configs = append(m.configs, api.AgentRuntimeConfig{})
+	}
 	fail := len(m.runs) > m.errAfter && m.errAfter >= 0
 	m.mu.Unlock()
 	if m.emitSession {
@@ -1240,6 +1246,73 @@ func TestOrchestrator_ReviewStageMovesToMerge(t *testing.T) {
 	runner.mu.Unlock()
 	if len(stages) != 1 || stages[0].Kind != "review" {
 		t.Fatalf("runner stages = %v, want one review stage", stages)
+	}
+}
+
+func TestOrchestrator_DispatchesCodingAndReviewWithStageModelOverrides(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "Build feature", State: "In Progress"},
+			{ID: "2", Identifier: "A-2", Title: "Review feature", State: "In Review"},
+		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "Build feature", State: "In Progress"},
+			"2": {ID: "2", Identifier: "A-2", Title: "Review feature", State: "In Review"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{delay: 200 * time.Millisecond}
+	cfg := defaultConfig()
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "In Review", "Approved"}
+	cfg.Agent.MaxConcurrentAgents = 2
+	cfg.AgentRuntime.Model = "gpt-coding"
+	cfg.AgentRuntime.ModelProvider = "openai"
+	cfg.AgentRuntime.ReasoningEffort = "high"
+	cfg.AgentRuntime.StageOverrides = map[string]api.AgentStageOverride{
+		"review": {
+			Model:           "gpt-review",
+			ModelProvider:   "openai",
+			ReasoningEffort: "xhigh",
+		},
+	}
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runner.mu.Lock()
+		runCount := len(runner.runs)
+		runner.mu.Unlock()
+		if runCount >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.runs) != 2 {
+		t.Fatalf("runs = %d, want coding and review dispatches", len(runner.runs))
+	}
+
+	seen := map[string]api.PipelineStage{}
+	for i, run := range runner.runs {
+		seen[run.Identifier] = runner.stages[i]
+		if runner.configs[i].Model != "gpt-coding" || runner.configs[i].ModelProvider != "openai" {
+			t.Fatalf("runner config for %s = %+v, want base coding model/provider", run.Identifier, runner.configs[i])
+		}
+		reviewOverride := runner.configs[i].StageOverrides["review"]
+		if reviewOverride.Model != "gpt-review" || reviewOverride.ReasoningEffort != "xhigh" {
+			t.Fatalf("review override for %s = %+v, want gpt-review/xhigh", run.Identifier, reviewOverride)
+		}
+	}
+	if seen["A-1"].Kind != "coding" {
+		t.Fatalf("A-1 stage = %+v, want coding", seen["A-1"])
+	}
+	if seen["A-2"].Kind != "review" {
+		t.Fatalf("A-2 stage = %+v, want review", seen["A-2"])
 	}
 }
 

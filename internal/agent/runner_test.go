@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kbsartain/simphony/internal/config"
 	"github.com/kbsartain/simphony/pkg/api"
 )
 
@@ -94,6 +95,7 @@ func runMockCodexServer() {
 	if mode == "" {
 		mode = mockModeNormal
 	}
+	capturePath := os.Getenv("SIMPHONY_MOCK_CAPTURE")
 
 	stdin := os.Stdin
 	stdout := os.Stdout
@@ -115,6 +117,9 @@ func runMockCodexServer() {
 
 		if msg.Method == "" {
 			continue
+		}
+		if capturePath != "" && (msg.Method == "thread/start" || msg.Method == "turn/start") {
+			appendMockRequestCapture(capturePath, msg)
 		}
 
 		switch msg.Method {
@@ -267,6 +272,22 @@ func runMockCodexServer() {
 	}
 
 	wg.Wait()
+}
+
+func appendMockRequestCapture(path string, msg jsonRPCMsg) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Printf("mock capture open error: %v", err)
+		return
+	}
+	defer f.Close()
+
+	var params map[string]interface{}
+	_ = json.Unmarshal(msg.Params, &params)
+	_ = json.NewEncoder(f).Encode(map[string]interface{}{
+		"method": msg.Method,
+		"params": params,
+	})
 }
 
 func mockCommand(mode mockMode) string {
@@ -779,6 +800,245 @@ func TestBuildParamsIncludeModelSelection(t *testing.T) {
 	reviewTurnParams := buildTurnStartParams("thread-1", workspace, &reviewCfg, "review", nil, nil)
 	if reviewTurnParams["model"] != "claude-opus-4.1" || reviewTurnParams["effort"] != "xhigh" {
 		t.Fatalf("review turn params = %v, want review model and xhigh effort", reviewTurnParams)
+	}
+}
+
+func TestRunnerRunAppliesStageSpecificModelSelection(t *testing.T) {
+	for _, e := range mockEnv(mockModeNormal) {
+		parts := strings.SplitN(e, "=", 2)
+		t.Setenv(parts[0], parts[1])
+	}
+	capturePath := t.TempDir() + string(os.PathSeparator) + "requests.jsonl"
+	t.Setenv("SIMPHONY_MOCK_CAPTURE", capturePath)
+
+	runner := NewRunner("You are working on issue {{ issue.identifier }}: {{ issue.title }}")
+	workspace := &api.Workspace{Path: t.TempDir()}
+	issue := api.Issue{
+		ID:         "issue-stage-models",
+		Identifier: "TEST-STAGE-MODELS",
+		Title:      "Verify stage-specific models",
+	}
+	cfg := api.AgentRuntimeConfig{
+		Command:         mockCommand(mockModeNormal),
+		Model:           "gpt-coding-test",
+		ModelProvider:   "openai",
+		ReasoningEffort: "high",
+		ApprovalPolicy:  "never",
+		TurnTimeoutMs:   30000,
+		ReadTimeoutMs:   5000,
+		StageOverrides: map[string]api.AgentStageOverride{
+			"review": {
+				Model:           "claude-review-test",
+				ModelProvider:   "anthropic",
+				ReasoningEffort: "xhigh",
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 1, nil, func(api.AgentEvent) {}); err != nil {
+		t.Fatalf("coding run failed: %v", err)
+	}
+	if err := runner.Run(ctx, issue, workspace, nil, &cfg, api.PipelineStage{Kind: "review"}, 1, nil, func(api.AgentEvent) {}); err != nil {
+		t.Fatalf("review run failed: %v", err)
+	}
+
+	records := readCapturedMockRequests(t, capturePath)
+	if len(records) != 4 {
+		t.Fatalf("captured %d requests, want thread/start and turn/start for coding and review: %+v", len(records), records)
+	}
+	assertCapturedModelRequest(t, records[0], "thread/start", "gpt-coding-test", "openai", "")
+	assertCapturedModelRequest(t, records[1], "turn/start", "gpt-coding-test", "", "high")
+	assertCapturedModelRequest(t, records[2], "thread/start", "claude-review-test", "anthropic", "")
+	assertCapturedModelRequest(t, records[3], "turn/start", "claude-review-test", "", "xhigh")
+}
+
+func TestRunnerRunAppliesWorkflowProviderOnlyStageOverrides(t *testing.T) {
+	for _, e := range mockEnv(mockModeNormal) {
+		parts := strings.SplitN(e, "=", 2)
+		t.Setenv(parts[0], parts[1])
+	}
+	t.Setenv("LINEAR_API_KEY", "test-linear-key")
+	capturePath := t.TempDir() + string(os.PathSeparator) + "requests.jsonl"
+	t.Setenv("SIMPHONY_MOCK_CAPTURE", capturePath)
+
+	var frontMatter map[string]interface{}
+	if err := json.Unmarshal([]byte(`{
+		"agent": {
+			"max_concurrent_agents": 10,
+			"max_retry_backoff_ms": 300000,
+			"max_turns": 20
+		},
+		"codex": {
+			"approval_policy": "never",
+			"command": "codex app-server",
+			"model_provider": "zai",
+			"read_timeout_ms": 5000,
+			"reasoning_effort": "high",
+			"stage_overrides": {
+				"coding": {
+					"reasoning_effort": "high"
+				},
+				"merge": {
+					"reasoning_effort": "high"
+				},
+				"review": {
+					"model_provider": "openai",
+					"reasoning_effort": "xhigh"
+				}
+			},
+			"stall_timeout_ms": 300000,
+			"thread_sandbox": "danger-full-access",
+			"turn_sandbox_policy": "danger-full-access",
+			"turn_timeout_ms": 3600000
+		},
+		"hooks": {
+			"before_run": "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\kbsar\\simphony\\scripts\\setup-workspace.ps1 -WorkspacePath .\n",
+			"timeout_ms": 300000
+		},
+		"pipeline": {
+			"done_state": "Done",
+			"merge_state": "Approved",
+			"review_state": "In Review"
+		},
+		"polling": {
+			"interval_ms": 30000
+		},
+		"server": {
+			"port": 8080
+		},
+		"tracker": {
+			"active_states": [
+				"Backlog",
+				"Todo",
+				"In Progress",
+				"Approved"
+			],
+			"api_key": "$LINEAR_API_KEY",
+			"completion_states": [
+				"In Review",
+				"Review",
+				"Done",
+				"Completed"
+			],
+			"kind": "linear",
+			"project_slug": "simphony-2172572a4807",
+			"working_state": "In Progress"
+		},
+		"workspace": {
+			"base_branch": "main",
+			"branch_prefix": "simphony/",
+			"cleanup_worktrees": false,
+			"mode": "git_worktree",
+			"repo": ".",
+			"root": "./simphony_workspaces"
+		}
+	}`), &frontMatter); err != nil {
+		t.Fatalf("decode front matter JSON: %v", err)
+	}
+
+	workflowCfg, err := config.ResolveConfig(&api.WorkflowDefinition{
+		Config:         frontMatter,
+		PromptTemplate: "You are working on issue {{ issue.identifier }}: {{ issue.title }}",
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve front matter config: %v", err)
+	}
+	if workflowCfg.AgentRuntime.ModelProvider != "zai" || workflowCfg.AgentRuntime.Model != "" {
+		t.Fatalf("resolved base runtime model/provider = %q/%q, want empty model with zai provider", workflowCfg.AgentRuntime.Model, workflowCfg.AgentRuntime.ModelProvider)
+	}
+	if review := workflowCfg.AgentRuntime.StageOverrides["review"]; review.ModelProvider != "openai" || review.Model != "" {
+		t.Fatalf("resolved review override model/provider = %q/%q, want empty model with openai provider", review.Model, review.ModelProvider)
+	}
+
+	workflowCfg.AgentRuntime.Command = mockCommand(mockModeNormal)
+	runner := NewRunner("You are working on issue {{ issue.identifier }}: {{ issue.title }}")
+	workspace := &api.Workspace{Path: t.TempDir()}
+	issue := api.Issue{
+		ID:         "issue-provider-only",
+		Identifier: "TEST-PROVIDER-ONLY",
+		Title:      "Verify provider-only stage overrides",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := runner.Run(ctx, issue, workspace, nil, &workflowCfg.AgentRuntime, api.PipelineStage{Kind: "coding"}, 1, nil, func(api.AgentEvent) {}); err != nil {
+		t.Fatalf("coding run failed: %v", err)
+	}
+	if err := runner.Run(ctx, issue, workspace, nil, &workflowCfg.AgentRuntime, api.PipelineStage{Kind: "review"}, 1, nil, func(api.AgentEvent) {}); err != nil {
+		t.Fatalf("review run failed: %v", err)
+	}
+
+	records := readCapturedMockRequests(t, capturePath)
+	if len(records) != 4 {
+		t.Fatalf("captured %d requests, want thread/start and turn/start for coding and review: %+v", len(records), records)
+	}
+	assertCapturedProviderOnlyRequest(t, records[0], "thread/start", "zai", "")
+	assertCapturedProviderOnlyRequest(t, records[1], "turn/start", "", "high")
+	assertCapturedProviderOnlyRequest(t, records[2], "thread/start", "openai", "")
+	assertCapturedProviderOnlyRequest(t, records[3], "turn/start", "", "xhigh")
+}
+
+type capturedMockRequest struct {
+	Method string                 `json:"method"`
+	Params map[string]interface{} `json:"params"`
+}
+
+func readCapturedMockRequests(t *testing.T, path string) []capturedMockRequest {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read mock capture: %v", err)
+	}
+	var records []capturedMockRequest
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var record capturedMockRequest
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode mock capture line %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func assertCapturedModelRequest(t *testing.T, record capturedMockRequest, method string, model string, modelProvider string, effort string) {
+	t.Helper()
+	if record.Method != method {
+		t.Fatalf("method = %q, want %q for record %+v", record.Method, method, record)
+	}
+	if record.Params["model"] != model {
+		t.Fatalf("%s model = %v, want %s", method, record.Params["model"], model)
+	}
+	if modelProvider != "" && record.Params["modelProvider"] != modelProvider {
+		t.Fatalf("%s modelProvider = %v, want %s", method, record.Params["modelProvider"], modelProvider)
+	}
+	if effort != "" && record.Params["effort"] != effort {
+		t.Fatalf("%s effort = %v, want %s", method, record.Params["effort"], effort)
+	}
+}
+
+func assertCapturedProviderOnlyRequest(t *testing.T, record capturedMockRequest, method string, modelProvider string, effort string) {
+	t.Helper()
+	if record.Method != method {
+		t.Fatalf("method = %q, want %q for record %+v", record.Method, method, record)
+	}
+	if _, ok := record.Params["model"]; ok {
+		t.Fatalf("%s model = %v, want model omitted", method, record.Params["model"])
+	}
+	if modelProvider != "" && record.Params["modelProvider"] != modelProvider {
+		t.Fatalf("%s modelProvider = %v, want %s", method, record.Params["modelProvider"], modelProvider)
+	}
+	if modelProvider == "" {
+		if _, ok := record.Params["modelProvider"]; ok {
+			t.Fatalf("%s modelProvider = %v, want modelProvider omitted", method, record.Params["modelProvider"])
+		}
+	}
+	if effort != "" && record.Params["effort"] != effort {
+		t.Fatalf("%s effort = %v, want %s", method, record.Params["effort"], effort)
 	}
 }
 

@@ -199,6 +199,63 @@ func TestProjectServerReturnsRuntimeMode(t *testing.T) {
 	}
 }
 
+func TestProjectServerServesDashboardAndProjectAPI(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, "dashboard", "dist"), 0o755); err != nil {
+		t.Fatalf("mkdir dashboard dist: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "dashboard", "dist", "index.html"), []byte("<!doctype html><title>Simphony</title>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir temp dashboard root: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	}()
+
+	registry := &config.ProjectRegistry{SourcePath: filepath.Join(tmp, "simphony.yaml")}
+	manager := &fakeProjectManager{
+		registry: registry,
+		summaries: []project.RuntimeSummary{{
+			ID:           "alpha",
+			Name:         "Alpha",
+			WorkflowPath: filepath.Join(tmp, "alpha", "WORKFLOW.md"),
+			Enabled:      true,
+			Running:      true,
+		}},
+	}
+	s := newTestProjectServer(manager)
+
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Simphony") {
+		t.Fatalf("dashboard body = %q, want built index", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("projects status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.ProjectsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode projects response: %v", err)
+	}
+	if len(body.Projects) != 1 || body.Projects[0].ID != "alpha" {
+		t.Fatalf("projects response = %+v, want alpha project", body.Projects)
+	}
+}
+
 func TestProjectServerUpdatesRegistrySettings(t *testing.T) {
 	dir := t.TempDir()
 	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
