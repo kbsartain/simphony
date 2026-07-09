@@ -121,9 +121,6 @@ type skillsListResult struct {
 
 var requestIDCounter int64
 
-//go:embed shims/claude-agent-shim.mjs
-var claudeShimSource []byte
-
 func nextRequestID() int {
 	return int(atomic.AddInt64(&requestIDCounter, 1))
 }
@@ -473,25 +470,44 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	return nil
 }
 
-type claudeShimRequest struct {
-	CWD             string   `json:"cwd"`
-	Prompt          string   `json:"prompt"`
-	Model           string   `json:"model,omitempty"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	PermissionMode  string   `json:"permission_mode,omitempty"`
-	AllowedTools    []string `json:"allowed_tools,omitempty"`
-	DisallowedTools []string `json:"disallowed_tools,omitempty"`
-	SettingSources  []string `json:"setting_sources,omitempty"`
-	ResumeSessionID string   `json:"resume_session_id,omitempty"`
-	TurnCount       int      `json:"turn_count"`
+// claudeStreamEvent is a single line from Claude Code's --output-format stream-json.
+type claudeStreamEvent struct {
+	Type           string         `json:"type"`
+	SubType        string         `json:"subtype"`
+	SessionID      string         `json:"session_id"`
+	Message        *claudeMessage `json:"message"`
+	Result         string         `json:"result"`
+	Usage          *claudeUsage   `json:"usage"`
+	Error          string         `json:"error"`
+	IsError        bool           `json:"is_error"`
+	APIErrorStatus int            `json:"api_error_status"`
 }
 
-type claudeShimEvent struct {
-	Event     string                 `json:"event"`
-	Timestamp string                 `json:"timestamp,omitempty"`
-	Usage     map[string]interface{} `json:"usage,omitempty"`
-	Payload   map[string]interface{} `json:"payload,omitempty"`
-	Error     string                 `json:"error,omitempty"`
+type claudeMessage struct {
+	ID      string               `json:"id"`
+	Content []claudeContentBlock `json:"content"`
+	Usage   *claudeUsage         `json:"usage"`
+	Text    string               `json:"text"`
+}
+
+type claudeContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type claudeUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+type claudeResultEvent struct {
+	SubType        string       `json:"subtype"`
+	IsError        bool         `json:"is_error"`
+	Result         string       `json:"result"`
+	APIErrorStatus int          `json:"api_error_status"`
+	Usage          *claudeUsage `json:"usage"`
+	SessionID      string       `json:"session_id"`
 }
 
 func (r *Runner) runClaude(ctx context.Context, issue api.Issue, workspace *api.Workspace, attempt *int, cfg *api.AgentRuntimeConfig, stage api.PipelineStage, maxTurns int, shouldContinue func() (api.ContinueDecision, error), eventCallback func(api.AgentEvent)) error {
@@ -549,13 +565,20 @@ func (r *Runner) runClaude(ctx context.Context, issue api.Issue, workspace *api.
 }
 
 func (r *Runner) runClaudeTurn(ctx context.Context, workspace *api.Workspace, cfg *api.AgentRuntimeConfig, prompt string, resumeSessionID string, turnCount int, eventCallback func(api.AgentEvent)) (string, error) {
-	command := strings.TrimSpace(cfg.Command)
-	if command == "" {
-		shimPath, err := writeEmbeddedClaudeShim(workspace.Path)
-		if err != nil {
-			return "", err
+	claudePath := strings.TrimSpace(cfg.Command)
+	var baseArgs []string
+	if claudePath == "" {
+		claudePath = findClaudeBinary()
+	} else {
+		// cfg.Command may include pre-existing arguments (e.g. test mock).
+		parts := strings.Fields(claudePath)
+		if len(parts) > 0 {
+			claudePath = parts[0]
+			baseArgs = parts[1:]
 		}
-		command = "node " + quoteCommandArg(shimPath)
+	}
+	if claudePath == "" {
+		return "", fmt.Errorf("%s: claude binary not found on PATH", api.ErrCodexNotFound)
 	}
 
 	turnTimeout := time.Duration(cfg.TurnTimeoutMs) * time.Millisecond
@@ -565,25 +588,64 @@ func (r *Runner) runClaudeTurn(ctx context.Context, workspace *api.Workspace, cf
 	turnCtx, cancel := context.WithTimeout(ctx, turnTimeout)
 	defer cancel()
 
-	cmd := shellCommandContext(turnCtx, command)
+	args := append(baseArgs, []string{
+		"--print",
+		"--verbose",
+		"--output-format", "stream-json",
+		"--permission-mode", "bypassPermissions",
+		"--bare",
+	}...)
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
+	}
+	if len(cfg.AllowedTools) > 0 {
+		args = append(args, "--allowed-tools", strings.Join(cfg.AllowedTools, ","))
+	}
+	if len(cfg.DisallowedTools) > 0 {
+		args = append(args, "--disallowed-tools", strings.Join(cfg.DisallowedTools, ","))
+	}
+	if resumeSessionID != "" {
+		args = append(args, "--resume", resumeSessionID)
+	}
+	// Terminate option parsing before the positional prompt. The Claude CLI's
+	// --allowed-tools/--disallowed-tools flags are variadic (<tools...>) and will
+	// otherwise consume the trailing prompt as additional tool values, leaving
+	// claude with no input ("Input must be provided ... when using --print",
+	// exit status 1).
+	args = append(args, "--", prompt)
+
+	cmd := exec.CommandContext(turnCtx, claudePath, args...)
 	cmd.Dir = workspace.Path
 	cmd.Stderr = os.Stderr
-	if err := configureSubprocessEnv(cmd, workspace.Path, cfg); err != nil {
-		return "", err
-	}
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", fmt.Errorf("%s: failed to create claude shim stdin pipe: %w", api.ErrCodexNotFound, err)
+	// Set environment
+	env := scrubInheritedAgentEnv(os.Environ())
+	if cfg.APIKey != "" {
+		env = setEnv(env, "ANTHROPIC_API_KEY", cfg.APIKey)
+		// Z.AI and some Anthropic-compatible endpoints expect the key in
+		// ANT_AUTH_TOKEN rather than API_KEY.
+		env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", cfg.APIKey)
 	}
+	if cfg.EndpointURL != "" {
+		env = setEnv(env, "ANTHROPIC_BASE_URL", cfg.EndpointURL)
+	}
+	if cfg.AuthToken != "" {
+		env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", cfg.AuthToken)
+	}
+	for key, value := range cfg.Env {
+		env = setEnv(env, key, value)
+	}
+	cmd.Env = env
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", fmt.Errorf("%s: failed to create claude shim stdout pipe: %w", api.ErrCodexNotFound, err)
+		return "", fmt.Errorf("%s: failed to create stdout pipe: %w", api.ErrCodexNotFound, err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("%s: failed to start claude shim: %w", api.ErrCodexNotFound, err)
+		return "", fmt.Errorf("%s: failed to start claude: %w", api.ErrCodexNotFound, err)
 	}
+
 	waited := false
 	defer func() {
 		if !waited && cmd.Process != nil {
@@ -604,105 +666,256 @@ func (r *Runner) runClaudeTurn(ctx context.Context, workspace *api.Workspace, cf
 		})
 	}
 
-	req := claudeShimRequest{
-		CWD:             workspace.Path,
-		Prompt:          prompt,
-		Model:           cfg.Model,
-		ReasoningEffort: cfg.ReasoningEffort,
-		PermissionMode:  cfg.PermissionMode,
-		AllowedTools:    cfg.AllowedTools,
-		DisallowedTools: cfg.DisallowedTools,
-		SettingSources:  cfg.SettingSources,
-		ResumeSessionID: resumeSessionID,
-		TurnCount:       turnCount,
-	}
-	data, err := json.Marshal(req)
-	if err != nil {
-		return "", err
-	}
-	if _, err := stdin.Write(append(data, '\n')); err != nil {
-		return "", fmt.Errorf("%s: failed to write claude shim request: %w", api.ErrResponseError, err)
-	}
-	_ = stdin.Close()
-
 	scanner := bufio.NewScanner(stdout)
 	const maxCapacity = 10 * 1024 * 1024
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, maxCapacity)
 
 	sessionID := resumeSessionID
+	var resultEvent *claudeResultEvent
 	completed := false
+	started := false
+
 	for scanner.Scan() {
-		var shimEvent claudeShimEvent
-		if err := json.Unmarshal(scanner.Bytes(), &shimEvent); err != nil {
+		var event claudeStreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			log.Printf("action=claude_runner warning=json_parse error=%v", err)
 			continue
 		}
-		if shimEvent.Event == "" {
-			continue
+
+		// Handle error events (not result-level errors)
+		if event.Error != "" && event.Type != "result" {
+			return sessionID, fmt.Errorf("%s: claude error: %s", api.ErrTurnFailed, event.Error)
 		}
-		if shimEvent.Event == "error" {
-			if shimEvent.Error != "" {
-				return sessionID, fmt.Errorf("%s: claude shim error: %s", api.ErrTurnFailed, shimEvent.Error)
+
+		switch event.Type {
+		case "system":
+			if event.SubType == "init" && event.SessionID != "" {
+				sessionID = event.SessionID
+				if !started {
+					started = true
+					eventCallback(api.AgentEvent{
+						Event:     "session_started",
+						Timestamp: time.Now(),
+						Payload: map[string]interface{}{
+							"session_id": sessionID,
+							"turn_count": turnCount,
+							"provider":   "claude",
+						},
+					})
+				}
 			}
-			return sessionID, fmt.Errorf("%s: claude shim error", api.ErrTurnFailed)
-		}
-		if shimEvent.Payload == nil {
-			shimEvent.Payload = map[string]interface{}{}
-		}
-		shimEvent.Payload["provider"] = "claude"
-		if _, ok := shimEvent.Payload["turn_count"]; !ok {
-			shimEvent.Payload["turn_count"] = turnCount
-		}
-		if sid, ok := shimEvent.Payload["session_id"].(string); ok && strings.TrimSpace(sid) != "" {
-			sessionID = sid
-		}
-		ts := time.Now()
-		if shimEvent.Timestamp != "" {
-			if parsed, err := time.Parse(time.RFC3339Nano, shimEvent.Timestamp); err == nil {
-				ts = parsed
+
+		case "assistant":
+			if event.Message != nil {
+				if !started {
+					started = true
+					if sessionID == "" {
+						sessionID = event.SessionID
+					}
+					eventCallback(api.AgentEvent{
+						Event:     "session_started",
+						Timestamp: time.Now(),
+						Payload: map[string]interface{}{
+							"session_id": sessionID,
+							"turn_count": turnCount,
+							"provider":   "claude",
+						},
+					})
+				}
+				text := extractTextFromMessage(event.Message)
+				if text != "" {
+					eventCallback(api.AgentEvent{
+						Event:     "item/completed",
+						Timestamp: time.Now(),
+						Payload: map[string]interface{}{
+							"session_id": sessionID,
+							"item": map[string]interface{}{
+								"type": "agentMessage",
+								"text": text,
+							},
+							"turn_count": turnCount,
+							"provider":   "claude",
+						},
+					})
+				}
+				if event.Message.Usage != nil {
+					emitClaudeUsage(eventCallback, event.Message.Usage, sessionID, turnCount)
+				}
 			}
-		}
-		eventCallback(api.AgentEvent{
-			Event:     shimEvent.Event,
-			Timestamp: ts,
-			Usage:     shimEvent.Usage,
-			Payload:   shimEvent.Payload,
-		})
-		if shimEvent.Event == "turn/completed" {
+
+		case "result":
+			resultEvent = &claudeResultEvent{
+				SubType:        event.SubType,
+				IsError:        event.IsError,
+				Result:         event.Result,
+				APIErrorStatus: event.APIErrorStatus,
+				Usage:          event.Usage,
+				SessionID:      event.SessionID,
+			}
+			if event.SessionID != "" {
+				sessionID = event.SessionID
+			}
+			if !started {
+				started = true
+				eventCallback(api.AgentEvent{
+					Event:     "session_started",
+					Timestamp: time.Now(),
+					Payload: map[string]interface{}{
+						"session_id": sessionID,
+						"turn_count": turnCount,
+						"provider":   "claude",
+					},
+				})
+			}
+			eventCallback(api.AgentEvent{
+				Event:     "turn/completed",
+				Timestamp: time.Now(),
+				Payload: map[string]interface{}{
+					"session_id": sessionID,
+					"status":     "completed",
+					"turn_count": turnCount,
+					"provider":   "claude",
+				},
+			})
+			if event.Usage != nil {
+				emitClaudeUsage(eventCallback, event.Usage, sessionID, turnCount)
+			}
 			completed = true
 		}
 	}
+
 	if err := scanner.Err(); err != nil {
 		return sessionID, fmt.Errorf("%s: read error during claude turn: %w", api.ErrResponseTimeout, err)
 	}
-	if err := cmd.Wait(); err != nil {
-		waited = true
+
+	waitErr := cmd.Wait()
+	waited = true
+	if waitErr != nil {
 		if turnCtx.Err() == context.DeadlineExceeded {
 			return sessionID, fmt.Errorf("%s: claude turn exceeded %d ms", api.ErrTurnTimeout, cfg.TurnTimeoutMs)
 		}
 		if ctx.Err() != nil {
 			return sessionID, ctx.Err()
 		}
-		return sessionID, fmt.Errorf("%s: claude shim exited: %w", api.ErrPortExit, err)
+		if resultEvent != nil && resultEvent.IsError {
+			return sessionID, fmt.Errorf("%s: %s", api.ErrTurnFailed, resultEvent.Result)
+		}
+		return sessionID, fmt.Errorf("%s: claude exited: %w", api.ErrPortExit, waitErr)
 	}
-	waited = true
+
+	if resultEvent != nil && resultEvent.IsError {
+		return sessionID, fmt.Errorf("%s: %s", api.ErrTurnFailed, resultEvent.Result)
+	}
+
 	if !completed {
-		return sessionID, fmt.Errorf("%s: claude shim exited before turn completion", api.ErrPortExit)
+		return sessionID, fmt.Errorf("%s: claude exited before turn completion", api.ErrPortExit)
 	}
+
 	return sessionID, nil
 }
 
-func writeEmbeddedClaudeShim(workspacePath string) (string, error) {
-	configDir := filepath.Join(workspacePath, ".simphony")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return "", fmt.Errorf("%s: create claude shim dir: %w", api.ErrInvalidWorkspaceCWD, err)
+func extractTextFromMessage(msg *claudeMessage) string {
+	var parts []string
+	for _, block := range msg.Content {
+		if block.Type == "text" && block.Text != "" {
+			parts = append(parts, block.Text)
+		}
 	}
-	shimPath := filepath.Join(configDir, "claude-agent-shim.mjs")
-	if err := os.WriteFile(shimPath, claudeShimSource, 0644); err != nil {
-		return "", fmt.Errorf("%s: write claude shim: %w", api.ErrInvalidWorkspaceCWD, err)
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
 	}
-	return shimPath, nil
+	if msg.Text != "" {
+		return msg.Text
+	}
+	return ""
+}
+
+func emitClaudeUsage(cb func(api.AgentEvent), usage *claudeUsage, sessionID string, turnCount int) {
+	if usage == nil {
+		return
+	}
+	u := map[string]interface{}{}
+	if usage.InputTokens > 0 {
+		u["input_tokens"] = usage.InputTokens
+	}
+	if usage.OutputTokens > 0 {
+		u["output_tokens"] = usage.OutputTokens
+	}
+	if usage.TotalTokens > 0 {
+		u["total_tokens"] = usage.TotalTokens
+	} else if usage.InputTokens > 0 && usage.OutputTokens > 0 {
+		u["total_tokens"] = usage.InputTokens + usage.OutputTokens
+	}
+	if len(u) > 0 {
+		cb(api.AgentEvent{
+			Event:     "thread/tokenUsage/updated",
+			Timestamp: time.Now(),
+			Usage:     u,
+			Payload: map[string]interface{}{
+				"session_id": sessionID,
+				"turn_count": turnCount,
+				"provider":   "claude",
+			},
+		})
+	}
+}
+
+func writeCodexWorkspaceConfig(codexHome string, cfg *api.AgentRuntimeConfig) error {
+	configPath := filepath.Join(codexHome, "config.toml")
+	var b strings.Builder
+	fmt.Fprintln(&b, `forced_login_method = "api"`)
+	fmt.Fprintln(&b, `cli_auth_credentials_store = "file"`)
+	if cfg.Model != "" {
+		fmt.Fprintf(&b, "model = %q\n", cfg.Model)
+	}
+
+	endpoint := cfg.EndpointURL
+	if endpoint == "" && cfg.Provider != "" && cfg.Provider != "openai" {
+		// Fallback: if no explicit endpoint but provider is non-OpenAI,
+		// keep whatever base URL Codex already has configured.
+		endpoint = cfg.EndpointURL
+	}
+
+	if endpoint != "" {
+		// For non-OpenAI endpoints, wire_api must live inside a
+		// [model_providers.*] table — a top-level wire_api is ignored.
+		if !strings.Contains(endpoint, "openai.com") {
+			providerName := strings.ToLower(strings.TrimSpace(cfg.ModelProvider))
+			if providerName == "" {
+				providerName = strings.ToLower(strings.TrimSpace(cfg.Provider))
+			}
+			if providerName == "" || providerName == "openai" {
+				providerName = "custom"
+			}
+			fmt.Fprintf(&b, "model_provider = %q\n", providerName)
+			fmt.Fprintf(&b, "\n[model_providers.%s]\n", providerName)
+			fmt.Fprintf(&b, "name = %q\n", providerName)
+			fmt.Fprintf(&b, "base_url = %q\n", endpoint)
+			fmt.Fprintln(&b, `wire_api = "chat"`)
+			fmt.Fprintln(&b, `requires_openai_auth = true`)
+		} else {
+			fmt.Fprintf(&b, "openai_base_url = %q\n", endpoint)
+		}
+	}
+	if err := os.WriteFile(configPath, []byte(b.String()), 0644); err != nil {
+		return err
+	}
+	if cfg.APIKey != "" {
+		authPath := filepath.Join(codexHome, "auth.json")
+		auth := map[string]string{"api_key": cfg.APIKey}
+		data, err := json.Marshal(auth)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(authPath, data, 0600); err != nil {
+			return err
+		}
+		log.Printf("action=writeCodexWorkspaceConfig codex_home=%s provider=%s api_key_configured=true", codexHome, cfg.Provider)
+	} else {
+		log.Printf("action=writeCodexWorkspaceConfig codex_home=%s provider=%s api_key_configured=false warn=no_api_key", codexHome, cfg.Provider)
+	}
+	return nil
 }
 
 func buildThreadStartParams(workspace *api.Workspace, cfg *api.CodexConfig, issue api.Issue) map[string]interface{} {
@@ -931,6 +1144,20 @@ func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentR
 		env = prependPath(env, filepath.Dir(rgPath))
 	}
 	env = prependWorkspaceToolPaths(env, workspacePath)
+
+			// Isolate Codex config per workspace to prevent cached ChatGPT/OAuth auth
+	// from overriding API-key mode. Only needed when using the Codex provider.
+	if !strings.EqualFold(cfg.Provider, "claude") {
+		codexHome := filepath.Join(workspacePath, ".simphony", "codex")
+		if err := os.MkdirAll(codexHome, 0755); err != nil {
+			return fmt.Errorf("%s: create codex home dir: %w", api.ErrInvalidWorkspaceCWD, err)
+		}
+		env = setEnv(env, "CODEX_HOME", codexHome)
+		if err := writeCodexWorkspaceConfig(codexHome, cfg); err != nil {
+			return err
+		}
+	}
+
 	env = applyRuntimeEnv(env, cfg)
 
 	cmd.Env = env
@@ -941,11 +1168,10 @@ var inheritedAgentEnvKeys = map[string]struct{}{
 	"ANTHROPIC_API_KEY":    {},
 	"ANTHROPIC_AUTH_TOKEN": {},
 	"ANTHROPIC_BASE_URL":   {},
-	"LINEAR_API_KEY":       {},
-	"LINEAR_AUTH_TOKEN":    {},
 	"OPENAI_API_KEY":       {},
 	"OPENAI_AUTH_TOKEN":    {},
 	"OPENAI_BASE_URL":      {},
+	"LINEAR_API_KEY":       {},
 }
 
 func scrubInheritedAgentEnv(env []string) []string {
@@ -969,9 +1195,12 @@ func applyRuntimeEnv(env []string, cfg *api.AgentRuntimeConfig) []string {
 		return env
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
-	case "claude":
+		case "claude":
 		if cfg.APIKey != "" {
 			env = setEnv(env, "ANTHROPIC_API_KEY", cfg.APIKey)
+			// Z.AI and some other Anthropic-compatible endpoints expect the
+			// key in ANT_AUTH_TOKEN rather than API_KEY.
+			env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", cfg.APIKey)
 		}
 		if cfg.EndpointURL != "" {
 			env = setEnv(env, "ANTHROPIC_BASE_URL", cfg.EndpointURL)
@@ -997,6 +1226,48 @@ func applyRuntimeEnv(env []string, cfg *api.AgentRuntimeConfig) []string {
 		env = setEnv(env, key, value)
 	}
 	return env
+}
+
+func findClaudeBinary() string {
+	// On Windows, LookPath finds .exe, .com, .bat, .cmd.
+	// Try claude.exe first for direct execution.
+	if runtime.GOOS == "windows" {
+		if p, err := exec.LookPath("claude.exe"); err == nil {
+			return p
+		}
+		// Check known npm global locations for the direct binary.
+		candidates := []string{
+			filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Roaming", "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
+			filepath.Join(os.Getenv("LOCALAPPDATA"), "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
+			`C:\Program Files\nodejs\node_modules\@anthropic-ai\claude-code\bin\claude.exe`,
+		}
+		for _, p := range candidates {
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				return p
+			}
+		}
+		// Fall back to the npm wrapper (claude.cmd).
+		if p, err := exec.LookPath("claude"); err == nil {
+			return p
+		}
+	} else {
+		if p, err := exec.LookPath("claude"); err == nil {
+			return p
+		}
+		candidates := []string{
+			"/usr/local/bin/claude",
+			"/usr/bin/claude",
+			filepath.Join(os.Getenv("HOME"), ".npm-global", "bin", "claude"),
+			filepath.Join(os.Getenv("HOME"), ".local", "bin", "claude"),
+			filepath.Join(os.Getenv("HOME"), ".local", "share", "npm", "bin", "claude"),
+		}
+		for _, p := range candidates {
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				return p
+			}
+		}
+	}
+	return ""
 }
 
 func writeGitSafeDirectoryConfig(workspacePath string) (string, error) {
@@ -1055,7 +1326,7 @@ func prependWorkspaceToolPaths(env []string, workspacePath string) []string {
 		filepath.Join(workspacePath, "dashboard", "node_modules", ".bin"),
 	}
 	if runtime.GOOS == "windows" {
-		candidates = append(candidates, `C:\Program Files\nodejs`)
+				candidates = append(candidates, `C:\Program Files\nodejs`)
 	}
 	for _, dir := range candidates {
 		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
