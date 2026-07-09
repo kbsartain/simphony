@@ -126,6 +126,66 @@ func TestParseAndMergeProviderCatalogOverride(t *testing.T) {
 	}
 }
 
+func TestApplyProviderCatalog_DerivesBaseAuthAndEndpoint(t *testing.T) {
+	cfg := &api.WorkflowConfig{}
+	cfg.AgentRuntime = api.AgentRuntimeConfig{Provider: "claude", ModelProvider: "zai", Model: "glm-5.2"}
+	ApplyProviderCatalog(cfg, BuiltinProviderCatalog())
+	if cfg.AgentRuntime.AuthStyle != "bearer" {
+		t.Errorf("AuthStyle = %q, want bearer", cfg.AgentRuntime.AuthStyle)
+	}
+	if cfg.AgentRuntime.EndpointURL != "https://api.z.ai/api/anthropic" {
+		t.Errorf("EndpointURL = %q, want derived z.ai endpoint", cfg.AgentRuntime.EndpointURL)
+	}
+}
+
+func TestApplyProviderCatalog_AutoWiresKeyFromEnv(t *testing.T) {
+	t.Setenv("ZAI_API_KEY", "secret-zai")
+	cfg := &api.WorkflowConfig{}
+	cfg.AgentRuntime = api.AgentRuntimeConfig{Provider: "claude", ModelProvider: "zai", Model: "glm-5.2"}
+	ApplyProviderCatalog(cfg, BuiltinProviderCatalog())
+	if cfg.AgentRuntime.APIKey != "secret-zai" || !cfg.AgentRuntime.APIKeyConfigured {
+		t.Errorf("key not auto-wired: %q configured=%v", cfg.AgentRuntime.APIKey, cfg.AgentRuntime.APIKeyConfigured)
+	}
+}
+
+func TestApplyProviderCatalog_RespectsExplicitValues(t *testing.T) {
+	t.Setenv("ZAI_API_KEY", "env-key")
+	cfg := &api.WorkflowConfig{}
+	cfg.AgentRuntime = api.AgentRuntimeConfig{
+		Provider: "claude", ModelProvider: "zai",
+		EndpointURL: "https://custom.example", APIKey: "explicit", APIKeyConfigured: true,
+	}
+	ApplyProviderCatalog(cfg, BuiltinProviderCatalog())
+	if cfg.AgentRuntime.EndpointURL != "https://custom.example" {
+		t.Errorf("explicit endpoint overridden: %q", cfg.AgentRuntime.EndpointURL)
+	}
+	if cfg.AgentRuntime.APIKey != "explicit" {
+		t.Errorf("explicit key overridden: %q", cfg.AgentRuntime.APIKey)
+	}
+}
+
+func TestApplyProviderCatalog_StageDerivesTransport(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	cfg := &api.WorkflowConfig{}
+	cfg.AgentRuntime = api.AgentRuntimeConfig{
+		Provider: "claude", ModelProvider: "zai", Model: "glm-5.2",
+		StageOverrides: map[string]api.AgentStageOverride{
+			"review": {ModelProvider: "openai", Model: "gpt-5.5"},
+		},
+	}
+	ApplyProviderCatalog(cfg, BuiltinProviderCatalog())
+	ov := cfg.AgentRuntime.StageOverrides["review"]
+	if ov.Provider != "codex" {
+		t.Errorf("stage transport = %q, want codex (derived from openai vendor)", ov.Provider)
+	}
+	if ov.Command != "codex app-server" {
+		t.Errorf("stage command = %q, want codex app-server", ov.Command)
+	}
+	if ov.APIKey != "openai-key" || !ov.APIKeyConfigured {
+		t.Errorf("stage key not auto-wired from OPENAI_API_KEY: %q", ov.APIKey)
+	}
+}
+
 func TestParseProviderCatalog_RejectsBadTransport(t *testing.T) {
 	_, err := parseProviderCatalog(map[string]interface{}{
 		"bad": map[string]interface{}{"transport": "grpc"},

@@ -635,11 +635,13 @@ func (r *Runner) runClaudeTurn(ctx context.Context, workspace *api.Workspace, cf
 		// both env vars are set. Anthropic-compatible gateways (z.ai, Kimi)
 		// reject that ambiguous dual-auth request, so send only the header the
 		// endpoint expects: bearer (ANTHROPIC_AUTH_TOKEN) for compatible
-		// endpoints, x-api-key (ANTHROPIC_API_KEY) for native Anthropic.
-		if isNativeAnthropicEndpoint(cfg.EndpointURL) {
-			env = setEnv(env, "ANTHROPIC_API_KEY", credential)
-		} else {
+		// endpoints, x-api-key (ANTHROPIC_API_KEY) for native Anthropic. The
+		// style comes from the provider catalog (cfg.AuthStyle); when unresolved
+		// we fall back to an endpoint heuristic.
+		if resolvedAuthIsBearer(cfg.AuthStyle, cfg.EndpointURL) {
 			env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", credential)
+		} else {
+			env = setEnv(env, "ANTHROPIC_API_KEY", credential)
 		}
 	}
 	for key, value := range cfg.Env {
@@ -1184,6 +1186,20 @@ var inheritedAgentEnvKeys = map[string]struct{}{
 	"LINEAR_API_KEY":       {},
 }
 
+// resolvedAuthIsBearer decides whether the claude credential should be sent as a
+// bearer token (ANTHROPIC_AUTH_TOKEN) or x-api-key (ANTHROPIC_API_KEY). It
+// prefers the catalog-resolved auth style and falls back to an endpoint
+// heuristic when the style is unset.
+func resolvedAuthIsBearer(style, endpoint string) bool {
+	switch strings.ToLower(strings.TrimSpace(style)) {
+	case "bearer":
+		return true
+	case "x-api-key":
+		return false
+	}
+	return !isNativeAnthropicEndpoint(endpoint)
+}
+
 // isNativeAnthropicEndpoint reports whether url targets Anthropic's own API
 // (empty means the CLI default, which is native Anthropic). Native Anthropic
 // authenticates via the x-api-key header; other Anthropic-compatible endpoints
@@ -1482,6 +1498,29 @@ func effectiveCodexConfig(cfg *api.CodexConfig, stage api.PipelineStage) api.Cod
 	override, ok := cfg.StageOverrides[stageKey]
 	if !ok {
 		return effective
+	}
+	// A stage may switch the entire coding SDK (e.g. code on Claude, review on
+	// Codex). When the transport changes, rebuild the transport-specific fields
+	// for the target SDK so the base SDK's settings don't leak across — otherwise
+	// a Codex base Command ("codex app-server") would be handed to the Claude
+	// runner, or vice versa.
+	if override.Provider != "" && !strings.EqualFold(override.Provider, effective.Provider) {
+		effective.Provider = strings.ToLower(strings.TrimSpace(override.Provider))
+		effective.Command = ""
+		switch effective.Provider {
+		case "codex":
+			effective.Command = "codex app-server"
+		case "claude":
+			if effective.PermissionMode == "" {
+				effective.PermissionMode = "acceptEdits"
+			}
+		}
+	}
+	if override.Command != "" {
+		effective.Command = override.Command
+	}
+	if override.AuthStyle != "" {
+		effective.AuthStyle = override.AuthStyle
 	}
 	if override.Model != "" {
 		effective.Model = override.Model

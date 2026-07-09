@@ -44,6 +44,39 @@ type WorkflowConfig struct {
 	Codex            CodexConfig            `json:"codex"`
 	Claude           ClaudeConfig           `json:"claude,omitempty"`
 	Server           *ServerConfig          `json:"server,omitempty"`
+	Verify           VerifyConfig           `json:"verify,omitempty"`
+	GitHub           GitHubConfig           `json:"github,omitempty"`
+}
+
+// VerifyConfig configures deterministic pre-merge verification. Commands are
+// project-defined and stack-agnostic from simphony's point of view: it just
+// runs each one in order in the shared repo (checked out at the tentative
+// merge commit) and checks exit codes, the same pattern hooks.before_run
+// already uses. A TypeScript project might set
+// ["pnpm install", "pnpm lint", "pnpm typecheck", "pnpm test"]; a Go project
+// might set ["go build ./...", "go vet ./...", "go test ./..."]. If any
+// command fails, the merge is rolled back and the issue is retried.
+type VerifyConfig struct {
+	Commands  []string `json:"commands,omitempty"`
+	TimeoutMs int      `json:"timeout_ms"`
+}
+
+// GitHubConfig configures the optional GitHub PR-based merge flow (via the
+// `gh` CLI, reusing whatever auth `gh auth login` already has — no separate
+// token needed). When enabled, this replaces the local git-merge path:
+// simphony pushes the issue's branch, opens (or reuses) a PR against the
+// base branch, waits for GitHub's checks to complete, and merges via
+// `gh pr merge` — all deterministic Go-driven steps. This is a second,
+// independent layer on top of verify.commands: local verify catches
+// obvious breaks fast and cheaply before ever pushing; GitHub's
+// pull_request-triggered CI catches issues that only exist in the actual
+// merged result (two branches whose changes conflict, for example), and
+// GitHub branch protection (if configured) acts as an independent backstop
+// even if simphony's own logic has a bug.
+type GitHubConfig struct {
+	Enabled         bool   `json:"enabled"`
+	MergeMethod     string `json:"merge_method"` // "merge", "squash", or "rebase"
+	ChecksTimeoutMs int    `json:"checks_timeout_ms"`
 }
 
 // TrackerConfig configures the issue tracker integration.
@@ -124,6 +157,9 @@ type AgentRuntimeConfig struct {
 	ModelProvider       string                        `json:"model_provider,omitempty"`
 	ReasoningEffort     string                        `json:"reasoning_effort,omitempty"`
 	EndpointURL         string                        `json:"endpoint_url,omitempty"`
+	// AuthStyle is the resolved wire auth style ("bearer" or "x-api-key"),
+	// derived from the provider catalog. Consumed by the claude runner.
+	AuthStyle           string                        `json:"auth_style,omitempty"`
 	APIKeyConfigured    bool                          `json:"api_key_configured,omitempty"`
 	AuthTokenConfigured bool                          `json:"auth_token_configured,omitempty"`
 	APIKey              string                        `json:"-"`
@@ -144,11 +180,17 @@ type AgentRuntimeConfig struct {
 }
 
 // AgentStageOverride overrides selected runtime settings for a pipeline stage.
+// A stage may switch the whole coding SDK (Provider/transport) — e.g. code on
+// Claude, review on Codex — with transport, endpoint, and auth derived from the
+// stage's ModelProvider via the provider catalog.
 type AgentStageOverride struct {
+	Provider            string            `json:"provider,omitempty"`
+	Command             string            `json:"command,omitempty"`
 	Model               string            `json:"model,omitempty"`
 	ModelProvider       string            `json:"model_provider,omitempty"`
 	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
 	EndpointURL         string            `json:"endpoint_url,omitempty"`
+	AuthStyle           string            `json:"auth_style,omitempty"`
 	APIKeyConfigured    bool              `json:"api_key_configured,omitempty"`
 	AuthTokenConfigured bool              `json:"auth_token_configured,omitempty"`
 	APIKey              string            `json:"-"`

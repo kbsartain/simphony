@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -150,6 +151,78 @@ func mergeProviderCatalog(base, override api.ProviderCatalog) api.ProviderCatalo
 		merged[name] = entry
 	}
 	return merged
+}
+
+// ApplyProviderCatalog enriches a resolved workflow config with values derived
+// from the provider catalog: auth style and (when unset) endpoint for the base
+// runtime, and transport/endpoint/auth/command for any stage override that names
+// a vendor. Explicitly configured values are never overridden. This lets a
+// minimal config (or stage) select a vendor and inherit the rest — and lets a
+// stage switch the coding SDK entirely (e.g. code on Claude, review on Codex).
+func ApplyProviderCatalog(cfg *api.WorkflowConfig, catalog api.ProviderCatalog) {
+	if cfg == nil {
+		return
+	}
+	if catalog == nil {
+		catalog = BuiltinProviderCatalog()
+	}
+	deriveRuntimeFromCatalog(&cfg.AgentRuntime, catalog)
+	for key, override := range cfg.AgentRuntime.StageOverrides {
+		deriveStageOverrideFromCatalog(&override, catalog)
+		cfg.AgentRuntime.StageOverrides[key] = override
+	}
+}
+
+// deriveRuntimeFromCatalog fills auth style and endpoint for the base runtime
+// from its ModelProvider vendor. The base Provider (transport) is left as the
+// user configured it; per-stage transport switching is handled separately.
+func deriveRuntimeFromCatalog(rt *api.AgentRuntimeConfig, catalog api.ProviderCatalog) {
+	entry, ok := catalog[strings.ToLower(strings.TrimSpace(rt.ModelProvider))]
+	if !ok {
+		return
+	}
+	if rt.AuthStyle == "" {
+		rt.AuthStyle = entry.Auth.Style
+	}
+	if strings.TrimSpace(rt.EndpointURL) == "" && entry.BaseURL != "" {
+		rt.EndpointURL = entry.BaseURL
+	}
+	// Auto-wire the key from the vendor's env var when none was configured.
+	if !rt.APIKeyConfigured && !rt.AuthTokenConfigured && entry.Auth.Env != "" {
+		if v := strings.TrimSpace(os.Getenv(entry.Auth.Env)); v != "" {
+			rt.APIKey = v
+			rt.APIKeyConfigured = true
+		}
+	}
+}
+
+// deriveStageOverrideFromCatalog resolves a stage override's transport, endpoint,
+// auth style, and command from its ModelProvider vendor when not set explicitly.
+func deriveStageOverrideFromCatalog(override *api.AgentStageOverride, catalog api.ProviderCatalog) {
+	entry, ok := catalog[strings.ToLower(strings.TrimSpace(override.ModelProvider))]
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(override.Provider) == "" && entry.Transport != "" {
+		override.Provider = entry.Transport
+	}
+	if strings.TrimSpace(override.EndpointURL) == "" && entry.BaseURL != "" {
+		override.EndpointURL = entry.BaseURL
+	}
+	if strings.TrimSpace(override.AuthStyle) == "" && entry.Auth.Style != "" {
+		override.AuthStyle = entry.Auth.Style
+	}
+	if strings.TrimSpace(override.Command) == "" && strings.EqualFold(override.Provider, "codex") {
+		override.Command = "codex app-server"
+	}
+	// Auto-wire the stage's key from the vendor's env var when none was
+	// configured, so a cross-vendor stage does not inherit the base vendor's key.
+	if !override.APIKeyConfigured && !override.AuthTokenConfigured && entry.Auth.Env != "" {
+		if v := strings.TrimSpace(os.Getenv(entry.Auth.Env)); v != "" {
+			override.APIKey = v
+			override.APIKeyConfigured = true
+		}
+	}
 }
 
 // catalogWarnings validates each resolved project runtime against the catalog

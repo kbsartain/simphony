@@ -170,7 +170,12 @@ func ResolveProjectDefinition(registry *ProjectRegistry, project RegistryProject
 		return nil, fmt.Errorf("%s: project registry is nil", api.ErrProjectRegistryParseError)
 	}
 	def = applyRegistryDefaults(registry, project, def)
-	return ResolveConfig(def, filepath.Dir(project.WorkflowPath))
+	cfg, err := ResolveConfig(def, filepath.Dir(project.WorkflowPath))
+	if err != nil {
+		return nil, err
+	}
+	ApplyProviderCatalog(cfg, registry.Catalog)
+	return cfg, nil
 }
 
 // ValidateProjectIsolation resolves enabled project workflows and checks cross-project safety.

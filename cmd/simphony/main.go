@@ -264,6 +264,7 @@ func run(ctx context.Context, workflowPath string) error {
 	if err != nil {
 		return fmt.Errorf("resolve config: %w", err)
 	}
+	config.ApplyProviderCatalog(cfg, config.BuiltinProviderCatalog())
 
 	trackerClient, err := tracker.NewLinearClient(cfg.Tracker)
 	if err != nil {
@@ -316,6 +317,7 @@ func run(ctx context.Context, workflowPath string) error {
 			log.Printf("workflow reload error: %v", err)
 			return
 		}
+		config.ApplyProviderCatalog(newCfg, config.BuiltinProviderCatalog())
 		if err := applyWorkflow(newDef, newCfg); err != nil {
 			log.Printf("workflow reload error: %v", err)
 			return

@@ -186,6 +186,16 @@ func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.Workfl
 		return nil, err
 	}
 
+	verifyMap := getSubMap(def.Config, "verify")
+	if err := resolveVerify(verifyMap, cfg); err != nil {
+		return nil, err
+	}
+
+	githubMap := getSubMap(def.Config, "github")
+	if err := resolveGitHubConfig(githubMap, cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
 }
 
@@ -881,7 +891,7 @@ func applyRuntimeCommon(m map[string]interface{}, runtime *api.AgentRuntimeConfi
 		runtime.Model = strings.TrimSpace(v)
 	}
 	if v, ok := getString(m, "model_provider"); ok {
-		runtime.ModelProvider = strings.TrimSpace(v)
+		runtime.ModelProvider = strings.ToLower(strings.TrimSpace(v))
 	}
 	if v, ok := getString(m, "reasoning_effort"); ok {
 		reasoningEffort, err := normalizeReasoningEffort(v)
@@ -966,11 +976,21 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 			return nil, fmt.Errorf("%s: %s.stage_overrides.%s must be a map", api.ErrWorkflowParseError, section, stageName)
 		}
 		override := api.AgentStageOverride{}
+		if v, ok := getString(stageMap, "provider"); ok && strings.TrimSpace(v) != "" {
+			provider := strings.ToLower(strings.TrimSpace(v))
+			if provider != "codex" && provider != "claude" {
+				return nil, fmt.Errorf("%s: %s.stage_overrides.%s.provider must be codex or claude, got %q", api.ErrWorkflowParseError, section, stageName, provider)
+			}
+			override.Provider = provider
+		}
+		if v, ok := getString(stageMap, "command"); ok {
+			override.Command = strings.TrimSpace(v)
+		}
 		if v, ok := getString(stageMap, "model"); ok {
 			override.Model = strings.TrimSpace(v)
 		}
 		if v, ok := getString(stageMap, "model_provider"); ok {
-			override.ModelProvider = strings.TrimSpace(v)
+			override.ModelProvider = strings.ToLower(strings.TrimSpace(v))
 		}
 		if v, ok := getString(stageMap, "reasoning_effort"); ok {
 			reasoningEffort, err := normalizeReasoningEffort(v)
@@ -1001,7 +1021,7 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 			return nil, fmt.Errorf("%s: %s.stage_overrides.%s.skills %w", api.ErrWorkflowParseError, section, stageName, err)
 		}
 		override.Skills = skills
-		if override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && override.EndpointURL == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured && len(override.Env) == 0 && len(override.Skills) == 0 {
+		if override.Provider == "" && override.Command == "" && override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && override.EndpointURL == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured && len(override.Env) == 0 && len(override.Skills) == 0 {
 			continue
 		}
 		overrides[stageKey] = override
@@ -1099,6 +1119,53 @@ func resolveServer(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		return fmt.Errorf("%s: server.port must be between 1 and 65535, got %d", api.ErrWorkflowParseError, port)
 	}
 	cfg.Server = &api.ServerConfig{Port: port}
+	return nil
+}
+
+func resolveVerify(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	verify := api.VerifyConfig{
+		// Install + lint + typecheck + test can legitimately take a few
+		// minutes on a cold cache; default generously rather than false-fail.
+		TimeoutMs: 600000,
+	}
+	if v, ok := getStringSlice(m, "commands"); ok {
+		verify.Commands = v
+	}
+	if v, ok := getInt(m, "timeout_ms"); ok {
+		if v <= 0 {
+			return fmt.Errorf("%s: verify.timeout_ms must be positive, got %d", api.ErrWorkflowParseError, v)
+		}
+		verify.TimeoutMs = v
+	}
+	cfg.Verify = verify
+	return nil
+}
+
+func resolveGitHubConfig(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	gh := api.GitHubConfig{
+		MergeMethod: "squash",
+		// PR checks (install + lint + typecheck + test + build, potentially
+		// queued behind other runner jobs) can reasonably take a while;
+		// default generously rather than false-fail on a busy runner queue.
+		ChecksTimeoutMs: 1800000,
+	}
+	if v, ok := getBool(m, "enabled"); ok {
+		gh.Enabled = v
+	}
+	if v, ok := getString(m, "merge_method"); ok && strings.TrimSpace(v) != "" {
+		method := strings.ToLower(strings.TrimSpace(v))
+		if method != "merge" && method != "squash" && method != "rebase" {
+			return fmt.Errorf("%s: github.merge_method must be merge, squash, or rebase, got %q", api.ErrWorkflowParseError, method)
+		}
+		gh.MergeMethod = method
+	}
+	if v, ok := getInt(m, "checks_timeout_ms"); ok {
+		if v <= 0 {
+			return fmt.Errorf("%s: github.checks_timeout_ms must be positive, got %d", api.ErrWorkflowParseError, v)
+		}
+		gh.ChecksTimeoutMs = v
+	}
+	cfg.GitHub = gh
 	return nil
 }
 
