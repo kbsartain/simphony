@@ -175,6 +175,41 @@ projects:
 	}
 }
 
+func TestProjectServerReturnsProviderCatalog(t *testing.T) {
+	registry := &config.ProjectRegistry{
+		SourcePath: filepath.Join(t.TempDir(), "simphony.yaml"),
+		Catalog:    config.BuiltinProviderCatalog(),
+	}
+	manager := &fakeProjectManager{registry: registry}
+	s := newTestProjectServer(manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/providers", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body api.ProviderCatalogResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode providers: %v", err)
+	}
+	byName := map[string]api.ProviderSummary{}
+	for _, p := range body.Providers {
+		byName[p.Name] = p
+	}
+	zai, ok := byName["zai"]
+	if !ok {
+		t.Fatalf("providers response missing zai: %+v", body.Providers)
+	}
+	if zai.Transport != "claude" || zai.AuthStyle != "bearer" || zai.AuthEnv != "ZAI_API_KEY" {
+		t.Errorf("zai summary = %+v, want claude/bearer/ZAI_API_KEY", zai)
+	}
+	if len(zai.Models) == 0 {
+		t.Error("zai summary has no models")
+	}
+}
+
 func TestProjectServerReturnsRuntimeMode(t *testing.T) {
 	registry := &config.ProjectRegistry{SourcePath: filepath.Join(t.TempDir(), "simphony.yaml")}
 	manager := &fakeProjectManager{registry: registry}

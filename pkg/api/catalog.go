@@ -41,3 +41,25 @@ type ProviderModel struct {
 	// (thinking level is not validated for this model).
 	Thinking []string `json:"thinking,omitempty"`
 }
+
+// ProviderCatalogResponse is the dashboard-facing view of the provider catalog.
+// It contains no secrets — auth_env is a variable name, not a value.
+type ProviderCatalogResponse struct {
+	Providers []ProviderSummary `json:"providers"`
+}
+
+// ProviderSummary is one vendor in ProviderCatalogResponse, models sorted by id.
+type ProviderSummary struct {
+	Name      string                 `json:"name"`
+	Transport string                 `json:"transport"`
+	BaseURL   string                 `json:"base_url,omitempty"`
+	AuthEnv   string                 `json:"auth_env,omitempty"`
+	AuthStyle string                 `json:"auth_style,omitempty"`
+	Models    []ProviderModelSummary `json:"models"`
+}
+
+// ProviderModelSummary is one model entry in a ProviderSummary.
+type ProviderModelSummary struct {
+	ID       string   `json:"id"`
+	Thinking []string `json:"thinking,omitempty"`
+}

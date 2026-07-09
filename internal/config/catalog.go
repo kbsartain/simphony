@@ -53,6 +53,42 @@ func BuiltinProviderCatalog() api.ProviderCatalog {
 	}
 }
 
+// ProviderCatalogSummary builds the dashboard-facing view of the catalog with
+// vendors and models sorted deterministically. It exposes no secrets.
+func ProviderCatalogSummary(catalog api.ProviderCatalog) api.ProviderCatalogResponse {
+	if catalog == nil {
+		catalog = BuiltinProviderCatalog()
+	}
+	names := make([]string, 0, len(catalog))
+	for name := range catalog {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	providers := make([]api.ProviderSummary, 0, len(names))
+	for _, name := range names {
+		entry := catalog[name]
+		modelIDs := make([]string, 0, len(entry.Models))
+		for id := range entry.Models {
+			modelIDs = append(modelIDs, id)
+		}
+		sort.Strings(modelIDs)
+		models := make([]api.ProviderModelSummary, 0, len(modelIDs))
+		for _, id := range modelIDs {
+			models = append(models, api.ProviderModelSummary{ID: id, Thinking: entry.Models[id].Thinking})
+		}
+		providers = append(providers, api.ProviderSummary{
+			Name:      name,
+			Transport: entry.Transport,
+			BaseURL:   entry.BaseURL,
+			AuthEnv:   entry.Auth.Env,
+			AuthStyle: entry.Auth.Style,
+			Models:    models,
+		})
+	}
+	return api.ProviderCatalogResponse{Providers: providers}
+}
+
 // resolveRegistryCatalog builds registry.Catalog from the builtin defaults plus
 // an optional `providers:` override map from simphony.yaml.
 func resolveRegistryCatalog(m map[string]interface{}, registry *ProjectRegistry) error {

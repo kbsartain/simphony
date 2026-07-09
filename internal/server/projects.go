@@ -74,6 +74,7 @@ func NewProjectServer(manager ProjectRuntimeManager, bind string, port int, apiP
 func (s *ProjectServer) registerRoutes() {
 	projectsPath := s.apiPrefix + "/projects"
 	s.mux.HandleFunc(s.apiPrefix+"/runtime-mode", s.withCORS(s.handleRuntimeMode))
+	s.mux.HandleFunc(s.apiPrefix+"/providers", s.withCORS(s.handleProviders))
 	s.mux.HandleFunc(s.apiPrefix+"/registry", s.withCORS(s.handleRegistry))
 	s.mux.HandleFunc(s.apiPrefix+"/registry/projects", s.withCORS(s.handleRegistryProjects))
 	s.mux.HandleFunc(s.apiPrefix+"/registry/projects/", s.withCORS(s.handleRegistryProjectRoute))
@@ -214,6 +215,27 @@ func (s *ProjectServer) handleRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, response)
+}
+
+// handleProviders returns the provider catalog (vendors, transports, models,
+// thinking levels) so the dashboard can drive its selectors from the same source
+// of truth as the backend. Contains no secrets.
+func (s *ProjectServer) handleProviders(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != s.apiPrefix+"/providers" {
+		s.handleProjectAPINotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only GET is allowed"},
+		})
+		return
+	}
+	catalog := config.BuiltinProviderCatalog()
+	if registry := s.manager.Registry(); registry != nil && registry.Catalog != nil {
+		catalog = registry.Catalog
+	}
+	s.writeJSON(w, http.StatusOK, config.ProviderCatalogSummary(catalog))
 }
 
 func (s *ProjectServer) handleRuntimeMode(w http.ResponseWriter, r *http.Request) {
