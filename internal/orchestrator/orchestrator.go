@@ -702,6 +702,10 @@ func (o *Orchestrator) dispatch(issue api.Issue) bool {
 	workspace, err := runtime.workspaceMgr.PrepareWorkspace(issue)
 	if err != nil {
 		o.logf("issue_id=%s issue_identifier=%s action=workspace_prepare failed=%v", issue.ID, issue.Identifier, err)
+		o.postStatusComment(issue, runtime, "Simphony dispatch failed", fmt.Sprintf(
+			"Could not prepare a workspace for this issue:\n\n```\n%v\n```\n\nSimphony will retry automatically.",
+			err,
+		))
 		o.releaseSupervisorSlot(supervisorSlotAcquired)
 		o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("workspace prepare: %v", err))
 		return true
@@ -725,6 +729,10 @@ func (o *Orchestrator) dispatch(issue api.Issue) bool {
 	if workspace.CreatedNow && runtime.cfg.Hooks.AfterCreate != nil {
 		if err := runtime.workspaceMgr.RunHook("after_create", *runtime.cfg.Hooks.AfterCreate, workspace.Path, runtime.cfg.Hooks.TimeoutMs); err != nil {
 			o.logf("issue_id=%s issue_identifier=%s action=after_create failed=%v", issue.ID, issue.Identifier, err)
+			o.postStatusComment(issue, runtime, "Simphony dispatch failed", fmt.Sprintf(
+				"The `after_create` workspace hook failed while preparing this issue:\n\n```\n%v\n```\n\nThe issue remains in %s; simphony will retry automatically. If this keeps failing, the hook script itself likely needs attention.",
+				err, issue.State,
+			))
 			_ = runtime.workspaceMgr.RemoveWorkspace(issue.Identifier)
 			o.releaseSupervisorSlot(supervisorSlotAcquired)
 			o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("after_create hook: %v", err))
@@ -736,6 +744,10 @@ func (o *Orchestrator) dispatch(issue api.Issue) bool {
 	if runtime.cfg.Hooks.BeforeRun != nil {
 		if err := runtime.workspaceMgr.RunHook("before_run", *runtime.cfg.Hooks.BeforeRun, workspace.Path, runtime.cfg.Hooks.TimeoutMs); err != nil {
 			o.logf("issue_id=%s issue_identifier=%s action=before_run failed=%v", issue.ID, issue.Identifier, err)
+			o.postStatusComment(issue, runtime, "Simphony dispatch failed", fmt.Sprintf(
+				"The `before_run` workspace hook failed while preparing this issue:\n\n```\n%v\n```\n\nThe issue remains in %s; simphony will retry automatically. If this keeps failing, the hook script itself likely needs attention.",
+				err, issue.State,
+			))
 			o.releaseSupervisorSlot(supervisorSlotAcquired)
 			o.scheduleFailureRetry(issue.ID, issue.Identifier, fmt.Sprintf("before_run hook: %v", err))
 			return true
@@ -1016,7 +1028,7 @@ func (o *Orchestrator) pipelineStage(issue api.Issue, cfg *api.WorkflowConfig) a
 	if cfg != nil && equalState(issue.State, cfg.Pipeline.MergeState) {
 		return api.PipelineStage{
 			Kind:         "merge",
-			Instructions: fmt.Sprintf("Human review for issue %s has been approved. Evaluate the existing workspace changes for merging, resolve merge-related issues, run appropriate checks, and commit the final changes to the repository.", issue.Identifier),
+			Instructions: fmt.Sprintf("Human review for issue %s has been approved. Finish and commit all outstanding work on this branch: run appropriate checks, ensure the working tree is clean, and commit any remaining changes. Do NOT attempt to merge or push this branch yourself — simphony will merge this branch into the base branch automatically once you finish this turn. If the merge later fails (e.g. due to a conflict with other completed work), you will be given the conflict details on a future turn to resolve.", issue.Identifier),
 		}
 	}
 	return api.PipelineStage{Kind: "coding"}
@@ -1081,6 +1093,10 @@ func (o *Orchestrator) handleWorkerResult(result workerResult) {
 			return
 		}
 		o.logf("issue_id=%s issue_identifier=%s action=worker_exit status=failed error=%v", result.issueID, identifier, result.err)
+		o.postStatusComment(entry.Issue, runtime, "Simphony agent run failed", fmt.Sprintf(
+			"The coding agent failed to start or complete this run:\n\n```\n%v\n```\n\nThe issue remains in %s; simphony will retry automatically.",
+			result.err, entry.Issue.State,
+		))
 		o.scheduleFailureRetry(result.issueID, identifier, result.err.Error())
 	} else {
 		o.logf("issue_id=%s issue_identifier=%s action=worker_exit status=success", result.issueID, identifier)
@@ -1416,6 +1432,38 @@ func (o *Orchestrator) handleCompletionTransitionRetry(ctx context.Context, runt
 }
 
 func (o *Orchestrator) transitionMergeIssueToDone(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string, workspacePath string) {
+	if runtime.workspaceMgr != nil {
+		var verify func(string) error
+		if len(runtime.cfg.Verify.Commands) > 0 {
+			verify = func(repoPath string) error {
+				return runtime.workspaceMgr.RunVerifyCommands(repoPath, runtime.cfg.Verify.Commands, runtime.cfg.Verify.TimeoutMs)
+			}
+		}
+
+		var mergeErr error
+		var mergeAction string
+		if runtime.cfg.GitHub.Enabled {
+			mergeAction = "merge_branch_github_pr"
+			mergeErr = runtime.workspaceMgr.MergeIssueBranchViaGitHubPR(issue, workspacePath, verify, runtime.cfg.GitHub)
+		} else {
+			mergeAction = "merge_branch"
+			mergeErr = runtime.workspaceMgr.MergeIssueBranch(issue, verify)
+		}
+
+		if mergeErr != nil {
+			o.logf("issue_id=%s issue_identifier=%s action=%s status=failed base_branch=%s error=%v", issue.ID, identifier, mergeAction, runtime.cfg.Workspace.BaseBranch, mergeErr)
+			_ = runtime.tracker.AddIssueComment(ctx, issue, fmt.Sprintf(
+				"**Simphony merge failed**\n\nCould not merge this issue's branch into `%s`:\n\n```\n%v\n```\n\nThe issue remains in %s; simphony will retry automatically. If this is a real conflict or a failed verification/check, resolve it manually on the branch and it should merge cleanly on the next attempt.",
+				runtime.cfg.Workspace.BaseBranch, mergeErr, issue.State,
+			))
+			o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("branch merge into %s: %v", runtime.cfg.Workspace.BaseBranch, mergeErr), retryKindCompletionTransition)
+			return
+		}
+		o.logf("issue_id=%s issue_identifier=%s action=%s status=success base_branch=%s", issue.ID, identifier, mergeAction, runtime.cfg.Workspace.BaseBranch)
+	} else {
+		o.logf("issue_id=%s issue_identifier=%s action=merge_branch status=skipped reason=no_workspace_manager", issue.ID, identifier)
+	}
+
 	updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, runtime.cfg.Pipeline.DoneState)
 	if err != nil {
 		o.logf("issue_id=%s issue_identifier=%s action=merge_completion_transition status=failed error=%v", issue.ID, identifier, err)
