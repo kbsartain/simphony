@@ -618,19 +618,29 @@ func (r *Runner) runClaudeTurn(ctx context.Context, workspace *api.Workspace, cf
 	cmd.Dir = workspace.Path
 	cmd.Stderr = os.Stderr
 
-	// Set environment
+	// Set environment. scrubInheritedAgentEnv has already stripped any inherited
+	// ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, so we start from a clean slate and
+	// set exactly one auth header's worth of credential.
 	env := scrubInheritedAgentEnv(os.Environ())
-	if cfg.APIKey != "" {
-		env = setEnv(env, "ANTHROPIC_API_KEY", cfg.APIKey)
-		// Z.AI and some Anthropic-compatible endpoints expect the key in
-		// ANT_AUTH_TOKEN rather than API_KEY.
-		env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", cfg.APIKey)
-	}
 	if cfg.EndpointURL != "" {
 		env = setEnv(env, "ANTHROPIC_BASE_URL", cfg.EndpointURL)
 	}
-	if cfg.AuthToken != "" {
-		env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", cfg.AuthToken)
+	// Resolve the credential; an explicit auth_token wins over api_key.
+	credential := cfg.AuthToken
+	if credential == "" {
+		credential = cfg.APIKey
+	}
+	if credential != "" {
+		// The claude CLI emits BOTH the x-api-key and Authorization headers when
+		// both env vars are set. Anthropic-compatible gateways (z.ai, Kimi)
+		// reject that ambiguous dual-auth request, so send only the header the
+		// endpoint expects: bearer (ANTHROPIC_AUTH_TOKEN) for compatible
+		// endpoints, x-api-key (ANTHROPIC_API_KEY) for native Anthropic.
+		if isNativeAnthropicEndpoint(cfg.EndpointURL) {
+			env = setEnv(env, "ANTHROPIC_API_KEY", credential)
+		} else {
+			env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", credential)
+		}
 	}
 	for key, value := range cfg.Env {
 		env = setEnv(env, key, value)
@@ -1172,6 +1182,15 @@ var inheritedAgentEnvKeys = map[string]struct{}{
 	"OPENAI_AUTH_TOKEN":    {},
 	"OPENAI_BASE_URL":      {},
 	"LINEAR_API_KEY":       {},
+}
+
+// isNativeAnthropicEndpoint reports whether url targets Anthropic's own API
+// (empty means the CLI default, which is native Anthropic). Native Anthropic
+// authenticates via the x-api-key header; other Anthropic-compatible endpoints
+// (z.ai, Kimi, ...) authenticate via the Authorization: Bearer header.
+func isNativeAnthropicEndpoint(url string) bool {
+	u := strings.ToLower(strings.TrimSpace(url))
+	return u == "" || strings.Contains(u, "api.anthropic.com")
 }
 
 func scrubInheritedAgentEnv(env []string) []string {
