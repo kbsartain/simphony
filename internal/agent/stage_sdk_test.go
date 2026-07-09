@@ -56,10 +56,11 @@ func TestResolvedAuthIsBearer(t *testing.T) {
 		want            bool
 	}{
 		{"bearer", "", true},
-		{"x-api-key", "https://api.z.ai/api/anthropic", false}, // explicit style wins over endpoint
-		{"", "https://api.z.ai/api/anthropic", true},           // fallback: non-native → bearer
-		{"", "", false},                                        // fallback: native anthropic → x-api-key
-		{"", "https://api.anthropic.com", false},
+		{"x-api-key", "https://api.z.ai/api/anthropic", true}, // compatible endpoint always bearer, even if mislabeled
+		{"", "https://api.z.ai/api/anthropic", true},          // non-native → bearer
+		{"x-api-key", "", false},                              // native + explicit x-api-key
+		{"", "", false},                                       // native anthropic default → x-api-key
+		{"bearer", "https://api.anthropic.com", true},         // native + explicit bearer honored
 	}
 	for _, c := range cases {
 		if got := resolvedAuthIsBearer(c.style, c.endpoint); got != c.want {

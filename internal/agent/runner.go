@@ -1191,13 +1191,20 @@ var inheritedAgentEnvKeys = map[string]struct{}{
 // prefers the catalog-resolved auth style and falls back to an endpoint
 // heuristic when the style is unset.
 func resolvedAuthIsBearer(style, endpoint string) bool {
+	// The endpoint is the most reliable signal: any non-native (Anthropic-
+	// compatible) endpoint — z.ai, Kimi, ... — authenticates via bearer, even if
+	// model_provider is mislabeled (e.g. "anthropic" pointed at a z.ai URL). Only
+	// native Anthropic / empty endpoints consult the catalog auth style.
+	if !isNativeAnthropicEndpoint(endpoint) {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(style)) {
 	case "bearer":
 		return true
 	case "x-api-key":
 		return false
 	}
-	return !isNativeAnthropicEndpoint(endpoint)
+	return false
 }
 
 // isNativeAnthropicEndpoint reports whether url targets Anthropic's own API
