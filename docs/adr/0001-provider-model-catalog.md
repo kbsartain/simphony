@@ -193,16 +193,33 @@ blanket-setting both.
 
 ## Action Items
 
-1. [ ] Phase 1 — Add `api.ProviderCatalog`/`ProviderEntry` types and a built-in
-       default catalog (anthropic, zai, openai, kimi).
-2. [ ] Phase 1 — Parse an optional `providers:` override in `simphony.yaml`.
-3. [ ] Phase 1 — Add load-time validation warnings: unknown model, unknown/invalid
-       thinking level, `model_provider`/`endpoint_url` mismatch.
-4. [ ] Phase 2 — Resolve `provider:` against the catalog to derive
-       `base_url`, auth env/style, and transport when not explicitly set.
-5. [ ] Phase 2 — Simplify `runClaude` auth wiring to honor `auth.style`.
-6. [ ] Phase 3 — Enforce per-model thinking validity; add a dashboard
-       provider/model picker sourced from the catalog.
-7. [ ] Docs — Update `docs/configuration.md` with the catalog and migration notes.
-8. [ ] Migration — Reconcile the current `model_provider: anthropic` vs z.ai
-       endpoint drift in both `WORKFLOW.md` files to `provider: zai`.
+1. [x] Phase 1 — Add `api.ProviderCatalog`/`ProviderEntry` types and a built-in
+       default catalog (anthropic, zai, openai, kimi). *(5e563c9)*
+2. [x] Phase 1 — Parse an optional `providers:` override in `simphony.yaml`. *(5e563c9)*
+3. [x] Phase 1 — Add load-time validation warnings: unknown model, unknown/invalid
+       thinking level, `model_provider`/`endpoint_url` mismatch. *(5e563c9)*
+4. [x] Phase 2 — Derive `base_url`, auth env/style, and transport from the vendor
+       (`model_provider`); auto-wire the key from the vendor's env var. *(24826c1)*
+5. [x] Phase 2 — Make `runClaude` auth wiring honor the resolved `auth.style`
+       (single auth header). *(e8a6973, 24826c1)*
+6. [x] Phase 2 — Per-stage SDK switching via `AgentStageOverride.provider`, with
+       transport-specific fields rebuilt on switch. *(24826c1)*
+7. [x] Phase 3 — Expose the catalog at `GET /api/v1/providers`. *(1a65720)*
+8. [ ] Phase 3 — Enforce per-model thinking validity (warn → error); wire the
+       dashboard selectors to `/api/v1/providers` with a per-project/per-stage SDK
+       selector. **Gated on the multi-endpoint-vendor model below** plus a
+       dev-server verification loop.
+9. [ ] Docs — Update `docs/configuration.md` with the catalog and migration notes.
+10. [x] Migration — Reconcile the `model_provider` vs z.ai endpoint drift in the
+       `WORKFLOW.md` files. *(config edits; `validate` reports clean)*
+
+## Follow-up: multi-endpoint vendors
+
+Discovered during Phase 3: **z.ai has two integration modes** — the
+Anthropic-compatible endpoint (`/api/anthropic`, Claude SDK, bearer) that geekli
+uses, and the OpenAI-compatible endpoint (`/api/coding/paas/v4`, Codex SDK) that
+the dashboard's hardcoded options use. The catalog currently models a vendor as a
+single `{transport, base_url, auth}`, which cannot express both. Before wiring the
+dashboard to the catalog, extend the model so a vendor can offer multiple named
+integration profiles (or treat each mode as a distinct entry, e.g. `zai` vs
+`zai-codex`). This is the gate for action item 8.
