@@ -21,6 +21,7 @@ type ProjectRegistry struct {
 	Server               *RegistryServerConfig
 	AgentRuntime         *api.AgentRuntimeConfig
 	AgentRuntimeDefaults map[string]interface{}
+	Catalog              api.ProviderCatalog
 	Concurrency          RegistryConcurrencyConfig
 	Security             RegistrySecurityConfig
 	Projects             []RegistryProject
@@ -108,6 +109,9 @@ func LoadProjectRegistry(path string) (*ProjectRegistry, error) {
 		return nil, err
 	}
 	if err := resolveRegistryAgentRuntime(getSubMap(raw, "agent_runtime"), registry); err != nil {
+		return nil, err
+	}
+	if err := resolveRegistryCatalog(getSubMap(raw, "providers"), registry); err != nil {
 		return nil, err
 	}
 	if err := resolveRegistryProjects(raw, registry); err != nil {
@@ -211,6 +215,7 @@ func ValidateProjectIsolation(registry *ProjectRegistry) (RegistryValidationRepo
 	}
 
 	report.Warnings = append(report.Warnings, duplicateTrackerProjectWarnings(resolved)...)
+	report.Warnings = append(report.Warnings, catalogWarnings(resolved, registry.Catalog)...)
 	return report, nil
 }
 
