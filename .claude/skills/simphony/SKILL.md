@@ -38,7 +38,7 @@ Load config from the project's `WORKFLOW.md` front matter if present (parse the
 YAML between the `---` fences); otherwise use the defaults in
 `reference/state-machine.md` §3. Resolve `$ENV_VAR` values from the environment.
 Ignore unknown keys. Keys you need: `tracker.{active_states,working_state,
-terminal_states}`, `pipeline.{review_state,merge_state,done_state,
+terminal_states,skip_labels}`, `pipeline.{review_state,merge_state,done_state,
 review_resolution_state,escalation_state}`, `review_resolution.*`, `workspace.*`,
 `verify.*`, `github.*`, `agent.{max_concurrent_agents,max_attempts}`.
 
@@ -57,8 +57,9 @@ Run this loop (once per `/goal` turn, or once per invocation in a manual run):
    when enabled), minus `terminal_states`. Do **not** fetch only the literal
    `active_states`, or `In Review` items are invisible.
 3. **Filter & order.** Apply `reference/state-machine.md` §4 — skip
-   running/claimed/completed-this-run/terminal/escalated/blocked-in-Todo; order
-   by priority → created_at → identifier.
+   running/claimed/completed-this-run/terminal, any issue carrying a
+   `tracker.skip_labels` marker (`simphony:blocked`, `human-led`, …), and
+   blocked-in-Todo; order by priority → created_at → identifier.
 4. **Compute free slots** = `max_concurrent_agents` − workers currently running.
 5. **Dispatch** up to that many issues (see "Dispatching a worker"). Claim each
    issue before spawning so it isn't picked twice.

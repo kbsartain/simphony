@@ -74,6 +74,7 @@ tracker:
   working_state: In Progress
   completion_states: [In Review, Review, Done, Completed]
   terminal_states: [Closed, Cancelled, Canceled, Duplicate, Done]  # done_state auto-added
+  skip_labels: [human-led, simphony:blocked]  # never dispatch issues with these
 pipeline:
   review_state: In Review
   merge_state: Approved
@@ -139,6 +140,11 @@ issue when it is:
 
 - already running, already claimed, or completed during this run,
 - in a terminal state, or outside the active-state set,
+- carrying a **skip label** (`tracker.skip_labels`) — always includes the
+  escalation marker `simphony:blocked`, plus any human-only markers the project
+  configures (e.g. `human-led`). This is how an escalated issue leaves the
+  active set without a dedicated state, and how the agent avoids grabbing work a
+  human owns on a shared board.
 - in `Todo` **and** blocked by a non-terminal blocker (inverse `blocks`
   relation). Issues in other active states are not subject to the block rule.
 
