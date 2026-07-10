@@ -1,6 +1,7 @@
 import {
   APIErrorResponse,
   IssueDetailResponse,
+  ModelCatalogResponse,
   RegistryBootstrapResponse,
   RegistryProjectCreateRequest,
   RegistryProjectCreateResponse,
@@ -154,6 +155,10 @@ export async function validateTrackerSettings(request: SettingsUpdateRequest, pr
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   })
+}
+
+export async function refreshModelCatalog(projectID?: string): Promise<ModelCatalogResponse> {
+  return fetchJSON<ModelCatalogResponse>(projectPath(projectID, 'settings/model-catalog'), { method: 'POST' })
 }
 
 function projectPath(projectID: string | undefined, suffix: string) {

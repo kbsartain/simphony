@@ -865,7 +865,7 @@ func defaultRuntimeConfig(provider string) api.AgentRuntimeConfig {
 		ThreadSandbox:     "none",
 		TurnSandboxPolicy: "none",
 		TurnTimeoutMs:     3600000,
-		ReadTimeoutMs:     5000,
+		ReadTimeoutMs:     60000,
 		StallTimeoutMs:    300000,
 	}
 	switch provider {

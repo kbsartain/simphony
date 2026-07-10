@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   IssueDetailResponse,
+  ModelCatalogResponse,
   ProjectSummary,
   RegistryBootstrapResponse,
   RegistryProjectCreateResponse,
@@ -28,6 +29,7 @@ import {
   fetchSettings,
   fetchState,
   requestRefresh as requestRefreshAPI,
+  refreshModelCatalog as refreshModelCatalogAPI,
   saveSettings,
   updateRegistrySettings,
   updateRegistryProject,
@@ -65,6 +67,8 @@ type ProviderOption = {
   label: string
   models: ModelOption[]
   reasoning: ReasoningOption[]
+  endpointURL?: string
+  apiKeyEnv?: string
 }
 type ReasoningOption = {
   value: string
@@ -162,8 +166,13 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'openai',
     label: 'OpenAI',
+    endpointURL: 'https://api.openai.com/v1',
+    apiKeyEnv: 'OPENAI_API_KEY',
     reasoning: CODEX_REASONING_OPTIONS,
     models: [
+      { id: 'openai:gpt-5.6-sol', label: 'GPT-5.6 Sol', model: 'gpt-5.6-sol', modelProvider: 'openai' },
+      { id: 'openai:gpt-5.6-terra', label: 'GPT-5.6 Terra', model: 'gpt-5.6-terra', modelProvider: 'openai' },
+      { id: 'openai:gpt-5.6-luna', label: 'GPT-5.6 Luna', model: 'gpt-5.6-luna', modelProvider: 'openai' },
       { id: 'openai:gpt-5.5', label: 'GPT-5.5', model: 'gpt-5.5', modelProvider: 'openai' },
       { id: 'openai:gpt-5.4', label: 'GPT-5.4', model: 'gpt-5.4', modelProvider: 'openai' },
       { id: 'openai:gpt-5.4-mini', label: 'GPT-5.4 Mini', model: 'gpt-5.4-mini', modelProvider: 'openai' },
@@ -173,6 +182,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'anthropic',
     label: 'Anthropic',
+    apiKeyEnv: 'ANTHROPIC_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
     models: [
       { id: 'anthropic:claude-opus-4.7', label: 'Claude Opus 4.7', model: 'claude-opus-4.7', modelProvider: 'anthropic' },
@@ -211,15 +221,23 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
     id: 'moonshot',
     label: 'Moonshot',
     reasoning: THINKING_REASONING_OPTIONS,
-    models: [{ id: 'moonshot:kimi-k2-2.6', label: 'Kimi K2 2.6', model: 'kimi-k2-2.6', modelProvider: 'moonshot' }],
+    models: [
+      { id: 'moonshot:kimi-k2-2.6', label: 'Kimi K2 2.6', model: 'kimi-k2-2.6', modelProvider: 'moonshot' },
+      { id: 'moonshot:kimi-k2.7-code', label: 'Kimi K2.7 Code', model: 'kimi-k2.7-code', modelProvider: 'moonshot' },
+      { id: 'moonshot:kimi-k2.7-code-highspeed', label: 'Kimi K2.7 Code HighSpeed', model: 'kimi-k2.7-code-highspeed', modelProvider: 'moonshot' },
+    ],
   },
   {
     id: 'zai',
     label: 'Z.ai',
     reasoning: THINKING_REASONING_OPTIONS,
+    endpointURL: 'https://api.z.ai/api/coding/paas/v4',
+    apiKeyEnv: 'ZAI_API_KEY',
     models: [
-      { id: 'zai:glm-5.1', label: 'GLM 5.1', model: 'glm-5.1', modelProvider: 'zai' },
-      { id: 'zai:glm-4.7', label: 'GLM 4.7', model: 'glm-4.7', modelProvider: 'zai' },
+      { id: 'zai:glm-5.2', label: 'GLM 5.2', model: 'glm-5.2', modelProvider: 'openai' },
+      { id: 'zai:glm-5.1', label: 'GLM 5.1', model: 'glm-5.1', modelProvider: 'openai' },
+      { id: 'zai:glm-5', label: 'GLM 5', model: 'glm-5', modelProvider: 'openai' },
+      { id: 'zai:glm-4.7', label: 'GLM 4.7', model: 'glm-4.7', modelProvider: 'openai' },
     ],
   },
   {
@@ -289,6 +307,8 @@ function App() {
   const [savingSettings, setSavingSettings] = useState(false)
   const [validatingTracker, setValidatingTracker] = useState(false)
   const [trackerValidation, setTrackerValidation] = useState<SettingsValidationResponse | null>(null)
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogResponse | null>(null)
+  const [refreshingModelCatalog, setRefreshingModelCatalog] = useState(false)
   const [refreshResult, setRefreshResult] = useState<RefreshResponse | null>(null)
   const [filter, setFilter] = useState<QueueFilter>('all')
   const [query, setQuery] = useState('')
@@ -367,6 +387,7 @@ function App() {
     setSettingsDraft(JSON.stringify(data.config || {}, null, 2))
     setPromptDraft(data.prompt_template || '')
     setTrackerValidation(null)
+    setModelCatalog(null)
     setError(null)
   }, [projectMode, selectedProjectId])
 
@@ -401,6 +422,7 @@ function App() {
     setState(null)
     setSettings(null)
     setTrackerValidation(null)
+    setModelCatalog(null)
     setRefreshResult(null)
     setDetailState({ status: 'idle' })
     setError(null)
@@ -692,6 +714,21 @@ function App() {
       setError(normalizeError(err))
     } finally {
       setValidatingTracker(false)
+    }
+  }
+
+  const refreshModels = async () => {
+    setRefreshingModelCatalog(true)
+    setNotice(null)
+    try {
+      const result = await refreshModelCatalogAPI(selectedAPIProjectId)
+      setModelCatalog(result)
+      setNotice(`Found ${result.models.length.toLocaleString()} models from the active Codex login`)
+      setError(null)
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setRefreshingModelCatalog(false)
     }
   }
 
@@ -1055,11 +1092,14 @@ function App() {
             saving={savingSettings}
             validatingTracker={validatingTracker}
             trackerValidation={trackerValidation}
+            modelCatalog={modelCatalog}
+            refreshingModelCatalog={refreshingModelCatalog}
             onSettingsDraftChange={setSettingsDraft}
             onPromptDraftChange={setPromptDraft}
             onReload={() => loadSettings().catch(err => setError(normalizeError(err)))}
             onSave={saveWorkflowSettings}
             onValidateTracker={validateLinearSettings}
+            onRefreshModels={refreshModels}
           />
         )}
 
@@ -2134,11 +2174,14 @@ function SettingsView(props: {
   saving: boolean
   validatingTracker: boolean
   trackerValidation: SettingsValidationResponse | null
+  modelCatalog: ModelCatalogResponse | null
+  refreshingModelCatalog: boolean
   onSettingsDraftChange: (value: string) => void
   onPromptDraftChange: (value: string) => void
   onReload: () => void
   onSave: () => void
   onValidateTracker: () => void
+  onRefreshModels: () => void
 }) {
   if (!props.settings) {
     return (
@@ -2156,7 +2199,20 @@ function SettingsView(props: {
   const draftConfig = parseSettingsConfig(props.settingsDraft)
   const selectedProviderID = draftConfig ? getSelectedProviderID(draftConfig) : ''
   const selectedModelID = draftConfig ? getSelectedModelID(draftConfig) : ''
-  const globalModels = modelOptionsForProvider(selectedProviderID, draftConfig ? getRuntimeStringField(draftConfig, 'model') : '')
+  const liveModels: ModelOption[] = props.modelCatalog
+    ? props.modelCatalog.models.map(model => ({
+        id: `openai:${model.id}`,
+        label: model.label,
+        model: model.id,
+        modelProvider: 'openai',
+        reasoning: (model.reasoning || []).map(value => ({ value, label: reasoningLabel(value) })),
+      }))
+    : []
+  const globalModels = modelOptionsForProvider(
+    selectedProviderID,
+    draftConfig ? getRuntimeStringField(draftConfig, 'model') : '',
+    selectedProviderID === 'openai' ? liveModels : [],
+  )
   const resolvedRuntime = props.settings.resolved_config.agent_runtime || props.settings.resolved_config.codex
   const trackerValidation = props.trackerValidation
 
@@ -2179,8 +2235,12 @@ function SettingsView(props: {
   }
   const changeModel = (optionID: string) => {
     const config = draftConfig || {}
-    const nextConfig = applyModelSelection(config, selectedProviderID, getRuntimeStringField(config, 'model'), optionID)
+    const nextConfig = applyModelSelection(config, selectedProviderID, getRuntimeStringField(config, 'model'), optionID, liveModels)
     props.onSettingsDraftChange(JSON.stringify(nextConfig, null, 2))
+  }
+  const changeRuntimeField = (field: StageRuntimeField, value: string) => {
+    const config = draftConfig || {}
+    props.onSettingsDraftChange(JSON.stringify(applyRuntimeStringField(config, field, value), null, 2))
   }
   const changeGlobalSkills = (value: string) => {
     const config = draftConfig || {}
@@ -2349,7 +2409,17 @@ function SettingsView(props: {
           </div>
         )}
         <div className="settings-field">
-          <span>Model</span>
+          <div className="settings-section-heading compact-heading">
+            <span>Model</span>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={props.onRefreshModels}
+              disabled={!draftConfig || props.saving || props.refreshingModelCatalog || selectedProviderID !== 'openai'}
+            >
+              {props.refreshingModelCatalog ? 'Refreshing' : 'Refresh model catalog'}
+            </button>
+          </div>
           <div className="settings-control-row">
             <label className="select-field">
               <span className="sr-only">Model provider</span>
@@ -2373,12 +2443,57 @@ function SettingsView(props: {
                 ))}
               </select>
             </label>
+            <label className="select-field">
+              <span className="sr-only">Reasoning level</span>
+              <select
+                value={draftConfig ? getRuntimeStringField(draftConfig, 'reasoning_effort') : ''}
+                onChange={event => changeRuntimeField('reasoning_effort', event.target.value)}
+                disabled={!draftConfig || props.saving}
+              >
+                {reasoningOptionsForSelection(
+                  draftConfig ? getRuntimeStringField(draftConfig, 'model') : '',
+                  selectedProviderID,
+                  draftConfig ? getRuntimeStringField(draftConfig, 'reasoning_effort') : '',
+                  liveModels,
+                ).map(option => (
+                  <option key={option.value || 'default'} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <div className="model-summary">
               <strong>{modelLabel(resolvedRuntime.model, resolvedRuntime.model_provider)}</strong>
               <span>{resolvedRuntime.provider || resolvedRuntime.model_provider || 'default provider'}</span>
             </div>
           </div>
+          {props.modelCatalog && (
+            <p className="field-help">
+              Live catalog refreshed {formatDateTime(props.modelCatalog.refreshed_at)} from {props.modelCatalog.source}.
+            </p>
+          )}
         </div>
+        <div className="settings-grid">
+          <label className="form-field">
+            <span>Provider endpoint</span>
+            <input
+              value={draftConfig ? getRuntimeStringField(draftConfig, 'endpoint_url') : ''}
+              onChange={event => changeRuntimeField('endpoint_url', event.target.value)}
+              placeholder="Provider default"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Provider API key</span>
+            <input
+              value={draftConfig ? getRuntimeStringField(draftConfig, 'api_key') : ''}
+              onChange={event => changeRuntimeField('api_key', event.target.value)}
+              placeholder="$PROVIDER_API_KEY"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+        </div>
+        <p className="field-help">Selecting a provider applies its endpoint and environment-key reference. OpenAI can use the shared ChatGPT/Codex login when the key variable is unset.</p>
         <div className="settings-field">
           <span>Default Skills</span>
           <div className="skill-editor">
@@ -2642,6 +2757,20 @@ function getRuntimeStringField(config: Record<string, unknown>, field: StageRunt
   return typeof runtime[field] === 'string' ? runtime[field] : ''
 }
 
+function applyRuntimeStringField(config: Record<string, unknown>, field: StageRuntimeField, value: string) {
+  const nextConfig = { ...config }
+  const key = runtimeConfigKey(nextConfig)
+  const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
+  const trimmed = value.trim()
+  if (trimmed) {
+    runtime[field] = trimmed
+  } else {
+    delete runtime[field]
+  }
+  nextConfig[key] = runtime
+  return nextConfig
+}
+
 function applyProviderSelection(config: Record<string, unknown>, providerID: string) {
   const nextConfig = { ...config }
   const key = runtimeConfigKey(nextConfig)
@@ -2651,8 +2780,20 @@ function applyProviderSelection(config: Record<string, unknown>, providerID: str
   if (!provider) {
     delete runtime.model_provider
     delete runtime.model
+    delete runtime.endpoint_url
+    delete runtime.api_key
   } else {
     runtime.model_provider = provider.id
+    if (provider.endpointURL) {
+      runtime.endpoint_url = provider.endpointURL
+    } else {
+      delete runtime.endpoint_url
+    }
+    if (provider.apiKeyEnv) {
+      runtime.api_key = `$${provider.apiKeyEnv}`
+    } else {
+      delete runtime.api_key
+    }
     const currentModel = typeof runtime.model === 'string' ? runtime.model : ''
     if (currentModel && !provider.models.some(option => option.model === currentModel)) {
       delete runtime.model
@@ -2663,11 +2804,17 @@ function applyProviderSelection(config: Record<string, unknown>, providerID: str
   return nextConfig
 }
 
-function applyModelSelection(config: Record<string, unknown>, providerID: string, currentModel: string, optionID: string) {
+function applyModelSelection(
+  config: Record<string, unknown>,
+  providerID: string,
+  currentModel: string,
+  optionID: string,
+  additional: ModelOption[] = [],
+) {
   const nextConfig = { ...config }
   const key = runtimeConfigKey(nextConfig)
   const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
-  const option = modelOptionsForProvider(providerID, currentModel).find(item => item.id === optionID)
+  const option = modelOptionsForProvider(providerID, currentModel, additional).find(item => item.id === optionID)
 
   if (!option) {
     delete runtime.model
@@ -2864,14 +3011,23 @@ function providerOptionsWithCurrent(providerID: string) {
   return [{ id: providerID, label: `${providerID} (custom)`, models: [], reasoning: DEFAULT_REASONING_OPTIONS }, ...PROVIDER_OPTIONS]
 }
 
-function modelOptionsForProvider(providerID: string, currentModel: string) {
+function modelOptionsForProvider(providerID: string, currentModel: string, additional: ModelOption[] = []) {
   const provider = PROVIDER_OPTIONS.find(option => option.id === providerID)
-  const options = provider ? provider.models : MODEL_OPTIONS
+  const base = provider ? provider.models : MODEL_OPTIONS
+  const options = [...additional, ...base.filter(option => !additional.some(item => item.model === option.model))]
   if (!currentModel || options.some(option => option.model === currentModel)) {
     return options
   }
   const customProvider = providerID || 'custom'
   return [{ id: `${customProvider}:${currentModel}`, label: `${currentModel} (custom)`, model: currentModel, modelProvider: customProvider }, ...options]
+}
+
+function reasoningLabel(value: string) {
+  const known = DEFAULT_REASONING_OPTIONS.find(option => option.value === value)
+  if (known) {
+    return known.label
+  }
+  return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
 function selectedProviderID(model: string, provider: string) {
@@ -2889,8 +3045,8 @@ function selectedModelID(model: string, provider: string) {
   return option?.id || `${provider || 'custom'}:${model}`
 }
 
-function reasoningOptionsForSelection(model: string, provider: string, currentValue: string) {
-  const option = MODEL_OPTIONS.find(item => item.model === model && (!provider || item.modelProvider === provider))
+function reasoningOptionsForSelection(model: string, provider: string, currentValue: string, additional: ModelOption[] = []) {
+  const option = [...additional, ...MODEL_OPTIONS].find(item => item.model === model && (!provider || item.modelProvider === provider))
   const providerOption = PROVIDER_OPTIONS.find(item => item.id === (provider || option?.modelProvider))
   const options = option?.reasoning || providerOption?.reasoning || DEFAULT_REASONING_OPTIONS
   if (!currentValue || options.some(item => item.value === currentValue)) {

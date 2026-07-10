@@ -158,8 +158,8 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	if cfg.Codex.TurnTimeoutMs != 3600000 {
 		t.Errorf("codex.turn_timeout_ms = %d, want 3600000", cfg.Codex.TurnTimeoutMs)
 	}
-	if cfg.Codex.ReadTimeoutMs != 5000 {
-		t.Errorf("codex.read_timeout_ms = %d, want 5000", cfg.Codex.ReadTimeoutMs)
+	if cfg.Codex.ReadTimeoutMs != 60000 {
+		t.Errorf("codex.read_timeout_ms = %d, want 60000", cfg.Codex.ReadTimeoutMs)
 	}
 	if cfg.Codex.StallTimeoutMs != 300000 {
 		t.Errorf("codex.stall_timeout_ms = %d, want 300000", cfg.Codex.StallTimeoutMs)

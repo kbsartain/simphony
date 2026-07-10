@@ -80,6 +80,7 @@ func (s *ProjectServer) registerRoutes() {
 	s.mux.HandleFunc(s.apiPrefix+"/registry/projects/", s.withCORS(s.handleRegistryProjectRoute))
 	s.mux.HandleFunc(s.apiPrefix+"/state", s.withCORS(s.handleDefaultProjectState))
 	s.mux.HandleFunc(s.apiPrefix+"/refresh", s.withCORS(s.handleDefaultProjectRefresh))
+	s.mux.HandleFunc(s.apiPrefix+"/settings/model-catalog", s.withCORS(s.handleDefaultProjectModelCatalog))
 	s.mux.HandleFunc(s.apiPrefix+"/settings/validate-tracker", s.withCORS(s.handleDefaultProjectValidateTrackerSettings))
 	s.mux.HandleFunc(s.apiPrefix+"/settings", s.withCORS(s.handleDefaultProjectSettings))
 	s.mux.HandleFunc(projectsPath, s.withCORS(s.handleProjects))
@@ -417,6 +418,10 @@ func (s *ProjectServer) handleProjectRoute(w http.ResponseWriter, r *http.Reques
 		s.handleProjectSettings(w, r, runtime)
 		return
 	}
+	if len(parts) == 3 && parts[1] == "settings" && parts[2] == "model-catalog" {
+		s.handleProjectModelCatalog(w, r, runtime)
+		return
+	}
 	if len(parts) == 3 && parts[1] == "settings" && parts[2] == "validate-tracker" {
 		s.handleProjectValidateTrackerSettings(w, r, runtime)
 		return
@@ -552,6 +557,42 @@ func (s *ProjectServer) handleDefaultProjectValidateTrackerSettings(w http.Respo
 		return
 	}
 	s.handleProjectValidateTrackerSettings(w, r, runtime)
+}
+
+func (s *ProjectServer) handleDefaultProjectModelCatalog(w http.ResponseWriter, r *http.Request) {
+	runtime, ok := s.singleRunningRuntime()
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_required", Message: "Use /api/v1/projects/{project_id}/settings/model-catalog when zero or multiple projects are running"},
+		})
+		return
+	}
+	s.handleProjectModelCatalog(w, r, runtime)
+}
+
+func (s *ProjectServer) handleProjectModelCatalog(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"}})
+		return
+	}
+	settings, err := runtime.WorkflowSettings()
+	if err != nil {
+		status, code := projectSettingsErrorStatus(err)
+		s.writeJSON(w, status, api.APIErrorResponse{Error: api.APIError{Code: code, Message: err.Error()}})
+		return
+	}
+	if settings.ResolvedConfig == nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{Error: api.APIError{Code: "settings_validation_error", Message: "Workflow settings are not resolved"}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	result, err := liveModelCatalog(ctx, settings.ResolvedConfig.AgentRuntime, filepath.Dir(settings.WorkflowPath))
+	if err != nil {
+		s.writeJSON(w, http.StatusBadGateway, api.APIErrorResponse{Error: api.APIError{Code: "model_catalog_error", Message: err.Error()}})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
 }
 
 func (s *ProjectServer) handleProjectSettings(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime) {

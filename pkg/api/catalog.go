@@ -1,5 +1,7 @@
 package api
 
+import "time"
+
 // ProviderCatalog is the set of known model vendors, keyed by lowercase vendor
 // name (e.g. "anthropic", "zai", "openai", "kimi"). It is the single source of
 // truth for the facts that were previously implicit or duplicated across
@@ -62,4 +64,22 @@ type ProviderSummary struct {
 type ProviderModelSummary struct {
 	ID       string   `json:"id"`
 	Thinking []string `json:"thinking,omitempty"`
+}
+
+// ModelCatalogResponse is a live model catalog discovered from the selected
+// provider transport and authentication context.
+type ModelCatalogResponse struct {
+	Provider    string              `json:"provider"`
+	Source      string              `json:"source"`
+	RefreshedAt time.Time           `json:"refreshed_at"`
+	Models      []ModelCatalogEntry `json:"models"`
+}
+
+// ModelCatalogEntry is one live selectable model and its reasoning options.
+type ModelCatalogEntry struct {
+	ID               string   `json:"id"`
+	Label            string   `json:"label"`
+	Description      string   `json:"description,omitempty"`
+	DefaultReasoning string   `json:"default_reasoning,omitempty"`
+	Reasoning        []string `json:"reasoning,omitempty"`
 }

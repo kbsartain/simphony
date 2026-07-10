@@ -19,6 +19,7 @@ import (
 
 	_ "embed"
 
+	"github.com/kbsartain/simphony/internal/codexcmd"
 	"github.com/kbsartain/simphony/internal/prompt"
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -155,12 +156,17 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	if command == "" {
 		return fmt.Errorf("%s: command is empty", api.ErrCodexNotFound)
 	}
-
 	if !strings.Contains(command, "--listen") {
 		command += " --listen stdio://"
 	}
 
-	cmd := shellCommandContext(ctx, command)
+	cmd, direct, err := codexcmd.CommandContext(ctx, command)
+	if err != nil {
+		return fmt.Errorf("%s: %w", api.ErrCodexNotFound, err)
+	}
+	if !direct {
+		cmd = shellCommandContext(ctx, command)
+	}
 	cmd.Dir = workspace.Path
 	cmd.Stderr = os.Stderr
 	if err := configureSubprocessEnv(cmd, workspace.Path, cfg); err != nil {
@@ -1157,16 +1163,21 @@ func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentR
 	}
 	env = prependWorkspaceToolPaths(env, workspacePath)
 
-			// Isolate Codex config per workspace to prevent cached ChatGPT/OAuth auth
-	// from overriding API-key mode. Only needed when using the Codex provider.
+	// Isolate Codex config per workspace for explicit API credentials and custom
+	// endpoints. Official OpenAI runs without an API key intentionally inherit
+	// the user's shared Codex home so the combined ChatGPT/Codex app login works.
 	if !strings.EqualFold(cfg.Provider, "claude") {
-		codexHome := filepath.Join(workspacePath, ".simphony", "codex")
-		if err := os.MkdirAll(codexHome, 0755); err != nil {
-			return fmt.Errorf("%s: create codex home dir: %w", api.ErrInvalidWorkspaceCWD, err)
-		}
-		env = setEnv(env, "CODEX_HOME", codexHome)
-		if err := writeCodexWorkspaceConfig(codexHome, cfg); err != nil {
-			return err
+		if shouldUseSharedCodexHome(cfg) {
+			log.Printf("action=configureSubprocessEnv provider=codex auth_source=shared_codex_home")
+		} else {
+			codexHome := filepath.Join(workspacePath, ".simphony", "codex")
+			if err := os.MkdirAll(codexHome, 0755); err != nil {
+				return fmt.Errorf("%s: create codex home dir: %w", api.ErrInvalidWorkspaceCWD, err)
+			}
+			env = setEnv(env, "CODEX_HOME", codexHome)
+			if err := writeCodexWorkspaceConfig(codexHome, cfg); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1174,6 +1185,21 @@ func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentR
 
 	cmd.Env = env
 	return nil
+}
+
+func shouldUseSharedCodexHome(cfg *api.AgentRuntimeConfig) bool {
+	if cfg == nil || !strings.EqualFold(strings.TrimSpace(cfg.Provider), "codex") {
+		return false
+	}
+	if strings.TrimSpace(cfg.APIKey) != "" || strings.TrimSpace(cfg.AuthToken) != "" {
+		return false
+	}
+	modelProvider := strings.ToLower(strings.TrimSpace(cfg.ModelProvider))
+	if modelProvider != "" && modelProvider != "openai" {
+		return false
+	}
+	endpoint := strings.ToLower(strings.TrimRight(strings.TrimSpace(cfg.EndpointURL), "/"))
+	return endpoint == "" || endpoint == "https://api.openai.com" || endpoint == "https://api.openai.com/v1"
 }
 
 var inheritedAgentEnvKeys = map[string]struct{}{
@@ -1237,7 +1263,7 @@ func applyRuntimeEnv(env []string, cfg *api.AgentRuntimeConfig) []string {
 		return env
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
-		case "claude":
+	case "claude":
 		if cfg.APIKey != "" {
 			env = setEnv(env, "ANTHROPIC_API_KEY", cfg.APIKey)
 			// Z.AI and some other Anthropic-compatible endpoints expect the
@@ -1368,7 +1394,7 @@ func prependWorkspaceToolPaths(env []string, workspacePath string) []string {
 		filepath.Join(workspacePath, "dashboard", "node_modules", ".bin"),
 	}
 	if runtime.GOOS == "windows" {
-				candidates = append(candidates, `C:\Program Files\nodejs`)
+		candidates = append(candidates, `C:\Program Files\nodejs`)
 	}
 	for _, dir := range candidates {
 		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {

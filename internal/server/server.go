@@ -78,6 +78,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/registry/bootstrap", s.withCORS(s.handleRegistryBootstrap))
 	s.mux.HandleFunc("/api/v1/state", s.withCORS(s.handleState))
 	s.mux.HandleFunc("/api/v1/refresh", s.withCORS(s.handleRefresh))
+	s.mux.HandleFunc("/api/v1/settings/model-catalog", s.withCORS(s.handleModelCatalog))
 	s.mux.HandleFunc("/api/v1/settings/validate-tracker", s.withCORS(s.handleValidateTrackerSettings))
 	s.mux.HandleFunc("/api/v1/settings", s.withCORS(s.handleSettings))
 	s.mux.HandleFunc("/api/v1/", s.withCORS(s.handleAPIv1)) // catch-all for /api/v1/{issue_identifier}
@@ -121,6 +122,37 @@ func (s *Server) registerRoutes() {
 			})
 		})
 	}
+}
+
+func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"}})
+		return
+	}
+	if s.workflowPath == "" {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{Error: api.APIError{Code: "settings_not_available", Message: "Settings API is not configured"}})
+		return
+	}
+	s.settingsMu.Lock()
+	def, err := config.LoadWorkflow(s.workflowPath)
+	s.settingsMu.Unlock()
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, api.APIErrorResponse{Error: api.APIError{Code: "settings_load_error", Message: err.Error()}})
+		return
+	}
+	cfg, err := config.ResolveConfig(def, s.workflowDir)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{Error: api.APIError{Code: "settings_validation_error", Message: err.Error()}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	result, err := liveModelCatalog(ctx, cfg.AgentRuntime, s.workflowDir)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadGateway, api.APIErrorResponse{Error: api.APIError{Code: "model_catalog_error", Message: err.Error()}})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
 }
 
 // Start begins listening. Blocks until the context is cancelled or an error occurs.

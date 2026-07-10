@@ -279,7 +279,7 @@ codex:
   thread_sandbox: none
   turn_sandbox_policy: none
   turn_timeout_ms: 3600000
-  read_timeout_ms: 5000
+  read_timeout_ms: 60000
   stall_timeout_ms: 300000
 ```
 

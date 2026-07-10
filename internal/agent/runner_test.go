@@ -39,54 +39,100 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func runMockClaudeShim() {
-	var req claudeShimRequest
-	if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
-		log.Printf("mock claude decode error: %v", err)
-		os.Exit(1)
+func TestShouldUseSharedCodexHome(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  api.AgentRuntimeConfig
+		want bool
+	}{
+		{name: "official OpenAI app login", cfg: api.AgentRuntimeConfig{Provider: "codex", ModelProvider: "openai", EndpointURL: "https://api.openai.com/v1"}, want: true},
+		{name: "Codex default app login", cfg: api.AgentRuntimeConfig{Provider: "codex"}, want: true},
+		{name: "explicit API key", cfg: api.AgentRuntimeConfig{Provider: "codex", ModelProvider: "openai", APIKey: "secret"}, want: false},
+		{name: "custom endpoint", cfg: api.AgentRuntimeConfig{Provider: "codex", ModelProvider: "zai", EndpointURL: "https://api.z.ai/api/coding/paas/v4"}, want: false},
+		{name: "Claude transport", cfg: api.AgentRuntimeConfig{Provider: "claude", ModelProvider: "openai"}, want: false},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldUseSharedCodexHome(&tt.cfg); got != tt.want {
+				t.Fatalf("shouldUseSharedCodexHome() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func runMockClaudeShim() {
+	// Parse flags from os.Args; the prompt is the last positional argument.
+	var model, resumeSessionID string
+	var prompt string
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--model":
+			if i+1 < len(args) {
+				model = args[i+1]
+				i++
+			}
+		case "--resume":
+			if i+1 < len(args) {
+				resumeSessionID = args[i+1]
+				i++
+			}
+		case "--print", "--verbose", "--output-format", "--permission-mode", "--bare", "--allowed-tools":
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+				i++ // skip value
+			}
+		default:
+			if !strings.HasPrefix(args[i], "--") {
+				prompt = args[i]
+			}
+		}
+	}
+	_ = prompt
+
 	enc := json.NewEncoder(os.Stdout)
-	sessionID := req.ResumeSessionID
+	sessionID := resumeSessionID
 	if sessionID == "" {
 		sessionID = "claude-session-123"
 	}
-	_ = enc.Encode(claudeShimEvent{
-		Event: "session_started",
-		Payload: map[string]interface{}{
-			"session_id": sessionID,
-			"thread_id":  sessionID,
-			"turn_id":    fmt.Sprintf("turn-%d", req.TurnCount),
-			"turn_count": req.TurnCount,
-		},
+
+	// system/init event
+	_ = enc.Encode(map[string]interface{}{
+		"type":           "system",
+		"subtype":        "init",
+		"session_id":     sessionID,
+		"model":          model,
+		"permissionMode": "bypassPermissions",
+		"tools":          []string{"Bash", "Edit", "Read"},
 	})
-	_ = enc.Encode(claudeShimEvent{
-		Event: "thread/tokenUsage/updated",
-		Usage: map[string]interface{}{
-			"input_tokens":  12,
-			"output_tokens": 8,
-			"total_tokens":  20,
-		},
-		Payload: map[string]interface{}{
-			"session_id": sessionID,
-			"turn_count": req.TurnCount,
-		},
-	})
-	_ = enc.Encode(claudeShimEvent{
-		Event: "item/completed",
-		Payload: map[string]interface{}{
-			"session_id": sessionID,
-			"item": map[string]interface{}{
-				"type": "agentMessage",
-				"text": "Claude completed the turn.",
+
+	// assistant event
+	_ = enc.Encode(map[string]interface{}{
+		"type":       "assistant",
+		"session_id": sessionID,
+		"message": map[string]interface{}{
+			"id": "msg-123",
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "Claude completed the turn."},
+			},
+			"usage": map[string]interface{}{
+				"input_tokens":  12,
+				"output_tokens": 8,
+				"total_tokens":  20,
 			},
 		},
 	})
-	_ = enc.Encode(claudeShimEvent{
-		Event: "turn/completed",
-		Payload: map[string]interface{}{
-			"session_id": sessionID,
-			"status":     "completed",
-			"turn_count": req.TurnCount,
+
+	// result event
+	_ = enc.Encode(map[string]interface{}{
+		"type":       "result",
+		"subtype":    "success",
+		"session_id": sessionID,
+		"result":     "Claude completed the turn.",
+		"is_error":   false,
+		"usage": map[string]interface{}{
+			"input_tokens":  12,
+			"output_tokens": 8,
+			"total_tokens":  20,
 		},
 	})
 }
