@@ -89,8 +89,11 @@ For each selected issue:
    `working_state`, transition it to `working_state` *before* spawning the worker
    (so the board shows work started). Other stages get no pre-run transition.
 4. **Prepare the worktree**:
-   `scripts/worktree.sh prepare <identifier> <base_branch> <branch_prefix> <root> <repo>`
-   (or `worktree.ps1` on Windows).
+   `WT_BRANCH=<issue.gitBranchName> scripts/worktree.sh prepare <identifier> <base_branch> <branch_prefix> <root> <repo>`
+   (or `worktree.ps1 -Branch <issue.gitBranchName> …` on Windows). Pass the
+   tracker's suggested branch via `WT_BRANCH`/`-Branch` when present; the script
+   fetches and bases the worktree off `origin/<base_branch>` (the current remote
+   tip), not the stale local base (`reference/state-machine.md` §3).
 5. **Spawn the worker subagent** with the `worker.md` input contract: the issue
    fields, the resolved `stage`, the `worktree_path`, `branch`, `base_branch`,
    the current `attempt` / `max_attempts`, the rendered `stages/<stage>.md`
@@ -135,7 +138,11 @@ the escalation cap** (`reference/state-machine.md` §8) so failures converge:
     to `done_state`. On any failure: post `**Simphony merge failed** …`, retry,
     do **not** advance.
 - Post the worker's `comment` (if any) and the stage status comments from
-  `reference/state-machine.md` §6.
+  `reference/state-machine.md` §6 — **coalescing repeats**: before posting, check
+  the issue's latest simphony-marked comment and, if the signature matches (same
+  failure), **update it with a repeat counter** instead of adding a new one. A
+  retry loop must collapse to one self-updating comment + one escalation, never
+  dozens of duplicates.
 
 ## Concurrency & the merge lock
 - Coding / review / review_resolution workers run **in parallel** up to

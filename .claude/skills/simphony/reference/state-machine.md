@@ -123,6 +123,15 @@ effective_active = active_states
 Always include every pipeline state here even if the user's `active_states`
 omits one, or that stage's issues are invisible and silently never processed.
 
+**Branch & base resolution.** For each issue:
+- **Branch** = the tracker's suggested branch when it provides one (Linear's
+  `gitBranchName`), else `workspace.branch_prefix + slug`. Prefer the tracker's
+  name so worktrees match the PR/branch convention already on the board.
+- **Base** = the **current remote tip** `origin/<workspace.base_branch>`, fetched
+  first. Do **not** branch off the local base — Simphony works in worktrees, so
+  the local base branch drifts and a stale base causes needless merge conflicts.
+  (`scripts/worktree.sh` / `.ps1` do the fetch + `WT_BRANCH`/`-Branch` override.)
+
 ## 4. Candidate selection & ordering
 
 Fetch issues in `tracker.active_states` for the configured project. **Skip** an
@@ -151,17 +160,55 @@ their current state and are retried on the next tick once unpaused.
 implements this directly with a `stage=<name>` argument: it only dispatches
 issues whose resolved stage matches, and leaves all others untouched.
 
-## 6. Comments (state preservation / observability)
+## 6. Comments & log coalescing (observability without spam)
 
 Post tracker comments at these points (mirrors `postStatusComment` /
 `postAgentComment`):
 
+- coding / review / merge **failed**: the error + that a retry will happen.
 - review complete: a concise review summary (from `stages/review.md`).
-- review_resolution start: policy summary.
-- review_resolution approved / retry scheduled / escalated.
-- merge failed: the error and that a retry will happen.
+- review_resolution start (policy) / approved / retry scheduled / escalated.
 - escalation (any stage, §8): why it escalated and after how many attempts.
-- Optionally, surface the agent's notable messages as issue comments.
+- stage success transitions (optional): a one-line "moved to <state>".
+
+### Coalesce repeats — never post the same message twice
+The real harness posts a fresh comment on every tick, so a wedged issue (e.g. an
+auth failure that retries for an hour) buries the log under dozens of identical
+lines. The emulator **must not** do that. Each simphony comment carries a
+machine-readable marker and a content **signature**; before posting, coalesce:
+
+1. **Tag every comment** with a trailing marker the orchestrator can find and
+   match on later:
+   `<!-- simphony:kind=<kind> sig=<signature> -->`
+   where `kind` ∈ {`coding-failed`,`review-failed`,`merge-failed`,
+   `retry-scheduled`,`escalated`,`review-summary`,`rr-*`,`stage-done`,…} and
+   `signature` = a stable hash of the salient content **with volatile parts
+   stripped** (timestamps, attempt numbers) — so two identical auth failures
+   share a signature but a *different* error does not.
+2. **Before posting**, read the issue's most recent comments (`list_comments`,
+   newest first) and find the latest one carrying a simphony marker.
+3. **If its `sig` matches** the comment you're about to post → **update that
+   comment in place** (`save_comment` with its `id`) instead of adding a new
+   one: bump a repeat counter and refresh the "last seen" line, e.g.
+
+   ```
+   **Simphony coding failed** 🔁 ×7
+   authentication_failed
+   first: 20:14Z · last: 21:03Z · attempt 7/∞→escalates at max_attempts
+   <!-- simphony:kind=coding-failed sig=a1b2c3 -->
+   ```
+4. **If no match** (a genuinely new event, or a state transition) → post a
+   **new** comment.
+
+Net effect: a failure loop collapses to **one** self-updating comment plus
+**one** escalation comment at the `max_attempts` cap (§8), instead of dozens.
+Only distinct events and transitions create new comments.
+
+### Alternative: one pinned run-log comment
+For an even quieter board, keep a **single** `<!-- simphony:kind=run-log -->`
+comment per issue and edit it each tick with a rolling tail of the last K
+events (timestamp · stage · outcome). One comment, full history, zero spam.
+Use this when reviewers prefer a compact audit trail over per-event comments.
 
 ## 7. Recovery model
 
