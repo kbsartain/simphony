@@ -202,6 +202,52 @@ func TestPrepareWorkspace_GitWorktree_UsesIssueBranchName(t *testing.T) {
 	}
 }
 
+func TestMergeWorkspaceToBaseBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repo := initTestRepo(t)
+	root := t.TempDir()
+	m, err := NewManagerWithConfig(api.WorkspaceConfig{
+		Root:       root,
+		Mode:       "git_worktree",
+		Repo:       repo,
+		BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("NewManagerWithConfig failed: %v", err)
+	}
+
+	issue := api.Issue{Identifier: "TEST-126"}
+	ws, err := m.PrepareWorkspace(issue)
+	if err != nil {
+		t.Fatalf("PrepareWorkspace failed: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(ws.Path, "feature.txt"), []byte("feature"), 0644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	runGitForTest(t, ws.Path, "add", "feature.txt")
+	runGitForTest(t, ws.Path, "commit", "-m", "feature change")
+
+	if err := m.MergeWorkspaceToBaseBranch(issue, ws.Path); err != nil {
+		t.Fatalf("MergeWorkspaceToBaseBranch failed: %v", err)
+	}
+	branch := gitOutput(t, ws.Path, "branch", "--show-current")
+	expectedBranch := m.branchName(issue, sanitizeKey(issue.Identifier))
+	if branch != expectedBranch {
+		t.Fatalf("expected issue worktree to remain on %q after merge, got %q", expectedBranch, branch)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "feature.txt")); err != nil {
+		t.Fatalf("expected merged file on base worktree, got %v", err)
+	}
+
+	if err := m.MergeWorkspaceToBaseBranch(issue, ws.Path); err != nil {
+		t.Fatalf("MergeWorkspaceToBaseBranch second merge failed: %v", err)
+	}
+}
+
 func TestRemoveWorkspace_GitWorktreeCleanup(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")

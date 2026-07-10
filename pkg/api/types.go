@@ -640,3 +640,17 @@ type SettingsValidationResponse struct {
 	CandidateCount int      `json:"candidate_count"`
 	Message        string   `json:"message,omitempty"`
 }
+
+// ModelCatalogEntry is a provider-advertised model available for selection.
+type ModelCatalogEntry struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// ModelCatalogResponse reports the latest models returned by a configured provider.
+type ModelCatalogResponse struct {
+	Provider    string              `json:"provider"`
+	EndpointURL string              `json:"endpoint_url"`
+	RefreshedAt time.Time           `json:"refreshed_at"`
+	Models      []ModelCatalogEntry `json:"models"`
+}

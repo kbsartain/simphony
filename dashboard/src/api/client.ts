@@ -19,6 +19,7 @@ import {
   SettingsResponse,
   SettingsUpdateRequest,
   SettingsValidationResponse,
+  ModelCatalogResponse,
   StateSnapshot,
 } from './types'
 
@@ -154,6 +155,16 @@ export async function validateTrackerSettings(request: SettingsUpdateRequest, pr
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   })
+}
+
+export async function refreshModelCatalog(projectID?: string): Promise<ModelCatalogResponse> {
+  const response = await fetchJSON<ModelCatalogResponse>(projectPath(projectID, 'settings/models'), { method: 'POST' })
+  return {
+    provider: response.provider || '',
+    endpoint_url: response.endpoint_url || '',
+    refreshed_at: response.refreshed_at || '',
+    models: response.models || [],
+  }
 }
 
 function projectPath(projectID: string | undefined, suffix: string) {

@@ -41,9 +41,9 @@ The next near-term step is not more feature development: wire one project to Lin
 ## Provider And Agent Runtime Enhancements
 
 - `FE-4.1` Build a provider compatibility matrix for Codex/OpenAI-compatible and Claude-compatible runtimes.
-- `FE-4.2` Add UI affordances for testing provider command availability and runtime environment variables without launching a full issue.
-- `FE-4.3` Add clearer diagnostics for OpenAI-compatible endpoints that do not fully support the Codex app-server expectations.
-- `FE-4.4` Add runtime presets for common OpenAI-compatible gateways and Anthropic-compatible gateways while preserving custom endpoint support.
+- `FE-4.2` Add UI affordances for testing provider command availability and runtime environment variables without launching a full issue. Initial command preflight and packaged-Codex diagnostics are complete; an explicit UI test action remains.
+- `FE-4.3` Add clearer diagnostics for OpenAI-compatible endpoints that do not fully support the Codex app-server expectations. Model-catalog HTTP/status diagnostics are complete; turn-protocol diagnostics remain.
+- `FE-4.4` Add runtime presets for common OpenAI-compatible gateways and Anthropic-compatible gateways while preserving custom endpoint support. Initial endpoint/key presets and manual provider model-catalog refresh are complete.
 - `FE-4.5` Consider per-project provider overrides in Project Setup if global defaults prove too coarse during real multi-project operation.
 
 ## Operational Hardening

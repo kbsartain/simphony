@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kbsartain/simphony/internal/codexcmd"
 	"github.com/kbsartain/simphony/pkg/api"
 )
 
@@ -53,6 +54,18 @@ func addCommandCheck(health *api.ProjectHealth, command string) {
 		})
 		return
 	}
+	resolvedCommand, err := codexcmd.Resolve(command)
+	if err != nil {
+		addIssue(health, api.HealthIssue{
+			Code:       "agent_command_not_executable",
+			Severity:   SeverityBlocker,
+			Message:    "Agent runtime executable is not usable",
+			Detail:     err.Error(),
+			Suggestion: "Open the ChatGPT/Codex app once, install the standalone CLI, or configure an accessible absolute command path.",
+		})
+		return
+	}
+	command = resolvedCommand
 	executable := commandExecutable(command)
 	if executable == "" {
 		addIssue(health, api.HealthIssue{

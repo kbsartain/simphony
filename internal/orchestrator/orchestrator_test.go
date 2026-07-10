@@ -1078,13 +1078,13 @@ func TestOrchestrator_BlockerRule_NonTerminalBlocker(t *testing.T) {
 	}
 }
 
-func TestOrchestrator_BlockerRule_AppliesToReviewAndMergeStates(t *testing.T) {
+func TestOrchestrator_BlockerRule_AppliesOnlyInTodo(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{
-			{ID: "1", Identifier: "A-1", Title: "Blocked Review", State: "In Review", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
-			{ID: "2", Identifier: "A-2", Title: "Unblocked Review", State: "In Review", BlockedBy: []api.Blocker{{State: strPtr("Done")}}},
-			{ID: "3", Identifier: "A-3", Title: "Blocked Merge", State: "Approved", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
-			{ID: "4", Identifier: "A-4", Title: "Unblocked Merge", State: "Approved", BlockedBy: []api.Blocker{{State: strPtr("Done")}}},
+			{ID: "1", Identifier: "A-1", Title: "Blocked Todo", State: "Todo", BlockedBy: []api.Blocker{{State: strPtr("Todo")}}},
+			{ID: "2", Identifier: "A-2", Title: "Unblocked Todo", State: "Todo", BlockedBy: []api.Blocker{{State: strPtr("Done")}}},
+			{ID: "3", Identifier: "A-3", Title: "Blocked Review", State: "In Review", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
+			{ID: "4", Identifier: "A-4", Title: "Blocked Merge", State: "Approved", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
 		},
 	}
 	wsMgr, _ := workspace.NewManager(t.TempDir())
@@ -1101,14 +1101,14 @@ func TestOrchestrator_BlockerRule_AppliesToReviewAndMergeStates(t *testing.T) {
 
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	if len(runner.runs) != 2 {
-		t.Fatalf("expected 2 dispatches for unblocked review/merge issues, got %d", len(runner.runs))
+	if len(runner.runs) != 3 {
+		t.Fatalf("expected 3 dispatches for unblocked todo, review, and merge issues, got %d", len(runner.runs))
 	}
 	dispatched := map[string]bool{}
 	for _, run := range runner.runs {
 		dispatched[run.Identifier] = true
 	}
-	for _, want := range []string{"A-2", "A-4"} {
+	for _, want := range []string{"A-2", "A-3", "A-4"} {
 		if !dispatched[want] {
 			t.Fatalf("expected %s to dispatch, got %#v", want, dispatched)
 		}

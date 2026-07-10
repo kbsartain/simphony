@@ -349,6 +349,30 @@ func TestResolveConfig_ModelAndPipeline(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_ReasoningEffortSupportsMaxAlias(t *testing.T) {
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "key",
+				"project_slug": "proj",
+			},
+			"agent_runtime": map[string]interface{}{
+				"provider":         "codex",
+				"reasoning_effort": "max",
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AgentRuntime.ReasoningEffort != "xhigh" {
+		t.Fatalf("agent_runtime.reasoning_effort = %q, want xhigh", cfg.AgentRuntime.ReasoningEffort)
+	}
+}
+
 func TestResolveConfig_EnvVarEmpty(t *testing.T) {
 	os.Setenv("TEST_LINEAR_KEY", "")
 	defer os.Unsetenv("TEST_LINEAR_KEY")
@@ -694,7 +718,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 				"codex": map[string]interface{}{
 					"stage_overrides": map[string]interface{}{
 						"review": map[string]interface{}{
-							"reasoning_effort": "max",
+							"reasoning_effort": "super-high",
 						},
 					},
 				},

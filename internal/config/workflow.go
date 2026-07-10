@@ -1023,8 +1023,10 @@ func normalizeReasoningEffort(value string) (string, error) {
 		return "", nil
 	case "none", "minimal", "low", "medium", "high", "xhigh":
 		return normalized, nil
+	case "max":
+		return "xhigh", nil
 	default:
-		return "", fmt.Errorf("must be one of none, minimal, low, medium, high, or xhigh, got %q", raw)
+		return "", fmt.Errorf("must be one of none, minimal, low, medium, high, xhigh, or max, got %q", raw)
 	}
 }
 

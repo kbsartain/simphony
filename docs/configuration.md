@@ -289,9 +289,13 @@ The runner appends `--listen stdio://` when it is not already present. The subpr
 
 `model` and `model_provider` are optional. When present, they are passed to Codex app-server for thread and turn startup. Simphony treats these as provider-neutral strings, so non-OpenAI model IDs such as Claude, Gemini, Kimi, GLM, or DeepSeek variants can be configured when the underlying Codex installation has an appropriate provider/router configured.
 
-`reasoning_effort` is optional and is passed to Codex as the per-turn `effort` override. Accepted values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`; `x-high` and `x_high` are normalized to `xhigh`.
+`reasoning_effort` is optional and is passed to Codex as the per-turn `effort` override. Accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; `x-high`, `x_high`, and `max` are normalized to `xhigh`.
 
 `stage_overrides` can override `model`, `model_provider`, `reasoning_effort`, `endpoint_url`, `api_key`, `auth_token`, `env`, and `skills` for a pipeline stage. Known stage keys are `coding`, `review`, `review_resolution`, and `merge`; unknown stage keys are accepted for forward compatibility and ignored until a matching stage exists. Provider-specific `codex.stage_overrides` and `claude.stage_overrides` use the same stage override shape as `agent_runtime.stage_overrides`.
+
+The dashboard Settings page provides provider presets for the model-provider ID, API endpoint, and environment-backed API key reference. Selecting a preset writes those values into the editable workflow; it does not copy or expose the secret itself. After saving, **Refresh model catalog** calls the configured provider's model-list endpoint and adds the returned IDs to the model picker for the current browser session. This supports newly released or account-specific models without requiring a Simphony release. The built-in OpenAI picker includes `gpt-5.6` preview, but actual availability still depends on the configured OpenAI account.
+
+Provider presets describe connection defaults, not protocol compatibility guarantees. The selected agent SDK or Codex model-provider/router configuration must support the provider's API surface.
 
 `skills` selects default Codex skills for every stage. `stage_overrides.<stage>.skills` adds stage-specific skills. Skill entries can be simple names, which Simphony resolves through Codex `skills/list` at runtime, or objects with `name` and `path` when you want to pin a specific local `SKILL.md`. Resolved skills are sent as Codex skill input items on each turn; unresolved names are included in the prompt as visible guidance.
 

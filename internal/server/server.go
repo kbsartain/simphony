@@ -79,6 +79,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/state", s.withCORS(s.handleState))
 	s.mux.HandleFunc("/api/v1/refresh", s.withCORS(s.handleRefresh))
 	s.mux.HandleFunc("/api/v1/settings/validate-tracker", s.withCORS(s.handleValidateTrackerSettings))
+	s.mux.HandleFunc("/api/v1/settings/models", s.withCORS(s.handleModelCatalog))
 	s.mux.HandleFunc("/api/v1/settings", s.withCORS(s.handleSettings))
 	s.mux.HandleFunc("/api/v1/", s.withCORS(s.handleAPIv1)) // catch-all for /api/v1/{issue_identifier}
 	s.mux.HandleFunc("/api/", s.withCORS(s.handleAPINotFound))

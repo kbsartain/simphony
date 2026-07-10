@@ -1776,6 +1776,13 @@ h3 {
   text-transform: uppercase;
 }
 
+.model-settings-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .settings-field textarea {
   width: 100%;
   min-height: 280px;

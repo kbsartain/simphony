@@ -661,7 +661,7 @@ func normalizeIssue(li linearIssue) api.Issue {
 	if len(li.InverseRelations.Nodes) > 0 {
 		issue.BlockedBy = make([]api.Blocker, 0, len(li.InverseRelations.Nodes))
 		for _, rel := range li.InverseRelations.Nodes {
-			if rel.Type != "blocks" {
+			if !strings.EqualFold(strings.TrimSpace(rel.Type), "blocks") {
 				continue
 			}
 			if rel.Issue.ID == "" && rel.Issue.Identifier == "" {

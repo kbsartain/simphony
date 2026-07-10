@@ -150,6 +150,62 @@ func (m *Manager) RemoveWorkspace(issueIdentifier string) error {
 	return nil
 }
 
+// MergeWorkspaceToBaseBranch merges a workspace issue branch into the configured base branch.
+// It is no-op unless the workspace mode is git_worktree.
+func (m *Manager) MergeWorkspaceToBaseBranch(issue api.Issue, workspacePath string) error {
+	if m.mode != "git_worktree" {
+		return nil
+	}
+
+	key := sanitizeKey(issue.Identifier)
+	if key == "" {
+		return fmt.Errorf("issue identifier is required for merge")
+	}
+	if strings.TrimSpace(workspacePath) == "" {
+		workspacePath = m.GetWorkspacePath(issue.Identifier)
+	}
+	if !isInsideRoot(m.root, workspacePath) {
+		return fmt.Errorf("workspace path %s escapes root %s", workspacePath, m.root)
+	}
+	if !isGitWorktree(workspacePath) {
+		return fmt.Errorf("workspace path %s is not a git worktree", workspacePath)
+	}
+
+	baseBranch := strings.TrimSpace(m.baseBranch)
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	branch := m.branchName(issue, key)
+
+	if !branchExists(m.repo, branch) {
+		return fmt.Errorf("workspace branch %q does not exist", branch)
+	}
+	if !branchExists(m.repo, baseBranch) {
+		return fmt.Errorf("base branch %q does not exist", baseBranch)
+	}
+
+	// Already merged -> this run can be treated as idempotent.
+	if runGit(m.repo, "merge-base", "--is-ancestor", branch, baseBranch) == nil {
+		return nil
+	}
+
+	if err := runGit(m.repo, "checkout", baseBranch); err != nil {
+		return fmt.Errorf("checkout base branch %q: %w", baseBranch, err)
+	}
+	if err := runGit(m.repo, "merge", "--no-ff", "--no-edit", branch); err != nil {
+		return fmt.Errorf("merge branch %q into %q: %w", branch, baseBranch, err)
+	}
+	if hasRemote, err := gitRemoteConfigured(m.repo); err != nil {
+		return fmt.Errorf("check for remote origin: %w", err)
+	} else if hasRemote {
+		if err := runGit(m.repo, "push", "origin", baseBranch); err != nil {
+			return fmt.Errorf("push branch %q: %w", baseBranch, err)
+		}
+	}
+
+	return nil
+}
+
 // RunHook executes a lifecycle hook script inside the workspace directory.
 // Fatal hook failures (after_create, before_run) are returned as errors.
 // Non-fatal hook failures (after_run, before_remove) are logged and ignored.
@@ -295,15 +351,28 @@ func isDirEmpty(path string) (bool, error) {
 }
 
 func runGit(repo string, args ...string) error {
+	_, err := runGitOutput(repo, args...)
+	return err
+}
+
+func runGitOutput(repo string, args ...string) (string, error) {
 	cmdArgs := append([]string{"-C", repo}, args...)
 	cmd := exec.Command("git", cmdArgs...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git %s failed: %w\noutput: %s", strings.Join(cmdArgs, " "), err, out.String())
+		return "", fmt.Errorf("git %s failed: %w\noutput: %s", strings.Join(cmdArgs, " "), err, out.String())
 	}
-	return nil
+	return out.String(), nil
+}
+
+func gitRemoteConfigured(repo string) (bool, error) {
+	out, err := runGitOutput(repo, "remote")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
 }
 
 // GetWorkspacePath returns the absolute workspace path for an issue identifier.

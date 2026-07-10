@@ -19,6 +19,7 @@ import (
 
 	_ "embed"
 
+	"github.com/kbsartain/simphony/internal/codexcmd"
 	"github.com/kbsartain/simphony/internal/prompt"
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -157,6 +158,10 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	command := strings.TrimSpace(cfg.Command)
 	if command == "" {
 		return fmt.Errorf("%s: command is empty", api.ErrCodexNotFound)
+	}
+	command, err := codexcmd.Resolve(command)
+	if err != nil {
+		return fmt.Errorf("%s: %w", api.ErrCodexNotFound, err)
 	}
 
 	if !strings.Contains(command, "--listen") {

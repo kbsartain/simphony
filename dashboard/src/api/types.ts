@@ -442,3 +442,15 @@ export interface SettingsValidationResponse {
   candidate_count: number;
   message?: string;
 }
+
+export interface ModelCatalogEntry {
+  id: string;
+  label: string;
+}
+
+export interface ModelCatalogResponse {
+  provider: string;
+  endpoint_url: string;
+  refreshed_at: string;
+  models: ModelCatalogEntry[];
+}

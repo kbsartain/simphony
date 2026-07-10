@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   IssueDetailResponse,
+  ModelCatalogResponse,
   ProjectSummary,
   RegistryBootstrapResponse,
   RegistryProjectCreateResponse,
@@ -28,6 +29,7 @@ import {
   fetchSettings,
   fetchState,
   requestRefresh as requestRefreshAPI,
+  refreshModelCatalog as refreshModelCatalogAPI,
   saveSettings,
   updateRegistrySettings,
   updateRegistryProject,
@@ -65,6 +67,8 @@ type ProviderOption = {
   label: string
   models: ModelOption[]
   reasoning: ReasoningOption[]
+  endpointURL: string
+  apiKey: string
 }
 type ReasoningOption = {
   value: string
@@ -134,6 +138,13 @@ const THINKING_REASONING_OPTIONS: ReasoningOption[] = [
   { value: 'medium', label: 'Thinking budget: medium' },
   { value: 'high', label: 'Thinking budget: high' },
 ]
+const ZAI_REASONING_OPTIONS: ReasoningOption[] = [
+  { value: '', label: 'Provider default' },
+  { value: 'low', label: 'Thinking budget: low' },
+  { value: 'medium', label: 'Thinking budget: medium' },
+  { value: 'high', label: 'Thinking budget: high' },
+  { value: 'max', label: 'Max' },
+]
 const GEMINI_3_PRO_REASONING_OPTIONS: ReasoningOption[] = [
   { value: '', label: 'Gemini default' },
   { value: 'low', label: 'Thinking level: low' },
@@ -162,8 +173,11 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'openai',
     label: 'OpenAI',
+    endpointURL: 'https://api.openai.com/v1',
+    apiKey: '$OPENAI_API_KEY',
     reasoning: CODEX_REASONING_OPTIONS,
     models: [
+      { id: 'openai:gpt-5.6', label: 'GPT-5.6 (preview)', model: 'gpt-5.6', modelProvider: 'openai' },
       { id: 'openai:gpt-5.5', label: 'GPT-5.5', model: 'gpt-5.5', modelProvider: 'openai' },
       { id: 'openai:gpt-5.4', label: 'GPT-5.4', model: 'gpt-5.4', modelProvider: 'openai' },
       { id: 'openai:gpt-5.4-mini', label: 'GPT-5.4 Mini', model: 'gpt-5.4-mini', modelProvider: 'openai' },
@@ -173,6 +187,8 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'anthropic',
     label: 'Anthropic',
+    endpointURL: 'https://api.anthropic.com',
+    apiKey: '$ANTHROPIC_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
     models: [
       { id: 'anthropic:claude-opus-4.7', label: 'Claude Opus 4.7', model: 'claude-opus-4.7', modelProvider: 'anthropic' },
@@ -182,6 +198,8 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'google',
     label: 'Google Gemini',
+    endpointURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    apiKey: '$GEMINI_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
     models: [
       {
@@ -210,14 +228,19 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'moonshot',
     label: 'Moonshot',
+    endpointURL: 'https://api.moonshot.ai/v1',
+    apiKey: '$MOONSHOT_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
     models: [{ id: 'moonshot:kimi-k2-2.6', label: 'Kimi K2 2.6', model: 'kimi-k2-2.6', modelProvider: 'moonshot' }],
   },
   {
     id: 'zai',
     label: 'Z.ai',
-    reasoning: THINKING_REASONING_OPTIONS,
+    endpointURL: 'https://api.z.ai/api/coding/paas/v4',
+    apiKey: '$ZAI_API_KEY',
+    reasoning: ZAI_REASONING_OPTIONS,
     models: [
+      { id: 'zai:glm-5.2', label: 'GLM 5.2', model: 'glm-5.2', modelProvider: 'zai' },
       { id: 'zai:glm-5.1', label: 'GLM 5.1', model: 'glm-5.1', modelProvider: 'zai' },
       { id: 'zai:glm-4.7', label: 'GLM 4.7', model: 'glm-4.7', modelProvider: 'zai' },
     ],
@@ -225,6 +248,8 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'deepseek',
     label: 'DeepSeek',
+    endpointURL: 'https://api.deepseek.com',
+    apiKey: '$DEEPSEEK_API_KEY',
     reasoning: DEFAULT_REASONING_OPTIONS,
     models: [
       { id: 'deepseek:deepseek-v4-pro', label: 'DeepSeek V4 Pro', model: 'deepseek-v4-pro', modelProvider: 'deepseek' },
@@ -289,6 +314,8 @@ function App() {
   const [savingSettings, setSavingSettings] = useState(false)
   const [validatingTracker, setValidatingTracker] = useState(false)
   const [trackerValidation, setTrackerValidation] = useState<SettingsValidationResponse | null>(null)
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogResponse | null>(null)
+  const [refreshingModelCatalog, setRefreshingModelCatalog] = useState(false)
   const [refreshResult, setRefreshResult] = useState<RefreshResponse | null>(null)
   const [filter, setFilter] = useState<QueueFilter>('all')
   const [query, setQuery] = useState('')
@@ -367,6 +394,7 @@ function App() {
     setSettingsDraft(JSON.stringify(data.config || {}, null, 2))
     setPromptDraft(data.prompt_template || '')
     setTrackerValidation(null)
+    setModelCatalog(null)
     setError(null)
   }, [projectMode, selectedProjectId])
 
@@ -401,6 +429,7 @@ function App() {
     setState(null)
     setSettings(null)
     setTrackerValidation(null)
+    setModelCatalog(null)
     setRefreshResult(null)
     setDetailState({ status: 'idle' })
     setError(null)
@@ -692,6 +721,21 @@ function App() {
       setError(normalizeError(err))
     } finally {
       setValidatingTracker(false)
+    }
+  }
+
+  const refreshModels = async () => {
+    setRefreshingModelCatalog(true)
+    setNotice(null)
+    try {
+      const result = await refreshModelCatalogAPI(selectedAPIProjectId)
+      setModelCatalog(result)
+      setNotice(`Found ${result.models.length.toLocaleString()} models from ${result.provider}`)
+      setError(null)
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setRefreshingModelCatalog(false)
     }
   }
 
@@ -1055,11 +1099,14 @@ function App() {
             saving={savingSettings}
             validatingTracker={validatingTracker}
             trackerValidation={trackerValidation}
+            modelCatalog={modelCatalog}
+            refreshingModelCatalog={refreshingModelCatalog}
             onSettingsDraftChange={setSettingsDraft}
             onPromptDraftChange={setPromptDraft}
             onReload={() => loadSettings().catch(err => setError(normalizeError(err)))}
             onSave={saveWorkflowSettings}
             onValidateTracker={validateLinearSettings}
+            onRefreshModels={refreshModels}
           />
         )}
 
@@ -1641,7 +1688,13 @@ function ProjectSetupView(props: {
                       provider && props.registryRuntimeDraft.model && !provider.models.some(option => option.model === props.registryRuntimeDraft.model)
                         ? ''
                         : props.registryRuntimeDraft.model
-                    props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, modelProvider: nextProvider, model: nextModel })
+                    props.onRegistryRuntimeDraftChange({
+                      ...props.registryRuntimeDraft,
+                      modelProvider: nextProvider,
+                      model: nextModel,
+                      endpointURL: provider?.endpointURL || props.registryRuntimeDraft.endpointURL,
+                      apiKey: provider?.apiKey || props.registryRuntimeDraft.apiKey,
+                    })
                   }}
                 >
                   <option value="">SDK default</option>
@@ -2134,11 +2187,14 @@ function SettingsView(props: {
   saving: boolean
   validatingTracker: boolean
   trackerValidation: SettingsValidationResponse | null
+  modelCatalog: ModelCatalogResponse | null
+  refreshingModelCatalog: boolean
   onSettingsDraftChange: (value: string) => void
   onPromptDraftChange: (value: string) => void
   onReload: () => void
   onSave: () => void
   onValidateTracker: () => void
+  onRefreshModels: () => void
 }) {
   if (!props.settings) {
     return (
@@ -2156,7 +2212,20 @@ function SettingsView(props: {
   const draftConfig = parseSettingsConfig(props.settingsDraft)
   const selectedProviderID = draftConfig ? getSelectedProviderID(draftConfig) : ''
   const selectedModelID = draftConfig ? getSelectedModelID(draftConfig) : ''
-  const globalModels = modelOptionsForProvider(selectedProviderID, draftConfig ? getRuntimeStringField(draftConfig, 'model') : '')
+  const catalogModels: ModelOption[] =
+    props.modelCatalog && props.modelCatalog.provider === selectedProviderID
+      ? props.modelCatalog.models.map(model => ({
+          id: `${selectedProviderID}:${model.id}`,
+          label: model.label,
+          model: model.id,
+          modelProvider: selectedProviderID,
+        }))
+      : []
+  const globalModels = modelOptionsForProvider(
+    selectedProviderID,
+    draftConfig ? getRuntimeStringField(draftConfig, 'model') : '',
+    catalogModels,
+  )
   const resolvedRuntime = props.settings.resolved_config.agent_runtime || props.settings.resolved_config.codex
   const trackerValidation = props.trackerValidation
 
@@ -2177,9 +2246,13 @@ function SettingsView(props: {
     const nextConfig = applyProviderSelection(config, providerID)
     props.onSettingsDraftChange(JSON.stringify(nextConfig, null, 2))
   }
+  const changeRuntimeField = (field: StageRuntimeField, value: string) => {
+    const config = draftConfig || {}
+    props.onSettingsDraftChange(JSON.stringify(applyRuntimeStringField(config, field, value), null, 2))
+  }
   const changeModel = (optionID: string) => {
     const config = draftConfig || {}
-    const nextConfig = applyModelSelection(config, selectedProviderID, getRuntimeStringField(config, 'model'), optionID)
+    const nextConfig = applyModelSelection(config, selectedProviderID, getRuntimeStringField(config, 'model'), optionID, catalogModels)
     props.onSettingsDraftChange(JSON.stringify(nextConfig, null, 2))
   }
   const changeGlobalSkills = (value: string) => {
@@ -2349,7 +2422,17 @@ function SettingsView(props: {
           </div>
         )}
         <div className="settings-field">
-          <span>Model</span>
+          <div className="model-settings-heading">
+            <span>Model and provider</span>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={props.onRefreshModels}
+              disabled={!draftConfig || props.saving || props.refreshingModelCatalog}
+            >
+              {props.refreshingModelCatalog ? 'Refreshing' : 'Refresh model catalog'}
+            </button>
+          </div>
           <div className="settings-control-row">
             <label className="select-field">
               <span className="sr-only">Model provider</span>
@@ -2378,6 +2461,50 @@ function SettingsView(props: {
               <span>{resolvedRuntime.provider || resolvedRuntime.model_provider || 'default provider'}</span>
             </div>
           </div>
+          <p className="field-help">Provider selection applies its endpoint and environment-key preset. Save settings before refreshing the catalog.</p>
+          {props.modelCatalog && (
+            <p className="field-help">
+              Catalog refreshed {formatDateTime(props.modelCatalog.refreshed_at)} from {props.modelCatalog.endpoint_url}.
+            </p>
+          )}
+        </div>
+        <div className="settings-grid three-up">
+          <label className="form-field">
+            <span>Provider endpoint</span>
+            <input
+              value={draftConfig ? getRuntimeStringField(draftConfig, 'endpoint_url') : ''}
+              onChange={event => changeRuntimeField('endpoint_url', event.target.value)}
+              placeholder="Provider default"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Provider API key</span>
+            <input
+              value={draftConfig ? getRuntimeStringField(draftConfig, 'api_key') : ''}
+              onChange={event => changeRuntimeField('api_key', event.target.value)}
+              placeholder="$OPENAI_API_KEY"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Reasoning</span>
+            <select
+              value={draftConfig ? getRuntimeStringField(draftConfig, 'reasoning_effort') : ''}
+              onChange={event => changeRuntimeField('reasoning_effort', event.target.value)}
+              disabled={!draftConfig || props.saving}
+            >
+              {reasoningOptionsForSelection(
+                draftConfig ? getRuntimeStringField(draftConfig, 'model') : '',
+                selectedProviderID,
+                draftConfig ? getRuntimeStringField(draftConfig, 'reasoning_effort') : '',
+              ).map(option => (
+                <option key={option.value || 'default'} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
         <div className="settings-field">
           <span>Default Skills</span>
@@ -2653,6 +2780,8 @@ function applyProviderSelection(config: Record<string, unknown>, providerID: str
     delete runtime.model
   } else {
     runtime.model_provider = provider.id
+    runtime.endpoint_url = provider.endpointURL
+    runtime.api_key = provider.apiKey
     const currentModel = typeof runtime.model === 'string' ? runtime.model : ''
     if (currentModel && !provider.models.some(option => option.model === currentModel)) {
       delete runtime.model
@@ -2663,11 +2792,31 @@ function applyProviderSelection(config: Record<string, unknown>, providerID: str
   return nextConfig
 }
 
-function applyModelSelection(config: Record<string, unknown>, providerID: string, currentModel: string, optionID: string) {
+function applyRuntimeStringField(config: Record<string, unknown>, field: StageRuntimeField, value: string) {
   const nextConfig = { ...config }
   const key = runtimeConfigKey(nextConfig)
   const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
-  const option = modelOptionsForProvider(providerID, currentModel).find(item => item.id === optionID)
+  const trimmedValue = value.trim()
+  if (trimmedValue === '') {
+    delete runtime[field]
+  } else {
+    runtime[field] = trimmedValue
+  }
+  nextConfig[key] = runtime
+  return nextConfig
+}
+
+function applyModelSelection(
+  config: Record<string, unknown>,
+  providerID: string,
+  currentModel: string,
+  optionID: string,
+  additionalModels: ModelOption[] = [],
+) {
+  const nextConfig = { ...config }
+  const key = runtimeConfigKey(nextConfig)
+  const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
+  const option = modelOptionsForProvider(providerID, currentModel, additionalModels).find(item => item.id === optionID)
 
   if (!option) {
     delete runtime.model
@@ -2861,12 +3010,21 @@ function providerOptionsWithCurrent(providerID: string) {
   if (!providerID || PROVIDER_OPTIONS.some(option => option.id === providerID)) {
     return PROVIDER_OPTIONS
   }
-  return [{ id: providerID, label: `${providerID} (custom)`, models: [], reasoning: DEFAULT_REASONING_OPTIONS }, ...PROVIDER_OPTIONS]
+  return [
+    { id: providerID, label: `${providerID} (custom)`, models: [], reasoning: DEFAULT_REASONING_OPTIONS, endpointURL: '', apiKey: '' },
+    ...PROVIDER_OPTIONS,
+  ]
 }
 
-function modelOptionsForProvider(providerID: string, currentModel: string) {
+function modelOptionsForProvider(providerID: string, currentModel: string, additionalModels: ModelOption[] = []) {
   const provider = PROVIDER_OPTIONS.find(option => option.id === providerID)
-  const options = provider ? provider.models : MODEL_OPTIONS
+  const baseOptions = provider ? provider.models : MODEL_OPTIONS
+  const options = [...baseOptions]
+  for (const model of additionalModels) {
+    if (!options.some(option => option.model === model.model && option.modelProvider === model.modelProvider)) {
+      options.push(model)
+    }
+  }
   if (!currentModel || options.some(option => option.model === currentModel)) {
     return options
   }

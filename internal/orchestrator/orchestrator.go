@@ -586,7 +586,7 @@ func (o *Orchestrator) filterEligible(candidates []api.Issue) []api.Issue {
 			continue
 		}
 
-		if o.hasOpenBlocker(cfg, issue) {
+		if strings.EqualFold(stateNorm, "todo") && o.hasOpenBlocker(cfg, issue) {
 			continue
 		}
 
@@ -1416,6 +1416,17 @@ func (o *Orchestrator) handleCompletionTransitionRetry(ctx context.Context, runt
 }
 
 func (o *Orchestrator) transitionMergeIssueToDone(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string, workspacePath string) {
+	if runtime.workspaceMgr != nil {
+		if strings.TrimSpace(workspacePath) == "" {
+			workspacePath = runtime.workspaceMgr.GetWorkspacePath(issue.Identifier)
+		}
+		if err := runtime.workspaceMgr.MergeWorkspaceToBaseBranch(issue, workspacePath); err != nil {
+			o.logf("issue_id=%s issue_identifier=%s action=merge_completion_transition status=failed error=%v", issue.ID, identifier, err)
+			o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("merge completion: %v", err), retryKindCompletionTransition)
+			return
+		}
+	}
+
 	updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, runtime.cfg.Pipeline.DoneState)
 	if err != nil {
 		o.logf("issue_id=%s issue_identifier=%s action=merge_completion_transition status=failed error=%v", issue.ID, identifier, err)
