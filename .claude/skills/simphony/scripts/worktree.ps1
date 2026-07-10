@@ -41,6 +41,24 @@ switch ($Cmd) {
     Write-Output $wt
   }
   "path"   { Write-Output $wt }
+  "status" {
+    # Evidence sweep for reconciliation (key=value).
+    git -C $Repo fetch --quiet origin $Base 2>$null
+    $baseRef = "origin/$Base"
+    git -C $Repo rev-parse --verify --quiet "$baseRef^{commit}" *> $null
+    if ($LASTEXITCODE -ne 0) { $baseRef = $Base }
+    Write-Output "branch=$Branch"
+    if ((git -C $Repo worktree list --porcelain) -match "/$slug$") { Write-Output "worktree=yes" } else { Write-Output "worktree=no" }
+    git -C $Repo show-ref --verify --quiet "refs/heads/$Branch"; if ($LASTEXITCODE -eq 0) { Write-Output "branch_local=yes" } else { Write-Output "branch_local=no" }
+    git -C $Repo ls-remote --exit-code --heads origin $Branch *> $null; if ($LASTEXITCODE -eq 0) { Write-Output "branch_remote=yes" } else { Write-Output "branch_remote=no" }
+    git -C $Repo rev-parse --verify --quiet "refs/heads/$Branch^{commit}" *> $null
+    if ($LASTEXITCODE -eq 0) {
+      $ahead = (git -C $Repo rev-list --count "$baseRef..$Branch"); Write-Output "commits_ahead=$ahead"
+      # changes_vs_base: two-dot tree compare (heuristic; not squash-reliable — prefer PR state, §7)
+      git -C $Repo diff --quiet "$baseRef" "$Branch"; if ($LASTEXITCODE -eq 0) { Write-Output "changes_vs_base=no" } else { Write-Output "changes_vs_base=yes" }
+    } else { Write-Output "commits_ahead=0"; Write-Output "changes_vs_base=no" }
+    if (Test-Path $wt) { $d = ((git -C $wt status --porcelain) | Measure-Object -Line).Lines; Write-Output "dirty=$d" } else { Write-Output "dirty=0" }
+  }
   "merge"  {
     git -C $Repo checkout $Base | Out-Host
     git -C $Repo merge --no-ff $Branch -m "Simphony merge $Identifier" | Out-Host

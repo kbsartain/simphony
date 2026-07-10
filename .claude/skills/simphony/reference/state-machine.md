@@ -240,12 +240,86 @@ comment per issue and edit it each tick with a rolling tail of the last K
 events (timestamp · stage · outcome). One comment, full history, zero spam.
 Use this when reviewers prefer a compact audit trail over per-event comments.
 
-## 7. Recovery model
+## 7. Recovery & reconciliation (dirty-environment protocol)
 
-No database. State lives in the tracker + the filesystem worktrees. On restart,
-re-derive everything by re-reading issue states and existing worktrees; an issue
-in `In Review` is simply a `review`-stage item, etc. This is why the tracker
-state must always be kept authoritative and up to date.
+There is no database — state lives in the tracker **plus** the filesystem
+(worktrees, branches, commits) and GitHub (PRs). These can **drift**: a crash,
+a killed worker, or another agent can leave an issue whose tracker state does
+not match reality (state says `In Review` but no branch exists; says `Approved`
+but the branch already merged; says `In Progress` with half-finished uncommitted
+work). Before acting on any issue, **reconcile against evidence** — never trust
+the tracker state alone.
+
+### Principles
+- **Evidence over assumption.** Corroborate the tracker state with the real
+  worktree/branch/commit/PR state before dispatching.
+- **Resume, don't restart.** Finish partial work rather than redo it; *inspect
+  and adopt* uncommitted work (don't reset) unless it's incoherent.
+- **Idempotent side effects.** Never create a second branch/PR/commit for the
+  same logical step. Check-then-act.
+- **Self-heal toward reality.** If the evidence shows a stage already happened,
+  advance the tracker to match instead of repeating it.
+- **Fail safe on ambiguity.** Can't tell if another agent is live on it → skip.
+  Can't tell if the work is coherent → escalate, don't merge.
+
+### Evidence sweep (per candidate, before dispatch)
+Run `scripts/worktree.sh status <id> …` (or gather equivalently):
+`worktree` (yes/no) · `branch_local` / `branch_remote` · `commits_ahead` (vs
+`origin/base`) · `changes_vs_base` (yes/no) · `dirty` (uncommitted count).
+
+**already-landed** (branch's work is already in base):
+- If `github.enabled`: the **PR merged state is authoritative** — check
+  `gh pr view <branch> --json state,mergedAt` (state `MERGED`). Use this; a
+  squash merge leaves the branch's commits looking un-merged to git, so don't
+  rely on git alone.
+- Git fallback (no PR flow): `commits_ahead>0 && changes_vs_base=no` (base tree
+  already equals the branch's) — reliable for merge/ff, a hint only for squash
+  or when base advanced independently.
+
+### Drift resolution — resolved stage vs. evidence
+- **coding** (Backlog/Todo/`working_state`):
+  - no branch, no worktree → fresh start (normal).
+  - worktree dirty, 0 commits → **partial** work: resume in place, inspect +
+    adopt the uncommitted changes, finish, commit.
+  - `commits_ahead>0`, `introduces_changes=yes`, no PR → coding likely finished
+    but the transition was lost. **Re-verify**; if the gate is green, advance to
+    `review_state` **without re-coding**; if red, resume coding.
+  - **already-landed** (merged into base) → the work shipped; advance straight
+    to `done_state` and clean the worktree. Do not re-code.
+- **review** (`review_state`):
+  - no branch / no commits → **corrupt** (nothing to review). Do not fabricate a
+    review: move back to `working_state` (or escalate) with a comment.
+  - branch has changes, PR open, a prior review already posted → resume from
+    there; don't re-review from scratch.
+  - already-landed → advance to `done_state`.
+- **merge** (`merge_state`):
+  - **already-landed** or PR already merged → advance to `done_state`
+    (merge happened; tracker was stale). **Never re-merge.**
+  - PR open + checks green → merge → `done_state`.
+  - branch conflicts with current base → merge `origin/base` into the branch
+    first + re-verify, then merge; unresolvable → escalate.
+  - no branch/PR → corrupt: move back or escalate.
+- **Any stage, multiple branches/worktrees for one issue** → keep the one with
+  the most progress (commits/PR), remove/park the rest, comment.
+- **Orphan worktrees** (issue now terminal/blocked) → remove them in Reconcile.
+
+### Concurrency lease (don't collide with another live agent)
+The claim (§ SKILL) is in-memory within one orchestrator, which is not enough on
+a **shared** board where a second agent (or the real harness) may be mid-flight.
+Add a best-effort lease:
+- On claim, write/refresh a lease marker — a pinned comment
+  `<!-- simphony:lease owner=<agent-id> ts=<ISO> -->` (or a `simphony:claimed`
+  label) — and heartbeat it while working.
+- Before claiming, read it: a **fresh** lease by another owner (ts within a TTL,
+  e.g. 2× `stall_timeout`) → **skip** the issue. A **stale** lease (older than
+  the TTL → dead agent) → reclaim and comment. Also treat a worktree modified in
+  the last few minutes (file mtime) as possibly-live and skip unless it's yours.
+- This is advisory, not a hard lock — but a timestamped lease + TTL removes the
+  common double-dispatch collisions between two sessions or a restart.
+
+On restart, in-memory claims are gone: re-run the full sweep, drop terminal/
+blocked issues (remove their worktrees), and reconcile every remaining candidate
+by the rules above before dispatching anything.
 
 ## 8. Retries, attempts, and escalation
 

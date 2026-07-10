@@ -48,9 +48,15 @@ this skill preserves state in the tracker and cannot run blind.
 ## The orchestrator tick
 Run this loop (once per `/goal` turn, or once per invocation in a manual run):
 
-1. **Reconcile.** Re-read states of issues you're tracking; drop terminal ones
-   (and escalated/`simphony:blocked` ones) and remove their worktrees if
-   cleanup is on. Never trust in-memory state over the tracker.
+1. **Reconcile against evidence** (`reference/state-machine.md` §7 — do this in a
+   dirty environment where you, a prior run, or another agent may have left
+   partial work). Re-read tracker states; then for anything you're tracking or
+   about to touch, run the **evidence sweep** (`scripts/worktree.sh status <id>`:
+   worktree/branch/commits/`introduces_changes`/dirty, + PR state) and resolve
+   drift by §7's rules — **resume, don't restart**; self-heal already-landed work
+   straight to `done_state`; move corrupt states (e.g. `review` with no branch)
+   back or escalate. Drop terminal/`simphony:blocked` issues and remove their
+   worktrees (if cleanup is on). Never trust in-memory state over the tracker.
 2. **Fetch candidates.** Issues in the **effective active set**
    (`reference/state-machine.md` §3) — `active_states` plus every pipeline state
    (`working_state`, `review_state`, `merge_state`, and `review_resolution_state`
@@ -82,8 +88,13 @@ BOARD: backlog=0 todo=0 in_progress=1 in_review=2 approved=0 done=14 escalated=1
 
 ## Dispatching a worker
 For each selected issue:
-1. **Resolve stage** from its current tracker state (review_resolution → review →
-   merge → else coding).
+0. **Reconcile + lease first.** Run the evidence sweep and resolve any drift
+   (`reference/state-machine.md` §7) — you may resume/advance/heal instead of
+   dispatching. Then check the **concurrency lease**: if a *fresh* lease by
+   another owner exists, **skip this issue** (don't collide); otherwise write/
+   refresh your own lease before proceeding.
+1. **Resolve stage** from its (reconciled) tracker state (review_resolution →
+   review → merge → else coding).
 2. **Respect stage focus / pause.** If running in `stage=<x>` mode, only dispatch
    issues whose resolved stage matches; leave all others untouched.
 3. **coding pre-run transition.** If stage is `coding` and the issue is not in
