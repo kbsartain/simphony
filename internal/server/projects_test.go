@@ -554,7 +554,7 @@ projects:
 	manager := &fakeProjectManager{registry: registry}
 	s := newTestProjectServer(manager)
 
-	payload := `{"id":"beta","name":"Beta","workflow_path":"beta/WORKFLOW.md","enabled":false,"max_concurrent_agents":2}`
+	payload := `{"id":"beta","name":"Beta","workflow_path":"beta/WORKFLOW.md","enabled":false,"start_paused":true,"max_concurrent_agents":2}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/registry/projects", strings.NewReader(payload))
 	rec := httptest.NewRecorder()
 	s.mux.ServeHTTP(rec, req)
@@ -566,8 +566,8 @@ projects:
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Project.ID != "beta" || body.Project.Enabled || body.Project.MaxConcurrentAgents != 2 {
-		t.Fatalf("created project = %+v, want disabled beta with cap", body.Project)
+	if body.Project.ID != "beta" || body.Project.Enabled || !body.Project.StartPaused || body.Project.MaxConcurrentAgents != 2 {
+		t.Fatalf("created project = %+v, want disabled and startup-paused beta with cap", body.Project)
 	}
 	if !body.ChangeRequiresRestart || !strings.Contains(body.Command, "-config") {
 		t.Fatalf("restart metadata = command %q restart %v, want restart command", body.Command, body.ChangeRequiresRestart)
@@ -580,7 +580,7 @@ projects:
 		t.Fatalf("read registry: %v", err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "id: beta") || !strings.Contains(text, "enabled: false") || !strings.Contains(text, "max_concurrent_agents: 2") {
+	if !strings.Contains(text, "id: beta") || !strings.Contains(text, "enabled: false") || !strings.Contains(text, "start_paused: true") || !strings.Contains(text, "max_concurrent_agents: 2") {
 		t.Fatalf("registry file = %q, want appended beta project", text)
 	}
 }
@@ -649,7 +649,7 @@ projects:
 	}
 	s := newTestProjectServer(&fakeProjectManager{registry: registry})
 
-	payload := `{"name":"Alpha Disabled","workflow_path":"beta/WORKFLOW.md","enabled":false,"max_concurrent_agents":0}`
+	payload := `{"name":"Alpha Disabled","workflow_path":"beta/WORKFLOW.md","enabled":false,"start_paused":true,"max_concurrent_agents":0}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/registry/projects/alpha", strings.NewReader(payload))
 	rec := httptest.NewRecorder()
 	s.mux.ServeHTTP(rec, req)
@@ -661,8 +661,8 @@ projects:
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Project.Name != "Alpha Disabled" || body.Project.Enabled || body.Project.MaxConcurrentAgents != 0 {
-		t.Fatalf("updated project = %+v, want disabled project with cleared cap", body.Project)
+	if body.Project.Name != "Alpha Disabled" || body.Project.Enabled || !body.Project.StartPaused || body.Project.MaxConcurrentAgents != 0 {
+		t.Fatalf("updated project = %+v, want disabled and startup-paused project with cleared cap", body.Project)
 	}
 	if !body.ChangeRequiresRestart {
 		t.Fatalf("change_requires_restart = false, want true")
@@ -675,7 +675,7 @@ projects:
 		t.Fatalf("read registry: %v", err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "name: Alpha Disabled") || !strings.Contains(text, "workflow_path: beta/WORKFLOW.md") || !strings.Contains(text, "enabled: false") {
+	if !strings.Contains(text, "name: Alpha Disabled") || !strings.Contains(text, "workflow_path: beta/WORKFLOW.md") || !strings.Contains(text, "enabled: false") || !strings.Contains(text, "start_paused: true") {
 		t.Fatalf("registry file = %q, want updated project", text)
 	}
 	if strings.Contains(text, "max_concurrent_agents") {

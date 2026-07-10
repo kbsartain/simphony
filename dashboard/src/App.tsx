@@ -97,6 +97,7 @@ type RegistryProjectDraft = {
   name: string
   workflowPath: string
   enabled: boolean
+  startPaused: boolean
   maxConcurrentAgents: string
 }
 type RegistrySettingsDraft = {
@@ -295,6 +296,7 @@ function App() {
     name: '',
     workflowPath: '',
     enabled: true,
+    startPaused: true,
     maxConcurrentAgents: '',
   })
   const [registrySettingsDraft, setRegistrySettingsDraft] = useState<RegistrySettingsDraft>(emptyRegistrySettingsDraft())
@@ -573,6 +575,7 @@ function App() {
         name: registryProjectDraft.name.trim(),
         workflow_path: registryProjectDraft.workflowPath.trim(),
         enabled: registryProjectDraft.enabled,
+        start_paused: registryProjectDraft.startPaused,
         max_concurrent_agents: editingRegistryProjectId ? maxConcurrentAgents : maxConcurrentAgents || undefined,
       }
       if (editingRegistryProjectId) {
@@ -593,7 +596,7 @@ function App() {
         setRegistryProjectDeleteResult(null)
         setNotice('Project added to registry')
       }
-      setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, maxConcurrentAgents: '' })
+      setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, startPaused: true, maxConcurrentAgents: '' })
       setEditingRegistryProjectId(null)
       setError(null)
     } catch (err) {
@@ -603,13 +606,14 @@ function App() {
     }
   }
 
-  const editRegistryProject = (project: { id: string; name: string; workflow_path: string; enabled: boolean; max_concurrent_agents?: number }) => {
+  const editRegistryProject = (project: { id: string; name: string; workflow_path: string; enabled: boolean; start_paused: boolean; max_concurrent_agents?: number }) => {
     setEditingRegistryProjectId(project.id)
     setRegistryProjectDraft({
       id: project.id,
       name: project.name || project.id,
       workflowPath: project.workflow_path || '',
       enabled: project.enabled,
+      startPaused: project.start_paused,
       maxConcurrentAgents: project.max_concurrent_agents ? String(project.max_concurrent_agents) : '',
     })
     setRegistryProjectResult(null)
@@ -619,7 +623,7 @@ function App() {
 
   const cancelRegistryProjectEdit = () => {
     setEditingRegistryProjectId(null)
-    setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, maxConcurrentAgents: '' })
+    setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, startPaused: true, maxConcurrentAgents: '' })
   }
 
   const removeRegistryProject = async (project: { id: string; name: string }) => {
@@ -1497,7 +1501,7 @@ function ProjectSetupView(props: {
   onSaveRegistrySettings: () => void
   onRegistryRuntimeDraftChange: (draft: RegistryRuntimeDraft) => void
   onSaveRegistryRuntime: () => void
-  onEditRegistryProject: (project: { id: string; name: string; workflow_path: string; enabled: boolean; max_concurrent_agents?: number }) => void
+  onEditRegistryProject: (project: { id: string; name: string; workflow_path: string; enabled: boolean; start_paused: boolean; max_concurrent_agents?: number }) => void
   onCancelRegistryProjectEdit: () => void
   onRemoveRegistryProject: (project: { id: string; name: string }) => void
   onSelectProject: (projectID: string) => void
@@ -1998,6 +2002,14 @@ function ProjectSetupView(props: {
                 />
                 <span>Enabled on restart</span>
               </label>
+              <label className="registry-checkbox">
+                <input
+                  type="checkbox"
+                  checked={props.registryProjectDraft.startPaused}
+                  onChange={event => props.onRegistryProjectDraftChange({ ...props.registryProjectDraft, startPaused: event.target.checked })}
+                />
+                <span>Start paused (recommended while configuring)</span>
+              </label>
             </div>
             {props.registryProjectResult && (
               <div className="bootstrap-result" role="status">
@@ -2046,6 +2058,10 @@ function ProjectSetupView(props: {
                     <div>
                       <dt>Project cap</dt>
                       <dd>{registryProject?.max_concurrent_agents ? registryProject.max_concurrent_agents.toLocaleString() : 'Default'}</dd>
+                    </div>
+                    <div>
+                      <dt>Startup policy</dt>
+                      <dd>{registryProject?.start_paused ? 'Paused — no new work' : 'Active — dispatch backlog'}</dd>
                     </div>
                   </dl>
                   {registryProject && (

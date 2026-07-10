@@ -493,6 +493,7 @@ type RegistryProjectCreateRequest struct {
 	Name                string `json:"name,omitempty"`
 	WorkflowPath        string `json:"workflow_path"`
 	Enabled             *bool  `json:"enabled,omitempty"`
+	StartPaused         *bool  `json:"start_paused,omitempty"`
 	MaxConcurrentAgents int    `json:"max_concurrent_agents,omitempty"`
 }
 
@@ -509,6 +510,7 @@ type RegistryProjectUpdateRequest struct {
 	Name                string `json:"name,omitempty"`
 	WorkflowPath        string `json:"workflow_path"`
 	Enabled             *bool  `json:"enabled,omitempty"`
+	StartPaused         *bool  `json:"start_paused,omitempty"`
 	MaxConcurrentAgents *int   `json:"max_concurrent_agents,omitempty"`
 }
 

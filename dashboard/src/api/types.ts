@@ -171,6 +171,7 @@ export interface RegistryProjectCreateRequest {
   name?: string;
   workflow_path: string;
   enabled?: boolean;
+  start_paused?: boolean;
   max_concurrent_agents?: number;
 }
 
@@ -185,6 +186,7 @@ export interface RegistryProjectUpdateRequest {
   name?: string;
   workflow_path: string;
   enabled?: boolean;
+  start_paused?: boolean;
   max_concurrent_agents?: number;
 }
 

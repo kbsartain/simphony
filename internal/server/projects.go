@@ -987,6 +987,7 @@ func (s *ProjectServer) createRegistryProject(req api.RegistryProjectCreateReque
 		Name:                name,
 		WorkflowPath:        resolvedWorkflowPath,
 		Enabled:             enabled,
+		StartPaused:         req.StartPaused != nil && *req.StartPaused,
 		MaxConcurrentAgents: req.MaxConcurrentAgents,
 	}
 	nextRegistry.Projects = append(nextRegistry.Projects, nextProject)
@@ -999,6 +1000,7 @@ func (s *ProjectServer) createRegistryProject(req api.RegistryProjectCreateReque
 		Name:                name,
 		WorkflowPath:        filepath.ToSlash(workflowPathForYAML),
 		Enabled:             &enabled,
+		StartPaused:         req.StartPaused,
 		MaxConcurrentAgents: req.MaxConcurrentAgents,
 	}); err != nil {
 		return api.RegistryProjectCreateResponse{}, http.StatusInternalServerError, "registry_write_error", err
@@ -1084,6 +1086,10 @@ func (s *ProjectServer) updateRegistryProject(projectID string, req api.Registry
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	startPaused := registry.Projects[projectIndex].StartPaused
+	if req.StartPaused != nil {
+		startPaused = *req.StartPaused
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = registry.Projects[projectIndex].ID
@@ -1094,6 +1100,7 @@ func (s *ProjectServer) updateRegistryProject(projectID string, req api.Registry
 	nextProject.Name = name
 	nextProject.WorkflowPath = resolvedWorkflowPath
 	nextProject.Enabled = enabled
+	nextProject.StartPaused = startPaused
 	nextProject.MaxConcurrentAgents = maxConcurrentAgents
 	nextRegistry.Projects[projectIndex] = nextProject
 	if _, err := config.ValidateProjectIsolation(nextRegistry); err != nil {
@@ -1104,6 +1111,7 @@ func (s *ProjectServer) updateRegistryProject(projectID string, req api.Registry
 		Name:                name,
 		WorkflowPath:        filepath.ToSlash(workflowPathForYAML),
 		Enabled:             &enabled,
+		StartPaused:         &startPaused,
 		MaxConcurrentAgents: &maxConcurrentAgents,
 	}); err != nil {
 		return api.RegistryProjectUpdateResponse{}, http.StatusInternalServerError, "registry_write_error", err
@@ -1705,6 +1713,13 @@ func updateRegistryProjectInFile(registryPath string, projectID string, req api.
 			setMappingValue(projectNode, "enabled", boolNode(false))
 		}
 	}
+	if req.StartPaused != nil {
+		if *req.StartPaused {
+			setMappingValue(projectNode, "start_paused", boolNode(true))
+		} else {
+			removeMappingValue(projectNode, "start_paused")
+		}
+	}
 	if req.MaxConcurrentAgents != nil {
 		if *req.MaxConcurrentAgents > 0 {
 			setMappingValue(projectNode, "max_concurrent_agents", intNode(*req.MaxConcurrentAgents))
@@ -1789,6 +1804,9 @@ func registryProjectNode(req api.RegistryProjectCreateRequest) *yaml.Node {
 	}
 	if req.Enabled != nil && !*req.Enabled {
 		content = append(content, scalarNode("enabled"), boolNode(false))
+	}
+	if req.StartPaused != nil && *req.StartPaused {
+		content = append(content, scalarNode("start_paused"), boolNode(true))
 	}
 	if req.MaxConcurrentAgents > 0 {
 		content = append(content, scalarNode("max_concurrent_agents"), intNode(req.MaxConcurrentAgents))
