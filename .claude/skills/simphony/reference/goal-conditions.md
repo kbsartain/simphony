@@ -41,6 +41,16 @@ In Review, Approved); every issue has reached Done, the escalation/Blocked state
 active-state count is 0. Only touch project <project>. Stop after 4 hours or 200 turns.
 ```
 
+### Scoped drain (e.g. a milestone)
+```
+/goal Work every ticket in milestone "Phase 1.5 — MSP + Mobile" on the <project>
+board using the simphony skill. Done = zero in-scope issues remain in the active
+states (each reached Done, the escalation/Blocked state or `simphony:blocked`
+label, or a terminal state). Prove by querying Linear for issues in that
+milestone and confirming the in-scope active-state count is 0. Only touch issues
+in that milestone; skip `human-led`. Stop after 4 hours or 200 turns.
+```
+
 ### Stage focus
 ```
 /goal Run the simphony skill in stage=review mode.

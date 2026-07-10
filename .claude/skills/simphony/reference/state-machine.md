@@ -132,6 +132,9 @@ omits one, or that stage's issues are invisible and silently never processed.
   first. Do **not** branch off the local base — Simphony works in worktrees, so
   the local base branch drifts and a stale base causes needless merge conflicts.
   (`scripts/worktree.sh` / `.ps1` do the fetch + `WT_BRANCH`/`-Branch` override.)
+- **Worktree dir** = the **lowercased, sanitized identifier** (`sanitize()` in
+  the scripts, e.g. `GEE-197` → `.../gee-197`). Always refer to worktrees by that
+  canonical form so paths and `git worktree list` greps are stable across runs.
 
 ## 4. Candidate selection & ordering
 
@@ -147,6 +150,15 @@ issue when it is:
   human owns on a shared board.
 - in `Todo` **and** blocked by a non-terminal blocker (inverse `blocks`
   relation). Issues in other active states are not subject to the block rule.
+
+**Scope filter (optional).** When the invocation narrows the work — "work the
+**milestone 1.5** tickets", "only the `ws:server` label", "this cycle" — apply it
+as an extra candidate filter *on top of* the effective active set: keep only
+issues whose `projectMilestone` / `label` / `cycle` matches (map a spoken name
+like "1.5" to the concrete milestone, e.g. `Phase 1.5 — MSP + Mobile`). Nothing
+else changes — same stages, ordering, concurrency; the scope just shrinks the
+candidate pool. The completion condition should scope to the same set (drain =
+zero *in-scope* issues remain active).
 
 **Dispatch order:** by priority (Linear Urgent=1 → Low=4 first; **None=0 is
 treated as lowest and ordered last**), then `created_at` oldest first, then
@@ -187,10 +199,22 @@ machine-readable marker and a content **signature**; before posting, coalesce:
    match on later:
    `<!-- simphony:kind=<kind> sig=<signature> -->`
    where `kind` ∈ {`coding-failed`,`review-failed`,`merge-failed`,
-   `retry-scheduled`,`escalated`,`review-summary`,`rr-*`,`stage-done`,…} and
-   `signature` = a stable hash of the salient content **with volatile parts
-   stripped** (timestamps, attempt numbers) — so two identical auth failures
-   share a signature but a *different* error does not.
+   `retry-scheduled`,`escalated`,`review-summary`,`rr-*`,`stage-done`,…}.
+
+   **Signature recipe (pin this so every agent computes the same value).**
+   `signature = kind + ":" + shorthash(normalize(salient_text))` where:
+   - `salient_text` = for a failure, the worker's `error` (or the failing
+     command + error class); for other kinds, the one-line status.
+   - `normalize(s)`: lowercase; then delete volatile tokens so only the stable
+     core remains — ISO timestamps & clock times, `attempt N/M` and `×N`
+     counters, durations/ms, PIDs, commit SHAs, UUIDs, absolute paths, and
+     `line:col` numbers; collapse runs of whitespace to one space; trim.
+   - `shorthash(x)` = first 8 hex of `sha256(x)` (e.g.
+     `printf '%s' "$x" | sha256sum` → first 8 chars). If hashing isn't handy,
+     the documented fallback is a kebab slug of the first ~6 normalized words.
+
+   Result: two identical auth failures produce the **same** `sig` (they coalesce)
+   while a genuinely different error produces a different `sig` (new comment).
 2. **Before posting**, read the issue's most recent comments (`list_comments`,
    newest first) and find the latest one carrying a simphony marker.
 3. **If its `sig` matches** the comment you're about to post → **update that

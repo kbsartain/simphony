@@ -160,6 +160,10 @@ the escalation cap** (`reference/state-machine.md` §8) so failures converge:
   run under **`/goal`** (see below).
 - **Stage focus** (`stage=<coding|review|review_resolution|merge>`): dispatch
   only matching-stage issues; leave everything else in place.
+- **Scope filter** (e.g. "work the **milestone 1.5** tickets", "only `ws:server`"):
+  the poll loop, restricted to candidates matching the named milestone / label /
+  cycle (`reference/state-machine.md` §4). Same pipeline; smaller pool. Combine
+  with `/goal` for an unattended, scoped drain.
 
 ## Long-running behavior (`/goal`)
 Run the orchestrator under **`/goal`** (Claude Code v2.1.139+, or Codex 0.128.0+
