@@ -468,6 +468,65 @@ func TestOrchestrator_StageSoftPauseOnlyDefersMatchingStage(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_PausedStageUsesHotReloadedSDKOnResume(t *testing.T) {
+	tracker := &mockTracker{byIDs: make(map[string]api.Issue)}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1, delay: 500 * time.Millisecond}
+	cfg := defaultConfig()
+	cfg.Polling.IntervalMs = 10_000
+	cfg.Tracker.ActiveStates = append(cfg.Tracker.ActiveStates, "In Review")
+	cfg.AgentRuntime.Provider = "codex"
+	cfg.AgentRuntime.Model = "gpt-review-old"
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+	time.Sleep(50 * time.Millisecond)
+	if _, err := orch.SetStagePaused("review", true); err != nil {
+		t.Fatalf("pause review: %v", err)
+	}
+
+	issue := api.Issue{ID: "1", Identifier: "A-1", Title: "Reloaded review", State: "In Review"}
+	tracker.setCandidates([]api.Issue{issue})
+	tracker.setByID(map[string]api.Issue{"1": issue})
+
+	reloaded := *cfg
+	reloaded.AgentRuntime = cfg.AgentRuntime
+	reloaded.AgentRuntime.StageOverrides = map[string]api.AgentStageOverride{
+		"review": {
+			Provider:      "claude",
+			Model:         "claude-opus-reloaded",
+			ModelProvider: "anthropic",
+		},
+	}
+	orch.UpdateConfig(&reloaded)
+	orch.Refresh()
+	time.Sleep(100 * time.Millisecond)
+	runner.mu.Lock()
+	runsWhilePaused := len(runner.runs)
+	runner.mu.Unlock()
+	if runsWhilePaused != 0 {
+		t.Fatalf("runs while review paused = %d, want 0", runsWhilePaused)
+	}
+
+	if _, err := orch.SetStagePaused("review", false); err != nil {
+		t.Fatalf("resume review: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := orch.Snapshot()
+		if len(snapshot.Running) == 1 {
+			running := snapshot.Running[0]
+			if running.ExecutionProvider != "claude" || running.Model != "claude-opus-reloaded" || running.ModelProvider != "anthropic" {
+				t.Fatalf("effective runtime after resume = %+v", running)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("review did not dispatch after resume")
+}
+
 func TestOrchestrator_SoftPauseDoesNotCancelInFlightWorker(t *testing.T) {
 	issue := api.Issue{ID: "1", Identifier: "A-1", Title: "First", State: "In Progress"}
 	tracker := &mockTracker{

@@ -47,6 +47,17 @@ Checks:
 - Confirm Codex authentication is configured before starting Simphony.
 - On Windows, quote paths with spaces in `codex.command`.
 
+## A Stage Uses The Wrong SDK Or Cannot Authenticate
+
+Checks:
+
+- Distinguish `stage_overrides.<stage>.provider` (`codex` or `claude`) from `model_provider` (`openai`, `anthropic`, or a router label).
+- Confirm the stage is one of `coding`, `review`, `review_resolution`, or `merge`.
+- Check the running snapshot or dispatch log for `stage`, `execution_provider`, `model_provider`, and `model`.
+- If preflight reports `agent_api_key_unresolved` or `agent_auth_token_unresolved`, set the referenced environment variable or remove the field to intentionally use an authenticated local SDK session.
+- When switching SDKs, configure stage-specific endpoints and credentials. Simphony deliberately does not carry Codex credentials, commands, environment, or sandbox settings into Claude, or vice versa.
+- Pause the affected stage before changing settings. Save the workflow, confirm hot reload succeeds, then resume the stage; an in-flight agent keeps its original runtime.
+
 ## Workspace Is Empty
 
 Simphony creates the workspace directory but does not clone a repository by default.
@@ -77,3 +88,9 @@ Checks:
 - Confirm the issue has not moved to a configured terminal state.
 - Increase `agent.max_turns` if the agent reaches `max_turns_reached`.
 - Increase `codex.turn_timeout_ms` or `codex.stall_timeout_ms` if long-running turns are expected.
+
+## Hook Failure Output Omits The Useful Error
+
+Hook subprocess output is retained as a bounded diagnostic: the first 8 KiB, the final 24 KiB, and a truncation marker containing the original byte count. ANSI terminal controls are stripped. This keeps startup context and the final test summary without allowing verbose commands to create unbounded retry errors, API payloads, or tracker comments.
+
+If the failure still lacks a useful tail, confirm the verification tool writes its final summary before exiting and does not redirect it to a separate file. For very large machine-readable reports, configure the hook to print a concise failure summary and store the full artifact inside the issue workspace.

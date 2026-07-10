@@ -360,6 +360,57 @@ func TestRunHook_Failure(t *testing.T) {
 	}
 }
 
+func TestBoundedOutputBufferPreservesHeadTailAndStripsANSI(t *testing.T) {
+	buffer := newBoundedOutputBuffer(80, 32)
+	_, _ = buffer.Write([]byte("\x1b[32mFIRST-SUMMARY\x1b[0m\n"))
+	_, _ = buffer.Write([]byte(strings.Repeat("middle-output-", 20)))
+	_, _ = buffer.Write([]byte("\n\x1b[31mFINAL-FAILURE\x1b[0m\n"))
+
+	got := buffer.String()
+	if !strings.Contains(got, "FIRST-SUMMARY") || !strings.Contains(got, "FINAL-FAILURE") {
+		t.Fatalf("bounded output lost head or tail: %q", got)
+	}
+	if !strings.Contains(got, "output truncated: original_bytes=") {
+		t.Fatalf("bounded output lacks truncation marker: %q", got)
+	}
+	if strings.Contains(got, "\x1b[") {
+		t.Fatalf("bounded output retained ANSI controls: %q", got)
+	}
+}
+
+func TestRunHookFailureRetainsLongOutputFailureTail(t *testing.T) {
+	root := t.TempDir()
+	m, err := NewManager(root)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	wsPath := filepath.Join(root, "ws")
+	if err := os.MkdirAll(wsPath, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	var script string
+	if runtime.GOOS == "windows" {
+		script = `(for /L %i in (0,1,5000) do @echo passing-suite-%i) & echo FINAL_FAILURE_SUMMARY 1>&2 & exit /B 1`
+	} else {
+		script = `i=0; while [ $i -lt 5000 ]; do echo "passing-suite-$i"; i=$((i+1)); done; echo FINAL_FAILURE_SUMMARY >&2; exit 1`
+	}
+
+	err = m.RunHook("before_run", script, wsPath, 15000)
+	if err == nil {
+		t.Fatal("expected long-output hook failure")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "passing-suite-0") || !strings.Contains(message, "FINAL_FAILURE_SUMMARY") {
+		t.Fatalf("hook error lost useful head or failure tail: %s", message)
+	}
+	if !strings.Contains(message, "output truncated: original_bytes=") {
+		t.Fatalf("hook error lacks truncation metadata: %s", message)
+	}
+	if len(message) > maxHookOutputBytes+2048 {
+		t.Fatalf("hook error length = %d, want bounded output", len(message))
+	}
+}
+
 func initTestRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

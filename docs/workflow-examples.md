@@ -175,7 +175,63 @@ agent_runtime:
   api_key: $ANTHROPIC_COMPATIBLE_API_KEY
 ```
 
-The SDK provider is selected once per project, but each stage can override model routing fields. Use stage-level `endpoint_url`, `api_key`, or `auth_token` when a direct provider endpoint is required for a stage-specific model.
+The project SDK is only the default. Each stage may override both the execution SDK and model routing. Use stage-level `endpoint_url`, `api_key`, or `auth_token` when a direct provider endpoint is required for a stage-specific model.
+
+## Adversarial Review With Two SDKs
+
+This workflow uses Codex for implementation and merge, and starts a separate Claude Agent SDK session for review. The Git workspace and tracker issue form the handoff boundary between SDKs.
+
+```markdown
+---
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: your-linear-project-slug
+  active_states:
+    - Todo
+    - In Progress
+    - In Review
+    - Approved
+pipeline:
+  review_state: In Review
+  merge_state: Approved
+  done_state: Done
+workspace:
+  root: ./simphony_workspaces
+hooks:
+  after_create: git clone https://github.com/example-org/example-repo.git .
+agent:
+  max_concurrent_agents: 2
+  max_turns: 10
+agent_runtime:
+  provider: codex
+  command: codex app-server
+  model: gpt-5.6
+  stage_overrides:
+    review:
+      provider: claude
+      model: claude-opus-4.7
+      api_key: $ANTHROPIC_API_KEY
+      permission_mode: acceptEdits
+      allowed_tools:
+        - Read
+        - Edit
+        - Bash
+    merge:
+      provider: codex
+      model: gpt-5.6
+server:
+  port: 8080
+---
+
+You are working on {{ issue.identifier }}: {{ issue.title }}.
+
+State: {{ issue.state }}
+
+{{ issue.description }}
+```
+
+For an operator-controlled handoff, pause the review stage before the issue enters `In Review`, edit and save the review override, then resume review. Hot reload changes future runs only; it does not mutate an agent already in flight.
 
 ## Safer First Run
 

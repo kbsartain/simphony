@@ -10,12 +10,86 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kbsartain/simphony/pkg/api"
 )
 
 var sanitizeRe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+
+const (
+	maxHookOutputBytes  = 32 * 1024
+	hookOutputHeadBytes = 8 * 1024
+)
+
+var ansiControlRe = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+
+type boundedOutputBuffer struct {
+	mu        sync.Mutex
+	maxBytes  int
+	headLimit int
+	tailLimit int
+	total     int64
+	head      []byte
+	tail      []byte
+}
+
+func newBoundedOutputBuffer(maxBytes int, headBytes int) *boundedOutputBuffer {
+	if maxBytes <= 0 {
+		maxBytes = maxHookOutputBytes
+	}
+	if headBytes < 0 {
+		headBytes = 0
+	}
+	if headBytes > maxBytes {
+		headBytes = maxBytes
+	}
+	return &boundedOutputBuffer{maxBytes: maxBytes, headLimit: headBytes, tailLimit: maxBytes - headBytes}
+}
+
+func (b *boundedOutputBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	written := len(p)
+	b.total += int64(written)
+	if remaining := b.headLimit - len(b.head); remaining > 0 {
+		count := remaining
+		if count > len(p) {
+			count = len(p)
+		}
+		b.head = append(b.head, p[:count]...)
+		p = p[count:]
+	}
+	if len(p) == 0 || b.tailLimit == 0 {
+		return written, nil
+	}
+	if len(p) >= b.tailLimit {
+		b.tail = append(b.tail[:0], p[len(p)-b.tailLimit:]...)
+		return written, nil
+	}
+	b.tail = append(b.tail, p...)
+	if overflow := len(b.tail) - b.tailLimit; overflow > 0 {
+		copy(b.tail, b.tail[overflow:])
+		b.tail = b.tail[:b.tailLimit]
+	}
+	return written, nil
+}
+
+func (b *boundedOutputBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	clean := func(value []byte) string {
+		return ansiControlRe.ReplaceAllString(strings.ToValidUTF8(string(value), "�"), "")
+	}
+	head := clean(b.head)
+	tail := clean(b.tail)
+	if b.total <= int64(b.maxBytes) {
+		return head + tail
+	}
+	marker := fmt.Sprintf("\n...[output truncated: original_bytes=%d retained_head_bytes=%d retained_tail_bytes=%d]...\n", b.total, len(b.head), len(b.tail))
+	return head + marker + tail
+}
 
 // Manager manages per-issue filesystem workspaces and lifecycle hooks.
 type Manager struct {
@@ -239,15 +313,22 @@ func runScriptWithTimeout(script, workspacePath string, timeoutMs int) error {
 	}
 	cmd.Dir = workspacePath
 
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	out := newBoundedOutputBuffer(maxHookOutputBytes, hookOutputHeadBytes)
+	cmd.Stdout = out
+	cmd.Stderr = out
 
 	if err := cmd.Run(); err != nil {
+		output := strings.TrimSpace(out.String())
 		if ctx.Err() == context.DeadlineExceeded {
+			if output != "" {
+				return fmt.Errorf("hook timed out after %dms: %w\noutput: %s", timeoutMs, err, output)
+			}
 			return fmt.Errorf("hook timed out after %dms: %w", timeoutMs, err)
 		}
-		return fmt.Errorf("hook exited with error: %w\noutput: %s", err, out.String())
+		if output == "" {
+			return fmt.Errorf("hook exited with error: %w", err)
+		}
+		return fmt.Errorf("hook exited with error: %w\noutput: %s", err, output)
 	}
 	return nil
 }

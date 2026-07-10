@@ -40,6 +40,7 @@ func Check(cfg *api.WorkflowConfig) api.ProjectHealth {
 	}
 
 	addRuntimeCommandCheck(&health, cfg.AgentRuntime, "")
+	addRuntimeCredentialCheck(&health, cfg.AgentRuntime, "")
 	stages := make([]string, 0, len(cfg.AgentRuntime.StageOverrides))
 	for stage := range cfg.AgentRuntime.StageOverrides {
 		stages = append(stages, stage)
@@ -47,11 +48,12 @@ func Check(cfg *api.WorkflowConfig) api.ProjectHealth {
 	sort.Strings(stages)
 	for _, stage := range stages {
 		override := cfg.AgentRuntime.StageOverrides[stage]
-		if strings.TrimSpace(override.Provider) == "" && strings.TrimSpace(override.Command) == "" {
+		if strings.TrimSpace(override.Provider) == "" && strings.TrimSpace(override.Command) == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured {
 			continue
 		}
 		effective := agentruntime.EffectiveConfig(&cfg.AgentRuntime, api.PipelineStage{Kind: stage})
 		addRuntimeCommandCheck(&health, effective, stage)
+		addRuntimeCredentialCheck(&health, effective, stage)
 	}
 	addWorkspaceCheck(&health, &cfg.Workspace)
 	finalize(&health)
@@ -67,6 +69,31 @@ func addRuntimeCommandCheck(health *api.ProjectHealth, runtime api.AgentRuntimeC
 	}
 	before := len(health.Issues)
 	addCommandCheck(health, command)
+	annotateStageIssues(health, before, stage)
+}
+
+func addRuntimeCredentialCheck(health *api.ProjectHealth, runtime api.AgentRuntimeConfig, stage string) {
+	before := len(health.Issues)
+	if runtime.APIKeyConfigured && strings.TrimSpace(runtime.APIKey) == "" {
+		addIssue(health, api.HealthIssue{
+			Code:       "agent_api_key_unresolved",
+			Severity:   SeverityBlocker,
+			Message:    "Configured agent API key resolved to an empty value",
+			Suggestion: "Set the referenced environment variable, or remove api_key to use an authenticated local SDK session.",
+		})
+	}
+	if runtime.AuthTokenConfigured && strings.TrimSpace(runtime.AuthToken) == "" {
+		addIssue(health, api.HealthIssue{
+			Code:       "agent_auth_token_unresolved",
+			Severity:   SeverityBlocker,
+			Message:    "Configured agent auth token resolved to an empty value",
+			Suggestion: "Set the referenced environment variable, or remove auth_token to use an authenticated local SDK session.",
+		})
+	}
+	annotateStageIssues(health, before, stage)
+}
+
+func annotateStageIssues(health *api.ProjectHealth, before int, stage string) {
 	if stage == "" {
 		return
 	}

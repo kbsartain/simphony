@@ -161,7 +161,7 @@ Acceptance criteria:
 
 #### `SDK-3` Preflight and model catalogs
 
-- [ ] Run command/package/credential preflight for every SDK referenced by an active stage, not only the project default. Command/package checks are implemented; credential policy remains pending where an SDK can use an authenticated local session.
+- [x] Run command/package/credential preflight for every SDK referenced by an active stage, not only the project default. Explicit secret references must resolve non-empty; absent explicit credentials may use an authenticated local SDK session.
 - [x] Report failures with the affected stage in the diagnostic.
 - [x] Allow model-catalog refresh for the effective provider of each stage.
 - [x] Keep Codex-router model selection distinct from true Claude SDK selection in labels and help text.
@@ -178,14 +178,16 @@ Acceptance criteria:
 
 - [x] Add configuration resolution tests for mixed-SDK workflows.
 - [x] Add runner tests proving provider selection happens after stage resolution.
-- [ ] Add fake Codex and fake Claude processes for a deterministic cross-stage lifecycle test.
-- [ ] Test stage-specific credentials, commands, environment, permissions, and masked API output.
-- [ ] Test hot reload while the affected stage is paused.
-- [ ] Update configuration, workflow example, environment, and troubleshooting documentation.
+- [x] Add fake Codex and fake Claude processes for a deterministic cross-stage lifecycle test.
+- [x] Test stage-specific credentials, commands, environment, permissions, and masked API output.
+- [x] Test hot reload while the affected stage is paused.
+- [x] Update configuration, workflow example, environment, and troubleshooting documentation.
 
 ### Phase 3: Merge-Gate Diagnostic Hardening
 
 #### `DIAG-1` GitHub check registration race
+
+Implementation audit: this checkout does not currently execute `gh pr checks` in the orchestrator or workspace merge path. Review/review-resolution prompts delegate check inspection to the selected agent, while `MergeWorkspaceToBaseBranch` performs a local Git merge and optional push. The error observed for GEE-129 therefore came from a different or newer merge-gate implementation than the one present here. Before implementing these items, decide whether to recover that implementation or introduce a native, configurable GitHub gate in this repository.
 
 - [ ] Treat `gh pr checks` reporting “no checks reported” as pending for a bounded grace period after PR creation or branch update.
 - [ ] Continue polling until checks appear, the grace period expires, or the overall checks timeout expires.
@@ -194,11 +196,11 @@ Acceptance criteria:
 
 #### `DIAG-2` Verification output retention
 
-- [ ] Preserve the useful failure tail and final test summary when a verbose verification command exits nonzero.
-- [ ] Avoid flooding project state, API payloads, logs, or Linear comments with unbounded output.
-- [ ] Consider a bounded head-plus-tail representation with an explicit truncation marker and original byte count.
-- [ ] Keep ANSI handling readable in the dashboard and tracker comments.
-- [ ] Add tests using long output whose actual failure appears at the end.
+- [x] Preserve the useful failure tail and final test summary when a verbose verification command exits nonzero.
+- [x] Avoid flooding project state, API payloads, logs, or Linear comments with unbounded output.
+- [x] Use a bounded 8 KiB head plus 24 KiB tail representation with an explicit truncation marker and original byte count.
+- [x] Strip ANSI control sequences so retained output remains readable in logs, dashboard payloads, and tracker comments.
+- [x] Add tests using long output whose actual failure appears at the end.
 
 Context: GEE-129 initially hit a GitHub "no checks reported" race and later produced a transient `pnpm test` exit 1 whose pasted output contained only passing suites. Automatic retries eventually succeeded, all 2,001 tests passed on reproduction, GitHub CI passed, and PR #4 merged. No GEE-129 source fix was required.
 
@@ -215,11 +217,11 @@ This backlog is complete when:
 
 ## Session Handoff
 
-Current status: Phase 1 (`PAUSE-1` through `PAUSE-5`), `SDK-1`, `SDK-2`, and `SDK-4` are implemented. `SDK-3` is complete except for credential-policy preflight. Stage configuration and the dashboard can select Codex or Claude with provider-specific command/tool/permission/sandbox fields; the runner resolves the effective stage runtime before SDK selection without leaking cross-provider credentials or commands; preflight checks referenced stage SDK commands with stage-specific diagnostics; running snapshots/logs identify the effective SDK and model; and model catalogs accept a stage selector. Browser verification exercised both the pause controls and a live stage SDK-selector change with zero console errors. Full cross-provider lifecycle and paused-hot-reload tests remain under `SDK-5`.
+Current status: Phase 1, Phase 2, and `DIAG-2` are implemented. Stage configuration and the dashboard can select Codex or Claude with provider-specific command/tool/permission/sandbox fields; the runner resolves the effective stage runtime before SDK selection without leaking cross-provider credentials or commands; preflight checks stage SDK commands and explicit credential references with stage-specific diagnostics; running snapshots/logs identify the effective SDK and model; and model catalogs accept a stage selector. Browser verification exercised both pause controls and a live stage SDK-selector change with zero console errors. A deterministic subprocess test drives one issue through Codex coding -> Claude review -> Codex merge -> Done, and a paused-review test proves hot-reloaded SDK/model settings apply on resume. Hook failures now retain bounded head-and-tail output so the final failure summary survives verbose test runs.
 
 CON-199 recovery: the literal-secret validation guard, error code, focused tests, fixture updates, and documentation were ported into this checkout. The proposed deletion/untracking of root `WORKFLOW.md` was not copied because this checkout still uses that file; workflow relocation remains a separate migration decision. The original CON-199 worktree remains outside this managed checkout.
 
-Recommended next task: finish `SDK-5` with a deterministic Codex coding -> Claude review -> Codex merge lifecycle and a paused review hot-reload test, then define credential preflight behavior for SDKs that may use authenticated local sessions.
+Recommended next task: resolve the `DIAG-1` architecture choice—recover the merge-gate implementation that emitted the GEE-129 error, or add a new native configurable GitHub checks gate before `MergeWorkspaceToBaseBranch`.
 
 Latest verification:
 
