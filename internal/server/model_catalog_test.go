@@ -36,3 +36,31 @@ func TestFetchModelCatalog(t *testing.T) {
 		t.Fatalf("models = %#v", result.Models)
 	}
 }
+
+func TestModelCatalogRuntimeUsesEffectiveStageProvider(t *testing.T) {
+	cfg := &api.WorkflowConfig{AgentRuntime: api.AgentRuntimeConfig{
+		Provider:      "codex",
+		Command:       "codex app-server",
+		ModelProvider: "openai",
+		EndpointURL:   "https://api.openai.example/v1",
+		StageOverrides: map[string]api.AgentStageOverride{
+			"review": {
+				Provider:      "claude",
+				ModelProvider: "anthropic",
+				EndpointURL:   "https://api.anthropic.example",
+			},
+		},
+	}}
+
+	runtime, stage, err := modelCatalogRuntime(cfg, "In-Review")
+	if err == nil {
+		t.Fatal("expected tracker-state label to be rejected")
+	}
+	runtime, stage, err = modelCatalogRuntime(cfg, "review")
+	if err != nil {
+		t.Fatalf("modelCatalogRuntime: %v", err)
+	}
+	if stage != "review" || runtime.Provider != "claude" || runtime.ModelProvider != "anthropic" || runtime.EndpointURL != "https://api.anthropic.example" {
+		t.Fatalf("stage/runtime = %q/%+v", stage, runtime)
+	}
+}

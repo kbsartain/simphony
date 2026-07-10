@@ -28,6 +28,8 @@ type Orchestrator interface {
 	Snapshot() api.StateSnapshot
 	IssueDetail(identifier string) (api.IssueDetailResponse, bool)
 	Refresh() api.RefreshResponse
+	SetProjectPaused(paused bool) api.ControlState
+	SetStagePaused(stage string, paused bool) (api.ControlState, error)
 }
 
 // SettingsApplier applies validated workflow settings to running services.
@@ -78,6 +80,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/registry/bootstrap", s.withCORS(s.handleRegistryBootstrap))
 	s.mux.HandleFunc("/api/v1/state", s.withCORS(s.handleState))
 	s.mux.HandleFunc("/api/v1/refresh", s.withCORS(s.handleRefresh))
+	s.mux.HandleFunc("/api/v1/pause", s.withCORS(s.handlePause))
+	s.mux.HandleFunc("/api/v1/resume", s.withCORS(s.handleResume))
+	s.mux.HandleFunc("/api/v1/stages/", s.withCORS(s.handleStageControl))
 	s.mux.HandleFunc("/api/v1/settings/validate-tracker", s.withCORS(s.handleValidateTrackerSettings))
 	s.mux.HandleFunc("/api/v1/settings/models", s.withCORS(s.handleModelCatalog))
 	s.mux.HandleFunc("/api/v1/settings", s.withCORS(s.handleSettings))
@@ -122,6 +127,56 @@ func (s *Server) registerRoutes() {
 			})
 		})
 	}
+}
+
+func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
+	s.handleProjectControl(w, r, true)
+}
+
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	s.handleProjectControl(w, r, false)
+}
+
+func (s *Server) handleProjectControl(w http.ResponseWriter, r *http.Request, paused bool) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, s.orch.SetProjectPaused(paused))
+}
+
+func (s *Server) handleStageControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/stages/"), "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 2 || (parts[1] != "pause" && parts[1] != "resume") {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "not_found", Message: "API endpoint not found"},
+		})
+		return
+	}
+	stage, err := url.PathUnescape(parts[0])
+	if err != nil || strings.TrimSpace(stage) == "" {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "invalid_stage", Message: "Pipeline stage is invalid"},
+		})
+		return
+	}
+	state, err := s.orch.SetStagePaused(stage, parts[1] == "pause")
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "invalid_stage", Message: err.Error()},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, state)
 }
 
 // Start begins listening. Blocks until the context is cancelled or an error occurs.

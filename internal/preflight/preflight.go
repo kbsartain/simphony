@@ -8,9 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/kbsartain/simphony/internal/agentruntime"
 	"github.com/kbsartain/simphony/internal/codexcmd"
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -37,10 +39,46 @@ func Check(cfg *api.WorkflowConfig) api.ProjectHealth {
 		return blocked(now, "config_missing", "Project configuration is not loaded", "", "Resolve the project workflow before dispatching work.")
 	}
 
-	addCommandCheck(&health, cfg.AgentRuntime.Command)
+	addRuntimeCommandCheck(&health, cfg.AgentRuntime, "")
+	stages := make([]string, 0, len(cfg.AgentRuntime.StageOverrides))
+	for stage := range cfg.AgentRuntime.StageOverrides {
+		stages = append(stages, stage)
+	}
+	sort.Strings(stages)
+	for _, stage := range stages {
+		override := cfg.AgentRuntime.StageOverrides[stage]
+		if strings.TrimSpace(override.Provider) == "" && strings.TrimSpace(override.Command) == "" {
+			continue
+		}
+		effective := agentruntime.EffectiveConfig(&cfg.AgentRuntime, api.PipelineStage{Kind: stage})
+		addRuntimeCommandCheck(&health, effective, stage)
+	}
 	addWorkspaceCheck(&health, &cfg.Workspace)
 	finalize(&health)
 	return health
+}
+
+func addRuntimeCommandCheck(health *api.ProjectHealth, runtime api.AgentRuntimeConfig, stage string) {
+	command := runtime.Command
+	if strings.EqualFold(strings.TrimSpace(runtime.Provider), "claude") && strings.TrimSpace(command) == "" {
+		// The Claude runner materializes an embedded SDK shim and launches it
+		// through Node when no custom wrapper command is configured.
+		command = "node"
+	}
+	before := len(health.Issues)
+	addCommandCheck(health, command)
+	if stage == "" {
+		return
+	}
+	for i := before; i < len(health.Issues); i++ {
+		health.Issues[i].Message = fmt.Sprintf("Stage %s: %s", stage, health.Issues[i].Message)
+		detail := strings.TrimSpace(health.Issues[i].Detail)
+		if detail == "" {
+			health.Issues[i].Detail = "stage=" + stage
+		} else {
+			health.Issues[i].Detail = "stage=" + stage + " " + detail
+		}
+	}
 }
 
 func addCommandCheck(health *api.ProjectHealth, command string) {

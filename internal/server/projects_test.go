@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +27,7 @@ type fakeProjectRuntime struct {
 	updatedSettings project.WorkflowSettings
 	updateReq       *api.SettingsUpdateRequest
 	validation      api.SettingsValidationResponse
+	control         api.ControlState
 }
 
 func (f *fakeProjectRuntime) ID() string {
@@ -53,6 +55,34 @@ func (f *fakeProjectRuntime) IssueDetail(identifier string) (api.IssueDetailResp
 
 func (f *fakeProjectRuntime) Refresh() (api.RefreshResponse, bool) {
 	return f.refresh, true
+}
+
+func (f *fakeProjectRuntime) SetProjectPaused(paused bool) (api.ControlState, bool) {
+	f.control.Paused = paused
+	return f.control, true
+}
+
+func (f *fakeProjectRuntime) SetStagePaused(stage string, paused bool) (api.ControlState, bool, error) {
+	valid := map[string]bool{"coding": true, "review": true, "review_resolution": true, "merge": true}
+	if !valid[stage] {
+		return f.control, true, errors.New("unknown pipeline stage")
+	}
+	stages := make(map[string]bool)
+	for _, existing := range f.control.PausedStages {
+		stages[existing] = true
+	}
+	if paused {
+		stages[stage] = true
+	} else {
+		delete(stages, stage)
+	}
+	f.control.PausedStages = nil
+	for _, candidate := range []string{"coding", "merge", "review", "review_resolution"} {
+		if stages[candidate] {
+			f.control.PausedStages = append(f.control.PausedStages, candidate)
+		}
+	}
+	return f.control, true, nil
 }
 
 func (f *fakeProjectRuntime) WorkflowSettings() (project.WorkflowSettings, error) {
@@ -124,8 +154,8 @@ agent_runtime:
   provider: codex
   model: kimi-k2
   endpoint_url: https://openai-compatible.example/v1
-  api_key: secret-openai-key
-  auth_token: secret-auth-token
+  api_key: $SIM_TEST_OPENAI_KEY
+  auth_token: $SIM_TEST_AUTH_TOKEN
   env:
     SAFE_PUBLIC_FLAG: enabled
 concurrency:
@@ -393,8 +423,8 @@ func TestProjectServerUpdatesRegistryAgentRuntimeDefaultsAndPreservesSecrets(t *
 agent_runtime:
   provider: codex
   model: old-model
-  api_key: old-secret
-  auth_token: old-token
+  api_key: $OLD_RUNTIME_KEY
+  auth_token: $OLD_RUNTIME_TOKEN
 projects:
   - id: alpha
     name: Alpha
@@ -442,8 +472,8 @@ projects:
 		"model_provider: moonshot",
 		"reasoning_effort: medium",
 		"endpoint_url: https://openai-compatible.example/v1",
-		"api_key: old-secret",
-		"auth_token: old-token",
+		"api_key: $OLD_RUNTIME_KEY",
+		"auth_token: $OLD_RUNTIME_TOKEN",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("registry file = %q, want %q", text, want)
@@ -459,7 +489,7 @@ func TestProjectServerReplacesRegistryAgentRuntimeSecretWhenProvided(t *testing.
 	writeServerTestFile(t, registryPath, `
 agent_runtime:
   provider: codex
-  api_key: old-secret
+  api_key: $OLD_RUNTIME_KEY
 projects:
   - id: alpha
     name: Alpha
@@ -770,7 +800,7 @@ projects:
 
 func writeServerTestWorkflow(t *testing.T, path string, workspaceRoot string) {
 	t.Helper()
-	content := "---\ntracker:\n  kind: linear\n  api_key: test-linear-key\n  project_slug: shared-project\nworkspace:\n  root: " + filepath.ToSlash(workspaceRoot) + "\n---\n\nWork on {{ issue.identifier }}.\n"
+	content := "---\ntracker:\n  kind: linear\n  api_key: $SIM_TEST_TRACKER_KEY\n  project_slug: shared-project\nworkspace:\n  root: " + filepath.ToSlash(workspaceRoot) + "\n---\n\nWork on {{ issue.identifier }}.\n"
 	writeServerTestFile(t, path, content)
 }
 
@@ -961,6 +991,84 @@ func TestProjectServerRefreshesProject(t *testing.T) {
 	}
 	if !response.Queued || len(response.Operations) != 1 || response.Operations[0] != "tick" {
 		t.Fatalf("refresh = %+v, want queued tick", response)
+	}
+}
+
+func TestProjectServerSoftPauseControls(t *testing.T) {
+	runtime := &fakeProjectRuntime{project: config.RegistryProject{ID: "alpha", Name: "Alpha", Enabled: true}}
+	manager := &fakeProjectManager{
+		summaries: []project.RuntimeSummary{{ID: "alpha", Name: "Alpha", Enabled: true, Running: true}},
+		runtimes:  map[string]project.ObservableRuntime{"alpha": runtime},
+	}
+	s := newTestProjectServer(manager)
+
+	for _, tt := range []struct {
+		path       string
+		wantPaused bool
+		wantStages []string
+	}{
+		{path: "/api/v1/projects/alpha/pause", wantPaused: true},
+		{path: "/api/v1/projects/alpha/stages/review/pause", wantPaused: true, wantStages: []string{"review"}},
+		{path: "/api/v1/projects/alpha/resume", wantPaused: false, wantStages: []string{"review"}},
+		{path: "/api/v1/projects/alpha/stages/review/resume", wantPaused: false},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+		rec := httptest.NewRecorder()
+		s.mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST %s status=%d body=%s", tt.path, rec.Code, rec.Body.String())
+		}
+		var state api.ControlState
+		if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
+			t.Fatalf("POST %s decode: %v", tt.path, err)
+		}
+		if state.Paused != tt.wantPaused || strings.Join(state.PausedStages, ",") != strings.Join(tt.wantStages, ",") {
+			t.Fatalf("POST %s state=%+v, want paused=%t stages=%v", tt.path, state, tt.wantPaused, tt.wantStages)
+		}
+	}
+
+	bad := httptest.NewRequest(http.MethodPost, "/api/v1/projects/alpha/stages/unknown/pause", nil)
+	badRec := httptest.NewRecorder()
+	s.mux.ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "invalid_stage") {
+		t.Fatalf("invalid stage status=%d body=%s", badRec.Code, badRec.Body.String())
+	}
+
+	compat := httptest.NewRequest(http.MethodPost, "/api/v1/pause", nil)
+	compatRec := httptest.NewRecorder()
+	s.mux.ServeHTTP(compatRec, compat)
+	if compatRec.Code != http.StatusOK || !strings.Contains(compatRec.Body.String(), `"paused":true`) {
+		t.Fatalf("compat pause status=%d body=%s", compatRec.Code, compatRec.Body.String())
+	}
+
+	// Repeating a pause is idempotent and returns the same state.
+	repeat := httptest.NewRequest(http.MethodPost, "/api/v1/projects/alpha/pause", nil)
+	repeatRec := httptest.NewRecorder()
+	s.mux.ServeHTTP(repeatRec, repeat)
+	if repeatRec.Code != http.StatusOK || !strings.Contains(repeatRec.Body.String(), `"paused":true`) {
+		t.Fatalf("repeat pause status=%d body=%s", repeatRec.Code, repeatRec.Body.String())
+	}
+}
+
+func TestProjectServerPauseUnavailableProjectErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		summary  project.RuntimeSummary
+		wantCode int
+		wantBody string
+	}{
+		{name: "stopped", summary: project.RuntimeSummary{ID: "alpha", Enabled: true}, wantCode: http.StatusServiceUnavailable, wantBody: "project_not_running"},
+		{name: "disabled", summary: project.RuntimeSummary{ID: "alpha", Enabled: false}, wantCode: http.StatusConflict, wantBody: "project_disabled"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestProjectServer(&fakeProjectManager{summaries: []project.RuntimeSummary{tt.summary}, runtimes: map[string]project.ObservableRuntime{}})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/alpha/pause", nil)
+			rec := httptest.NewRecorder()
+			s.mux.ServeHTTP(rec, req)
+			if rec.Code != tt.wantCode || !strings.Contains(rec.Body.String(), tt.wantBody) {
+				t.Fatalf("status=%d body=%s, want %d containing %s", rec.Code, rec.Body.String(), tt.wantCode, tt.wantBody)
+			}
+		})
 	}
 }
 

@@ -79,6 +79,9 @@ func (s *ProjectServer) registerRoutes() {
 	s.mux.HandleFunc(s.apiPrefix+"/registry/projects/", s.withCORS(s.handleRegistryProjectRoute))
 	s.mux.HandleFunc(s.apiPrefix+"/state", s.withCORS(s.handleDefaultProjectState))
 	s.mux.HandleFunc(s.apiPrefix+"/refresh", s.withCORS(s.handleDefaultProjectRefresh))
+	s.mux.HandleFunc(s.apiPrefix+"/pause", s.withCORS(s.handleDefaultProjectPause))
+	s.mux.HandleFunc(s.apiPrefix+"/resume", s.withCORS(s.handleDefaultProjectResume))
+	s.mux.HandleFunc(s.apiPrefix+"/stages/", s.withCORS(s.handleDefaultProjectStageControl))
 	s.mux.HandleFunc(s.apiPrefix+"/settings/validate-tracker", s.withCORS(s.handleDefaultProjectValidateTrackerSettings))
 	s.mux.HandleFunc(s.apiPrefix+"/settings/models", s.withCORS(s.handleDefaultProjectModelCatalog))
 	s.mux.HandleFunc(s.apiPrefix+"/settings", s.withCORS(s.handleDefaultProjectSettings))
@@ -345,6 +348,7 @@ func (s *ProjectServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if runtime, ok := s.manager.Runtime(summary.ID); ok {
 			if snapshot, ok := runtime.Snapshot(); ok {
 				projectSummary.Counts = snapshot.Counts
+				projectSummary.Control = snapshot.Control
 				projectSummary.Health = snapshot.Health
 				if snapshot.LastDispatchDeferredReason == "no_supervisor_slots" {
 					projectSummary.WaitingOnSupervisor = true
@@ -390,6 +394,21 @@ func (s *ProjectServer) handleProjectRoute(w http.ResponseWriter, r *http.Reques
 	}
 	if len(parts) == 2 && parts[1] == "refresh" {
 		s.handleProjectRefresh(w, r, runtime)
+		return
+	}
+	if len(parts) == 2 && (parts[1] == "pause" || parts[1] == "resume") {
+		s.handleProjectPause(w, r, runtime, parts[1] == "pause")
+		return
+	}
+	if len(parts) == 4 && parts[1] == "stages" && (parts[3] == "pause" || parts[3] == "resume") {
+		stage, err := url.PathUnescape(parts[2])
+		if err != nil || strings.TrimSpace(stage) == "" {
+			s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+				Error: api.APIError{Code: "invalid_stage", Message: "Pipeline stage is invalid"},
+			})
+			return
+		}
+		s.handleProjectStagePause(w, r, runtime, stage, parts[3] == "pause")
 		return
 	}
 	if len(parts) == 2 && parts[1] == "settings" {
@@ -476,6 +495,46 @@ func (s *ProjectServer) handleProjectRefresh(w http.ResponseWriter, r *http.Requ
 	s.writeJSON(w, http.StatusAccepted, response)
 }
 
+func (s *ProjectServer) handleProjectPause(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime, paused bool) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+	state, ok := runtime.SetProjectPaused(paused)
+	if !ok {
+		s.writeJSON(w, http.StatusServiceUnavailable, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_not_running", Message: "Project runtime is not running"},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, state)
+}
+
+func (s *ProjectServer) handleProjectStagePause(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime, stage string, paused bool) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+	state, ok, err := runtime.SetStagePaused(stage, paused)
+	if !ok {
+		s.writeJSON(w, http.StatusServiceUnavailable, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_not_running", Message: "Project runtime is not running"},
+		})
+		return
+	}
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "invalid_stage", Message: err.Error()},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, state)
+}
+
 func (s *ProjectServer) handleProjectIssue(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime, identifier string) {
 	if r.Method != http.MethodGet {
 		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
@@ -513,6 +572,49 @@ func (s *ProjectServer) handleDefaultProjectRefresh(w http.ResponseWriter, r *ht
 		return
 	}
 	s.handleProjectRefresh(w, r, runtime)
+}
+
+func (s *ProjectServer) handleDefaultProjectPause(w http.ResponseWriter, r *http.Request) {
+	s.handleDefaultProjectControl(w, r, true)
+}
+
+func (s *ProjectServer) handleDefaultProjectResume(w http.ResponseWriter, r *http.Request) {
+	s.handleDefaultProjectControl(w, r, false)
+}
+
+func (s *ProjectServer) handleDefaultProjectControl(w http.ResponseWriter, r *http.Request, paused bool) {
+	runtime, ok := s.singleRunningRuntime()
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_required", Message: "Use a project-scoped pause or resume route when zero or multiple projects are running"},
+		})
+		return
+	}
+	s.handleProjectPause(w, r, runtime, paused)
+}
+
+func (s *ProjectServer) handleDefaultProjectStageControl(w http.ResponseWriter, r *http.Request) {
+	runtime, ok := s.singleRunningRuntime()
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_required", Message: "Use a project-scoped stage pause or resume route when zero or multiple projects are running"},
+		})
+		return
+	}
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, s.apiPrefix+"/stages/"), "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 2 || (parts[1] != "pause" && parts[1] != "resume") {
+		s.handleProjectAPINotFound(w, r)
+		return
+	}
+	stage, err := url.PathUnescape(parts[0])
+	if err != nil || strings.TrimSpace(stage) == "" {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "invalid_stage", Message: "Pipeline stage is invalid"},
+		})
+		return
+	}
+	s.handleProjectStagePause(w, r, runtime, stage, parts[1] == "pause")
 }
 
 func (s *ProjectServer) handleDefaultProjectSettings(w http.ResponseWriter, r *http.Request) {
@@ -567,15 +669,24 @@ func (s *ProjectServer) handleProjectModelCatalog(w http.ResponseWriter, r *http
 		})
 		return
 	}
+	runtimeConfig, stage, err := modelCatalogRuntime(settings.ResolvedConfig, r.URL.Query().Get("stage"))
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "invalid_stage", Message: err.Error()},
+		})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	result, err := fetchModelCatalog(ctx, settings.ResolvedConfig.AgentRuntime)
+	result, err := fetchModelCatalog(ctx, runtimeConfig)
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, api.APIErrorResponse{
 			Error: api.APIError{Code: "model_catalog_error", Message: err.Error()},
 		})
 		return
 	}
+	result.ExecutionProvider = runtimeConfig.Provider
+	result.Stage = stage
 	s.writeJSON(w, http.StatusOK, result)
 }
 

@@ -13,6 +13,7 @@ const (
 	ErrMissingTrackerAPIKey      = "missing_tracker_api_key"
 	ErrMissingTrackerProjectSlug = "missing_tracker_project_slug"
 	ErrInvalidWorkspaceCWD       = "invalid_workspace_cwd"
+	ErrLiteralSecret             = "literal_secret_in_config"
 	ErrCodexNotFound             = "codex_not_found"
 	ErrResponseTimeout           = "response_timeout"
 	ErrTurnTimeout               = "turn_timeout"

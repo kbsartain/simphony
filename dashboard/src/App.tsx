@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ControlState,
   IssueDetailResponse,
   ModelCatalogResponse,
   ProjectSummary,
@@ -31,6 +32,8 @@ import {
   requestRefresh as requestRefreshAPI,
   refreshModelCatalog as refreshModelCatalogAPI,
   saveSettings,
+  setProjectPaused as setProjectPausedAPI,
+  setStagePaused as setStagePausedAPI,
   updateRegistrySettings,
   updateRegistryProject,
   validateTrackerSettings,
@@ -306,6 +309,7 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [controlMutation, setControlMutation] = useState<string | null>(null)
   const [bootstrappingRegistry, setBootstrappingRegistry] = useState(false)
   const [creatingRegistryProject, setCreatingRegistryProject] = useState(false)
   const [savingRegistrySettings, setSavingRegistrySettings] = useState(false)
@@ -492,6 +496,50 @@ function App() {
       setError(normalizeError(err))
     } finally {
       setRefreshing(false)
+    }
+  }
+
+  const applyControlState = (control: ControlState) => {
+    setState(current => (current ? { ...current, control } : current))
+    if (selectedProjectId) {
+      setProjects(current => current.map(project => (project.id === selectedProjectId ? { ...project, control } : project)))
+    }
+  }
+
+  const changeProjectPause = async (paused: boolean) => {
+    const mutation = paused ? 'project-pause' : 'project-resume'
+    setControlMutation(mutation)
+    setError(null)
+    try {
+      const control = await setProjectPausedAPI(paused, selectedAPIProjectId)
+      applyControlState(control)
+      setNotice(paused ? 'Project paused. In-flight work will finish.' : 'Project resumed. Eligible work is being refreshed.')
+      if (projectMode) {
+        await loadProjects()
+      }
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setControlMutation(null)
+    }
+  }
+
+  const changeStagePause = async (stage: string, paused: boolean) => {
+    const mutation = `${stage}-${paused ? 'pause' : 'resume'}`
+    setControlMutation(mutation)
+    setError(null)
+    try {
+      const control = await setStagePausedAPI(stage, paused, selectedAPIProjectId)
+      applyControlState(control)
+      const label = SKILL_STAGE_OPTIONS.find(option => option.id === stage)?.label || stage
+      setNotice(paused ? `${label} paused. In-flight work will finish.` : `${label} resumed. Eligible work is being refreshed.`)
+      if (projectMode) {
+        await loadProjects()
+      }
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setControlMutation(null)
     }
   }
 
@@ -946,6 +994,12 @@ function App() {
 
         {page === 'runtime' && (
           <>
+            <WorkflowControlPanel
+              control={state.control}
+              mutation={controlMutation}
+              onProjectPause={changeProjectPause}
+              onStagePause={changeStagePause}
+            />
             {showAggregateProjectHealth && projectOverview && (
               <section className="project-overview" aria-label="Project overview">
                 <div className="project-overview-heading">
@@ -1151,6 +1205,62 @@ function App() {
         )}
       </section>
     </main>
+  )
+}
+
+function WorkflowControlPanel(props: {
+  control: ControlState
+  mutation: string | null
+  onProjectPause: (paused: boolean) => void
+  onStagePause: (stage: string, paused: boolean) => void
+}) {
+  const projectPaused = props.control.paused
+  const pausedStages = new Set(props.control.paused_stages)
+  const busy = props.mutation !== null
+
+  return (
+    <section className={projectPaused ? 'workflow-control paused' : 'workflow-control'} aria-label="Workflow controls">
+      <div className="workflow-control-copy">
+        <div>
+          <p className="eyebrow">Operator control</p>
+          <h2>{projectPaused ? 'Project paused' : pausedStages.size > 0 ? 'Stage pause active' : 'Workflow running'}</h2>
+        </div>
+        <p>
+          Soft pause blocks new dispatches and retries. Agents already running continue normally, and workflow settings can still hot reload.
+        </p>
+      </div>
+      <div className="workflow-control-actions">
+        <button
+          className={projectPaused ? 'secondary-button resume-button' : 'secondary-button pause-button'}
+          type="button"
+          onClick={() => props.onProjectPause(!projectPaused)}
+          disabled={busy}
+          aria-pressed={projectPaused}
+        >
+          {props.mutation?.startsWith('project-') ? 'Updating…' : projectPaused ? 'Resume project' : 'Pause project'}
+        </button>
+        <div className="stage-control-list" role="group" aria-label="Pipeline stage pause controls">
+          {SKILL_STAGE_OPTIONS.map(stage => {
+            const paused = pausedStages.has(stage.id)
+            const mutation = `${stage.id}-${paused ? 'resume' : 'pause'}`
+            return (
+              <button
+                key={stage.id}
+                className={paused ? 'stage-control paused' : 'stage-control'}
+                type="button"
+                onClick={() => props.onStagePause(stage.id, !paused)}
+                disabled={busy}
+                aria-pressed={paused}
+                title={paused ? `Resume ${stage.label}` : `Pause ${stage.label}`}
+              >
+                <span>{stage.label}</span>
+                <strong>{props.mutation === mutation ? 'Updating…' : paused ? 'Paused' : 'Running'}</strong>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -2527,11 +2637,22 @@ function SettingsView(props: {
               <label key={stage.id} className="stage-skill-card">
                 <strong>{stage.label}</strong>
                 <select
+                  aria-label={`${stage.label} execution SDK`}
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'provider') : ''}
+                  onChange={event => changeStageField(stage.id, 'provider', event.target.value)}
+                  disabled={!draftConfig || props.saving}
+                >
+                  <option value="">Default execution SDK</option>
+                  <option value="codex">Codex app-server</option>
+                  <option value="claude">Claude Agent SDK</option>
+                </select>
+                <select
+                  aria-label={`${stage.label} model provider`}
                   value={draftConfig ? getStageProviderID(draftConfig, stage.id) : ''}
                   onChange={event => changeStageField(stage.id, 'model_provider', event.target.value)}
                   disabled={!draftConfig || props.saving}
                 >
-                  <option value="">Default provider</option>
+                  <option value="">Default model provider</option>
                   {providerOptionsWithCurrent(draftConfig ? getStageProviderID(draftConfig, stage.id) : '').map(option => (
                     <option key={option.id} value={option.id}>
                       {option.label}
@@ -2568,6 +2689,31 @@ function SettingsView(props: {
                     </option>
                   ))}
                 </select>
+                <input
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'command') : ''}
+                  onChange={event => changeStageField(stage.id, 'command', event.target.value)}
+                  placeholder={
+                    draftConfig && getEffectiveStageSDK(draftConfig, stage.id) === 'claude'
+                      ? 'Custom Claude wrapper (optional)'
+                      : 'Stage SDK command (optional)'
+                  }
+                  disabled={!draftConfig || props.saving}
+                />
+                {draftConfig && getEffectiveStageSDK(draftConfig, stage.id) === 'claude' ? (
+                  <input
+                    value={getStageStringField(draftConfig, stage.id, 'permission_mode')}
+                    onChange={event => changeStageField(stage.id, 'permission_mode', event.target.value)}
+                    placeholder="Claude permission mode (acceptEdits)"
+                    disabled={props.saving}
+                  />
+                ) : (
+                  <input
+                    value={draftConfig ? getStageStringField(draftConfig, stage.id, 'turn_sandbox_policy') : ''}
+                    onChange={event => changeStageField(stage.id, 'turn_sandbox_policy', event.target.value)}
+                    placeholder="Codex turn sandbox policy"
+                    disabled={!draftConfig || props.saving}
+                  />
+                )}
                 <input
                   value={draftConfig ? getStageStringField(draftConfig, stage.id, 'endpoint_url') : ''}
                   onChange={event => changeStageField(stage.id, 'endpoint_url', event.target.value)}
@@ -2739,7 +2885,17 @@ function applyPipelineStringField(
   return nextConfig
 }
 
-type StageRuntimeField = 'model' | 'model_provider' | 'reasoning_effort' | 'endpoint_url' | 'api_key' | 'auth_token'
+type StageRuntimeField =
+  | 'provider'
+  | 'command'
+  | 'model'
+  | 'model_provider'
+  | 'reasoning_effort'
+  | 'endpoint_url'
+  | 'api_key'
+  | 'auth_token'
+  | 'permission_mode'
+  | 'turn_sandbox_policy'
 
 function runtimeConfigKey(config: Record<string, unknown>) {
   return isPlainObject(config.agent_runtime) ? 'agent_runtime' : 'codex'
@@ -2855,6 +3011,13 @@ function getStageProviderID(config: Record<string, unknown>, stage: string) {
   return selectedProviderID(getStageStringField(config, stage, 'model'), getStageStringField(config, stage, 'model_provider'))
 }
 
+function getEffectiveStageSDK(config: Record<string, unknown>, stage: string) {
+  const stageProvider = getStageStringField(config, stage, 'provider')
+  if (stageProvider) return stageProvider
+  const runtime = getRuntimeConfig(config)
+  return typeof runtime.provider === 'string' && runtime.provider ? runtime.provider : 'codex'
+}
+
 function getStageModelID(config: Record<string, unknown>, stage: string) {
   return selectedModelID(getStageStringField(config, stage, 'model'), getStageStringField(config, stage, 'model_provider'))
 }
@@ -2881,7 +3044,35 @@ function applyStageField(config: Record<string, unknown>, stage: string, field: 
   const stageConfig = isPlainObject(overrides[stage]) ? { ...overrides[stage] } : {}
   const trimmedValue = value.trim()
 
-  if (field === 'model_provider') {
+  if (field === 'provider') {
+    const previousProvider = typeof stageConfig.provider === 'string' ? stageConfig.provider : ''
+    if (trimmedValue === '') {
+      delete stageConfig.provider
+    } else {
+      stageConfig.provider = trimmedValue
+    }
+    if (previousProvider !== trimmedValue) {
+      for (const keyToReset of [
+        'command',
+        'model',
+        'model_provider',
+        'reasoning_effort',
+        'endpoint_url',
+        'api_key',
+        'auth_token',
+        'env',
+        'allowed_tools',
+        'disallowed_tools',
+        'permission_mode',
+        'setting_sources',
+        'approval_policy',
+        'thread_sandbox',
+        'turn_sandbox_policy',
+      ]) {
+        delete stageConfig[keyToReset]
+      }
+    }
+  } else if (field === 'model_provider') {
     const provider = PROVIDER_OPTIONS.find(item => item.id === trimmedValue)
     if (!provider) {
       delete stageConfig.model_provider

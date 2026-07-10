@@ -12,6 +12,11 @@ import (
 	"github.com/kbsartain/simphony/pkg/api"
 )
 
+func TestMain(m *testing.M) {
+	_ = os.Setenv("SIM_TEST_TRACKER_KEY", "test-key")
+	os.Exit(m.Run())
+}
+
 func slicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -29,7 +34,7 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "test-key",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 		},
@@ -178,7 +183,7 @@ func TestResolveConfig_ClaudeAgentRuntime(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "key",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 			"agent_runtime": map[string]interface{}{
@@ -257,7 +262,7 @@ func TestResolveConfig_ModelAndPipeline(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":          "linear",
-				"api_key":       "key",
+				"api_key":       "$SIM_TEST_TRACKER_KEY",
 				"project_slug":  "proj",
 				"active_states": []interface{}{"Ready", "Coding"},
 			},
@@ -354,12 +359,25 @@ func TestResolveConfig_ReasoningEffortSupportsMaxAlias(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "key",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 			"agent_runtime": map[string]interface{}{
 				"provider":         "codex",
 				"reasoning_effort": "max",
+				"stage_overrides": map[string]interface{}{
+					"review": map[string]interface{}{
+						"provider":            "claude",
+						"command":             "node ./review-claude.mjs",
+						"permission_mode":     "acceptEdits",
+						"allowed_tools":       []interface{}{"Read", "Bash"},
+						"disallowed_tools":    []interface{}{"WebSearch"},
+						"setting_sources":     []interface{}{"project"},
+						"approval_policy":     "auto",
+						"thread_sandbox":      "none",
+						"turn_sandbox_policy": "workspace-write",
+					},
+				},
 			},
 		},
 	}
@@ -370,6 +388,32 @@ func TestResolveConfig_ReasoningEffortSupportsMaxAlias(t *testing.T) {
 	}
 	if cfg.AgentRuntime.ReasoningEffort != "xhigh" {
 		t.Fatalf("agent_runtime.reasoning_effort = %q, want xhigh", cfg.AgentRuntime.ReasoningEffort)
+	}
+	review := cfg.AgentRuntime.StageOverrides["review"]
+	if review.Provider != "claude" || review.Command != "node ./review-claude.mjs" || review.PermissionMode != "acceptEdits" {
+		t.Fatalf("review stage runtime = %+v, want Claude command and permission mode", review)
+	}
+	if !slicesEqual(review.AllowedTools, []string{"Read", "Bash"}) || !slicesEqual(review.DisallowedTools, []string{"WebSearch"}) || !slicesEqual(review.SettingSources, []string{"project"}) {
+		t.Fatalf("review stage tools/settings = %+v", review)
+	}
+	if review.ApprovalPolicy != "auto" || review.ThreadSandbox != "none" || review.TurnSandboxPolicy != "workspace-write" {
+		t.Fatalf("review stage sandbox settings = %+v", review)
+	}
+}
+
+func TestResolveConfig_RejectsInvalidStageRuntimeProvider(t *testing.T) {
+	def := &api.WorkflowDefinition{Config: map[string]interface{}{
+		"tracker": map[string]interface{}{"kind": "linear", "api_key": "$SIM_TEST_TRACKER_KEY", "project_slug": "proj"},
+		"agent_runtime": map[string]interface{}{
+			"stage_overrides": map[string]interface{}{
+				"review": map[string]interface{}{"provider": "unknown-sdk"},
+			},
+		},
+	}}
+
+	_, err := ResolveConfig(def, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "provider must be codex or claude") {
+		t.Fatalf("ResolveConfig error = %v, want invalid stage provider", err)
 	}
 }
 
@@ -401,7 +445,7 @@ func TestResolveConfig_WorkingStateAppendedToActiveStates(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":          "linear",
-				"api_key":       "key",
+				"api_key":       "$SIM_TEST_TRACKER_KEY",
 				"project_slug":  "proj",
 				"active_states": []interface{}{"Todo"},
 				"working_state": "In Progress",
@@ -459,7 +503,7 @@ func TestResolveConfig_PathResolution(t *testing.T) {
 				Config: map[string]interface{}{
 					"tracker": map[string]interface{}{
 						"kind":         "linear",
-						"api_key":      "key",
+						"api_key":      "$SIM_TEST_TRACKER_KEY",
 						"project_slug": "proj",
 					},
 					"workspace": map[string]interface{}{
@@ -500,7 +544,7 @@ func TestResolveConfig_PathEnvVar(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "key",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 			"workspace": map[string]interface{}{
@@ -527,7 +571,7 @@ func TestResolveConfig_GitWorktreeWorkspace(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "key",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 			"workspace": map[string]interface{}{
@@ -572,7 +616,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			name: "missing tracker kind",
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 			},
@@ -583,7 +627,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "jira",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 			},
@@ -604,7 +648,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":    "linear",
-					"api_key": "key",
+					"api_key": "$SIM_TEST_TRACKER_KEY",
 				},
 			},
 			wantError: api.ErrMissingTrackerProjectSlug,
@@ -614,7 +658,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"agent": map[string]interface{}{
@@ -628,7 +672,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"polling": map[string]interface{}{
@@ -642,7 +686,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"agent": map[string]interface{}{
@@ -656,7 +700,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"agent": map[string]interface{}{
@@ -670,7 +714,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"hooks": map[string]interface{}{
@@ -684,7 +728,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"codex": map[string]interface{}{
@@ -698,7 +742,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"codex": map[string]interface{}{
@@ -712,7 +756,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"codex": map[string]interface{}{
@@ -730,7 +774,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"codex": map[string]interface{}{
@@ -744,7 +788,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"agent_runtime": map[string]interface{}{
@@ -758,7 +802,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":          "linear",
-					"api_key":       "key",
+					"api_key":       "$SIM_TEST_TRACKER_KEY",
 					"project_slug":  "proj",
 					"active_states": []interface{}{"Todo", "In Review"},
 				},
@@ -773,7 +817,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":              "linear",
-					"api_key":           "key",
+					"api_key":           "$SIM_TEST_TRACKER_KEY",
 					"project_slug":      "proj",
 					"active_states":     []interface{}{"Todo", "QA"},
 					"completion_states": []interface{}{"QA"},
@@ -786,7 +830,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"workspace": map[string]interface{}{
@@ -800,7 +844,7 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 			config: map[string]interface{}{
 				"tracker": map[string]interface{}{
 					"kind":         "linear",
-					"api_key":      "key",
+					"api_key":      "$SIM_TEST_TRACKER_KEY",
 					"project_slug": "proj",
 				},
 				"workspace": map[string]interface{}{
@@ -831,12 +875,96 @@ func TestResolveConfig_ValidationFailures(t *testing.T) {
 	}
 }
 
+func TestValidateSecretRef(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "environment reference", value: "$API_KEY"},
+		{name: "trimmed environment reference", value: "  $API_KEY  "},
+		{name: "empty", value: ""},
+		{name: "whitespace", value: "   "},
+		{name: "literal", value: "sk-retired-literal-key", wantErr: true},
+		{name: "dollar not at start", value: "prefix$API_KEY", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSecretRef("test.api_key", tt.value)
+			if tt.wantErr && err == nil {
+				t.Fatalf("validateSecretRef(%q) expected error", tt.value)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateSecretRef(%q) returned %v", tt.value, err)
+			}
+			if err != nil && (!strings.Contains(err.Error(), api.ErrLiteralSecret) || !strings.Contains(err.Error(), "test.api_key")) {
+				t.Fatalf("error %q must include code and field path", err)
+			}
+		})
+	}
+}
+
+func TestResolveConfigRejectsLiteralSecretsAtEverySupportedLevel(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    map[string]interface{}
+		wantField string
+	}{
+		{
+			name: "tracker key",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{"kind": "linear", "api_key": "literal", "project_slug": "proj"},
+			},
+			wantField: "tracker.api_key",
+		},
+		{
+			name: "runtime key",
+			config: map[string]interface{}{
+				"tracker":       map[string]interface{}{"kind": "linear", "api_key": "$SIM_TEST_TRACKER_KEY", "project_slug": "proj"},
+				"agent_runtime": map[string]interface{}{"provider": "codex", "api_key": "literal"},
+			},
+			wantField: "agent_runtime.api_key",
+		},
+		{
+			name: "runtime token",
+			config: map[string]interface{}{
+				"tracker":       map[string]interface{}{"kind": "linear", "api_key": "$SIM_TEST_TRACKER_KEY", "project_slug": "proj"},
+				"agent_runtime": map[string]interface{}{"provider": "codex", "auth_token": "literal"},
+			},
+			wantField: "agent_runtime.auth_token",
+		},
+		{
+			name: "stage key",
+			config: map[string]interface{}{
+				"tracker": map[string]interface{}{"kind": "linear", "api_key": "$SIM_TEST_TRACKER_KEY", "project_slug": "proj"},
+				"agent_runtime": map[string]interface{}{
+					"provider": "codex",
+					"stage_overrides": map[string]interface{}{
+						"review": map[string]interface{}{"api_key": "literal"},
+					},
+				},
+			},
+			wantField: "agent_runtime.stage_overrides.review.api_key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ResolveConfig(&api.WorkflowDefinition{Config: tt.config}, t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), api.ErrLiteralSecret) || !strings.Contains(err.Error(), tt.wantField) {
+				t.Fatalf("error = %v, want %s naming %s", err, api.ErrLiteralSecret, tt.wantField)
+			}
+		})
+	}
+}
+
 func TestResolveConfig_PartialConfig(t *testing.T) {
 	def := &api.WorkflowDefinition{
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "key",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 			"agent": map[string]interface{}{
@@ -866,7 +994,7 @@ func TestResolveConfig_UnknownKeysIgnored(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":          "linear",
-				"api_key":       "key",
+				"api_key":       "$SIM_TEST_TRACKER_KEY",
 				"project_slug":  "proj",
 				"unknown_field": "should be ignored",
 			},
@@ -891,7 +1019,7 @@ func TestSaveWorkflow_RoundTrip(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "key",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 			"future_section": map[string]interface{}{
@@ -1062,7 +1190,7 @@ func TestResolveConfig_InvalidAgentStateEntriesFiltered(t *testing.T) {
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "key",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 			"agent": map[string]interface{}{

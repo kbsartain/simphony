@@ -12,7 +12,7 @@ func writeTestWorkflow(t *testing.T, path string, extraFrontMatter string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		t.Fatalf("mkdir workflow dir: %v", err)
 	}
-	content := "---\ntracker:\n  kind: linear\n  api_key: test-linear-key\n  project_slug: test-project\n"
+	content := "---\ntracker:\n  kind: linear\n  api_key: $SIM_TEST_TRACKER_KEY\n  project_slug: test-project\n"
 	if strings.TrimSpace(extraFrontMatter) != "" {
 		content += extraFrontMatter + "\n"
 	}

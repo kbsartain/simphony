@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kbsartain/simphony/internal/agentruntime"
 	"github.com/kbsartain/simphony/internal/config"
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -97,6 +98,24 @@ func fetchModelCatalog(ctx context.Context, runtime api.AgentRuntimeConfig) (api
 	return api.ModelCatalogResponse{Provider: provider, EndpointURL: endpoint, RefreshedAt: time.Now(), Models: models}, nil
 }
 
+func modelCatalogRuntime(cfg *api.WorkflowConfig, stage string) (api.AgentRuntimeConfig, string, error) {
+	if cfg == nil {
+		return api.AgentRuntimeConfig{}, "", fmt.Errorf("project settings are not resolved")
+	}
+	stage = strings.ToLower(strings.TrimSpace(stage))
+	stage = strings.ReplaceAll(stage, "-", "_")
+	stage = strings.ReplaceAll(stage, " ", "_")
+	if stage == "" {
+		return cfg.AgentRuntime, "", nil
+	}
+	switch stage {
+	case "coding", "review", "review_resolution", "merge":
+	default:
+		return api.AgentRuntimeConfig{}, "", fmt.Errorf("unknown pipeline stage %q", stage)
+	}
+	return agentruntime.EffectiveConfig(&cfg.AgentRuntime, api.PipelineStage{Kind: stage}), stage, nil
+}
+
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	if s.workflowPath == "" {
 		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{Error: api.APIError{Code: "not_found", Message: "Settings API is not configured"}})
@@ -118,12 +137,19 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{Error: api.APIError{Code: "settings_validation_error", Message: err.Error()}})
 		return
 	}
+	runtime, stage, err := modelCatalogRuntime(cfg, r.URL.Query().Get("stage"))
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{Error: api.APIError{Code: "invalid_stage", Message: err.Error()}})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	result, err := fetchModelCatalog(ctx, cfg.AgentRuntime)
+	result, err := fetchModelCatalog(ctx, runtime)
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, api.APIErrorResponse{Error: api.APIError{Code: "model_catalog_error", Message: err.Error()}})
 		return
 	}
+	result.ExecutionProvider = runtime.Provider
+	result.Stage = stage
 	s.writeJSON(w, http.StatusOK, result)
 }

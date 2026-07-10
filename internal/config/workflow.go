@@ -333,6 +333,9 @@ func resolveTracker(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	if !ok {
 		return fmt.Errorf("%s: tracker.api_key is required", api.ErrMissingTrackerAPIKey)
 	}
+	if err := validateSecretRef("tracker.api_key", apiKeyRaw); err != nil {
+		return err
+	}
 	apiKey := ResolveEnvVar(apiKeyRaw)
 	if apiKey == "" {
 		return fmt.Errorf("%s: tracker.api_key resolved to empty", api.ErrMissingTrackerAPIKey)
@@ -894,10 +897,16 @@ func applyRuntimeCommon(m map[string]interface{}, runtime *api.AgentRuntimeConfi
 		runtime.EndpointURL = strings.TrimSpace(ResolveEnvVar(v))
 	}
 	if v, ok := getString(m, "api_key"); ok {
+		if err := validateSecretRef(section+".api_key", v); err != nil {
+			return err
+		}
 		runtime.APIKey = ResolveEnvVar(strings.TrimSpace(v))
 		runtime.APIKeyConfigured = strings.TrimSpace(v) != ""
 	}
 	if v, ok := getString(m, "auth_token"); ok {
+		if err := validateSecretRef(section+".auth_token", v); err != nil {
+			return err
+		}
 		runtime.AuthToken = ResolveEnvVar(strings.TrimSpace(v))
 		runtime.AuthTokenConfigured = strings.TrimSpace(v) != ""
 	}
@@ -966,6 +975,17 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 			return nil, fmt.Errorf("%s: %s.stage_overrides.%s must be a map", api.ErrWorkflowParseError, section, stageName)
 		}
 		override := api.AgentStageOverride{}
+		if v, ok := getString(stageMap, "provider"); ok && strings.TrimSpace(v) != "" {
+			override.Provider = strings.ToLower(strings.TrimSpace(v))
+			switch override.Provider {
+			case "codex", "claude":
+			default:
+				return nil, fmt.Errorf("%s: %s.stage_overrides.%s.provider must be codex or claude, got %q", api.ErrWorkflowParseError, section, stageName, override.Provider)
+			}
+		}
+		if v, ok := getString(stageMap, "command"); ok {
+			override.Command = strings.TrimSpace(v)
+		}
 		if v, ok := getString(stageMap, "model"); ok {
 			override.Model = strings.TrimSpace(v)
 		}
@@ -983,10 +1003,16 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 			override.EndpointURL = strings.TrimSpace(ResolveEnvVar(v))
 		}
 		if v, ok := getString(stageMap, "api_key"); ok {
+			if err := validateSecretRef(fmt.Sprintf("%s.stage_overrides.%s.api_key", section, stageName), v); err != nil {
+				return nil, err
+			}
 			override.APIKey = ResolveEnvVar(strings.TrimSpace(v))
 			override.APIKeyConfigured = strings.TrimSpace(v) != ""
 		}
 		if v, ok := getString(stageMap, "auth_token"); ok {
+			if err := validateSecretRef(fmt.Sprintf("%s.stage_overrides.%s.auth_token", section, stageName), v); err != nil {
+				return nil, err
+			}
 			override.AuthToken = ResolveEnvVar(strings.TrimSpace(v))
 			override.AuthTokenConfigured = strings.TrimSpace(v) != ""
 		}
@@ -1001,7 +1027,28 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 			return nil, fmt.Errorf("%s: %s.stage_overrides.%s.skills %w", api.ErrWorkflowParseError, section, stageName, err)
 		}
 		override.Skills = skills
-		if override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && override.EndpointURL == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured && len(override.Env) == 0 && len(override.Skills) == 0 {
+		if v, ok := getStringSlice(stageMap, "allowed_tools"); ok {
+			override.AllowedTools = v
+		}
+		if v, ok := getStringSlice(stageMap, "disallowed_tools"); ok {
+			override.DisallowedTools = v
+		}
+		if v, ok := getString(stageMap, "permission_mode"); ok {
+			override.PermissionMode = strings.TrimSpace(v)
+		}
+		if v, ok := getStringSlice(stageMap, "setting_sources"); ok {
+			override.SettingSources = v
+		}
+		if v, ok := getString(stageMap, "approval_policy"); ok {
+			override.ApprovalPolicy = strings.TrimSpace(v)
+		}
+		if v, ok := getString(stageMap, "thread_sandbox"); ok {
+			override.ThreadSandbox = strings.TrimSpace(v)
+		}
+		if v, ok := getString(stageMap, "turn_sandbox_policy"); ok {
+			override.TurnSandboxPolicy = strings.TrimSpace(v)
+		}
+		if override.Provider == "" && override.Command == "" && override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && override.EndpointURL == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured && len(override.Env) == 0 && len(override.Skills) == 0 && len(override.AllowedTools) == 0 && len(override.DisallowedTools) == 0 && override.PermissionMode == "" && len(override.SettingSources) == 0 && override.ApprovalPolicy == "" && override.ThreadSandbox == "" && override.TurnSandboxPolicy == "" {
 			continue
 		}
 		overrides[stageKey] = override
@@ -1110,6 +1157,20 @@ func ResolveEnvVar(value string) string {
 		return os.Getenv(value[1:])
 	}
 	return value
+}
+
+// validateSecretRef rejects literal values in known secret fields. Secrets
+// must be referenced through environment variables so credentials cannot be
+// silently committed to a workflow or registry file.
+func validateSecretRef(fieldPath, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "$") {
+		return nil
+	}
+	return fmt.Errorf("%s: %s must reference an environment variable (start with $), but a literal value was provided", api.ErrLiteralSecret, fieldPath)
 }
 
 // DefaultWorkflowPath returns the default WORKFLOW.md path in the current working directory.

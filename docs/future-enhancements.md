@@ -45,6 +45,12 @@ The next near-term step is not more feature development: wire one project to Lin
 - `FE-4.3` Add clearer diagnostics for OpenAI-compatible endpoints that do not fully support the Codex app-server expectations. Model-catalog HTTP/status diagnostics are complete; turn-protocol diagnostics remain.
 - `FE-4.4` Add runtime presets for common OpenAI-compatible gateways and Anthropic-compatible gateways while preserving custom endpoint support. Initial endpoint/key presets and manual provider model-catalog refresh are complete.
 - `FE-4.5` Consider per-project provider overrides in Project Setup if global defaults prove too coarse during real multi-project operation.
+- `FE-4.6` Add true per-stage execution SDK selection so one project can use Codex app-server for implementation and the Claude Agent SDK for adversarial review. See [Operator Controls and Per-Stage Runtime Backlog](operator-controls-and-stage-runtime-backlog.md).
+
+## Operator Controls
+
+- `FE-6.1` Add soft project and stage pause controls that block new dispatch and retries without terminating in-flight work. See [Operator Controls and Per-Stage Runtime Backlog](operator-controls-and-stage-runtime-backlog.md).
+- `FE-6.2` Add bounded handling for delayed GitHub check registration and preserve useful verification-output tails in merge diagnostics.
 
 ## Operational Hardening
 

@@ -15,13 +15,17 @@ In multi-project `-config` mode, a registry-level `server:` block enables the ag
 - `GET /api/v1/projects/{project_id}/state`
 - `GET /api/v1/projects/{project_id}/issues/{issue_identifier}`
 - `POST /api/v1/projects/{project_id}/refresh`
+- `POST /api/v1/projects/{project_id}/pause`
+- `POST /api/v1/projects/{project_id}/resume`
+- `POST /api/v1/projects/{project_id}/stages/{stage}/pause`
+- `POST /api/v1/projects/{project_id}/stages/{stage}/resume`
 - `GET /api/v1/projects/{project_id}/settings`
 - `PUT /api/v1/projects/{project_id}/settings`
 - `POST /api/v1/projects/{project_id}/settings/validate-tracker`
 
 The dashboard uses these routes to discover projects, select the active project, and scope runtime/settings calls.
 
-When exactly one project runtime is running in multi-project mode, the aggregate server also accepts the single-project compatibility routes `/api/v1/state`, `/api/v1/refresh`, `/api/v1/settings`, `/api/v1/settings/validate-tracker`, and `/api/v1/{issue_identifier}`. When zero or multiple projects are running, callers must use project-scoped routes.
+When exactly one project runtime is running in multi-project mode, the aggregate server also accepts the single-project compatibility routes `/api/v1/state`, `/api/v1/refresh`, `/api/v1/pause`, `/api/v1/resume`, `/api/v1/stages/{stage}/pause|resume`, `/api/v1/settings`, `/api/v1/settings/validate-tracker`, and `/api/v1/{issue_identifier}`. A server started directly from one `WORKFLOW.md` accepts the same control routes. When zero or multiple projects are running, callers must use project-scoped routes.
 
 Project-scoped routes return `project_disabled` for configured disabled projects and `project_not_running` for enabled projects that failed to start or are stopped.
 
@@ -55,6 +59,10 @@ Returns configured projects, per-project runtime counts, and shared supervisor c
         "claimed": 2,
         "completed": 4
       },
+      "control": {
+        "paused": false,
+        "paused_stages": []
+      },
       "waiting_on_supervisor": true,
       "last_supervisor_deferred_at": "2026-05-01T11:59:30Z",
       "workflow_watcher_running": true
@@ -78,6 +86,10 @@ Returns the current orchestrator snapshot.
 ```json
 {
   "generated_at": "2026-05-01T12:00:00Z",
+  "control": {
+    "paused": false,
+    "paused_stages": ["review"]
+  },
   "counts": {
     "running": 1,
     "retrying": 0
@@ -110,6 +122,30 @@ Returns the current orchestrator snapshot.
   "rate_limits": {}
 }
 ```
+
+## Soft Pause Controls
+
+Pause controls are idempotent and affect only future work. Running agents are not cancelled. Polling, reconciliation, event handling, and normal completion of in-flight work continue while paused. Runtime pauses are in memory and clear when the process restarts.
+
+Pause is distinct from stopping a project runtime. Pause keeps the runtime, polling, reconciliation, hot reload, and in-flight workers alive while gating new dispatches and retries. Stop shuts down the runtime and cancels its workers. Use Pause for temporary operator intervention; use Stop only when the runtime itself should be taken offline.
+
+```http
+POST /api/v1/projects/{project_id}/pause
+POST /api/v1/projects/{project_id}/resume
+POST /api/v1/projects/{project_id}/stages/{stage}/pause
+POST /api/v1/projects/{project_id}/stages/{stage}/resume
+```
+
+Supported stages are `coding`, `review`, `review_resolution`, and `merge`. A successful mutation returns the complete control state:
+
+```json
+{
+  "paused": false,
+  "paused_stages": ["review"]
+}
+```
+
+Resuming queues an immediate refresh and rechecks retained retries without increasing their attempt count. Invalid stages return `invalid_stage`. Disabled and stopped projects use the existing `project_disabled` and `project_not_running` responses.
 
 ## Get Issue Detail
 

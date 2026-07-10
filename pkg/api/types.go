@@ -145,6 +145,8 @@ type AgentRuntimeConfig struct {
 
 // AgentStageOverride overrides selected runtime settings for a pipeline stage.
 type AgentStageOverride struct {
+	Provider            string            `json:"provider,omitempty"`
+	Command             string            `json:"command,omitempty"`
 	Model               string            `json:"model,omitempty"`
 	ModelProvider       string            `json:"model_provider,omitempty"`
 	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
@@ -155,6 +157,13 @@ type AgentStageOverride struct {
 	AuthToken           string            `json:"-"`
 	Env                 map[string]string `json:"env,omitempty"`
 	Skills              []AgentSkillRef   `json:"skills,omitempty"`
+	AllowedTools        []string          `json:"allowed_tools,omitempty"`
+	DisallowedTools     []string          `json:"disallowed_tools,omitempty"`
+	PermissionMode      string            `json:"permission_mode,omitempty"`
+	SettingSources      []string          `json:"setting_sources,omitempty"`
+	ApprovalPolicy      string            `json:"approval_policy,omitempty"`
+	ThreadSandbox       string            `json:"thread_sandbox,omitempty"`
+	TurnSandboxPolicy   string            `json:"turn_sandbox_policy,omitempty"`
 }
 
 // AgentSkillRef selects an agent skill by name and, when known, absolute path.
@@ -232,6 +241,8 @@ type RetryEntry struct {
 type OrchestratorState struct {
 	PollIntervalMs      int                      `json:"poll_interval_ms"`
 	MaxConcurrentAgents int                      `json:"max_concurrent_agents"`
+	Paused              bool                     `json:"paused"`
+	PausedStages        map[string]struct{}      `json:"paused_stages"`
 	Running             map[string]*RunningEntry `json:"running"`
 	Claimed             map[string]struct{}      `json:"claimed"`
 	RetryAttempts       map[string]*RetryEntry   `json:"retry_attempts"`
@@ -240,10 +251,20 @@ type OrchestratorState struct {
 	CodexRateLimits     map[string]interface{}   `json:"codex_rate_limits"`
 }
 
+// ControlState reports the operator-controlled soft-pause state.
+type ControlState struct {
+	Paused       bool     `json:"paused"`
+	PausedStages []string `json:"paused_stages"`
+}
+
 // RunningEntry tracks an active worker run.
 type RunningEntry struct {
 	Issue                  Issue         `json:"issue"`
 	Session                AgentSession  `json:"session"`
+	Stage                  string        `json:"stage,omitempty"`
+	ExecutionProvider      string        `json:"execution_provider,omitempty"`
+	Model                  string        `json:"model,omitempty"`
+	ModelProvider          string        `json:"model_provider,omitempty"`
 	StartedAt              time.Time     `json:"started_at"`
 	TurnCount              int           `json:"turn_count"`
 	WorkspacePath          string        `json:"workspace_path"`
@@ -264,6 +285,7 @@ type StateSnapshot struct {
 	GeneratedAt                time.Time              `json:"generated_at"`
 	PollIntervalMs             int                    `json:"poll_interval_ms"`
 	MaxConcurrentAgents        int                    `json:"max_concurrent_agents"`
+	Control                    ControlState           `json:"control"`
 	Counts                     StateCounts            `json:"counts"`
 	Health                     ProjectHealth          `json:"health"`
 	Running                    []RunningSnapshot      `json:"running"`
@@ -301,20 +323,24 @@ type ProjectHealth struct {
 
 // RunningSnapshot represents a single running session for the API.
 type RunningSnapshot struct {
-	IssueID         string        `json:"issue_id"`
-	IssueIdentifier string        `json:"issue_identifier"`
-	IssueTitle      string        `json:"issue_title"`
-	IssueURL        *string       `json:"issue_url"`
-	Priority        *int          `json:"priority"`
-	Labels          []string      `json:"labels"`
-	State           string        `json:"state"`
-	SessionID       string        `json:"session_id"`
-	TurnCount       int           `json:"turn_count"`
-	LastEvent       string        `json:"last_event"`
-	LastMessage     string        `json:"last_message"`
-	StartedAt       time.Time     `json:"started_at"`
-	LastEventAt     time.Time     `json:"last_event_at"`
-	Tokens          TokenSnapshot `json:"tokens"`
+	IssueID           string        `json:"issue_id"`
+	IssueIdentifier   string        `json:"issue_identifier"`
+	IssueTitle        string        `json:"issue_title"`
+	IssueURL          *string       `json:"issue_url"`
+	Priority          *int          `json:"priority"`
+	Labels            []string      `json:"labels"`
+	State             string        `json:"state"`
+	Stage             string        `json:"stage,omitempty"`
+	ExecutionProvider string        `json:"execution_provider,omitempty"`
+	Model             string        `json:"model,omitempty"`
+	ModelProvider     string        `json:"model_provider,omitempty"`
+	SessionID         string        `json:"session_id"`
+	TurnCount         int           `json:"turn_count"`
+	LastEvent         string        `json:"last_event"`
+	LastMessage       string        `json:"last_message"`
+	StartedAt         time.Time     `json:"started_at"`
+	LastEventAt       time.Time     `json:"last_event_at"`
+	Tokens            TokenSnapshot `json:"tokens"`
 }
 
 // RetrySnapshot represents a single retry queue entry for the API.
@@ -398,6 +424,7 @@ type ProjectSummary struct {
 	Health                   ProjectHealth `json:"health"`
 	MaxConcurrentAgents      int           `json:"max_concurrent_agents,omitempty"`
 	Counts                   StateCounts   `json:"counts"`
+	Control                  ControlState  `json:"control"`
 	WaitingOnSupervisor      bool          `json:"waiting_on_supervisor,omitempty"`
 	LastSupervisorDeferredAt *time.Time    `json:"last_supervisor_deferred_at,omitempty"`
 	WorkflowWatcherRunning   bool          `json:"workflow_watcher_running"`
@@ -649,8 +676,10 @@ type ModelCatalogEntry struct {
 
 // ModelCatalogResponse reports the latest models returned by a configured provider.
 type ModelCatalogResponse struct {
-	Provider    string              `json:"provider"`
-	EndpointURL string              `json:"endpoint_url"`
-	RefreshedAt time.Time           `json:"refreshed_at"`
-	Models      []ModelCatalogEntry `json:"models"`
+	Provider          string              `json:"provider"`
+	ExecutionProvider string              `json:"execution_provider,omitempty"`
+	Stage             string              `json:"stage,omitempty"`
+	EndpointURL       string              `json:"endpoint_url"`
+	RefreshedAt       time.Time           `json:"refreshed_at"`
+	Models            []ModelCatalogEntry `json:"models"`
 }

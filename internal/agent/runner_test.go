@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kbsartain/simphony/internal/agentruntime"
 	"github.com/kbsartain/simphony/internal/config"
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -558,6 +559,50 @@ func TestRunnerClaudeShimSession(t *testing.T) {
 	}
 }
 
+func TestRunnerStageOverrideSelectsClaudeSDK(t *testing.T) {
+	for _, entry := range mockClaudeEnv() {
+		parts := strings.SplitN(entry, "=", 2)
+		t.Setenv(parts[0], parts[1])
+	}
+
+	runner := NewRunner("Review issue {{ issue.identifier }}: {{ issue.title }}")
+	workspace := &api.Workspace{Path: t.TempDir()}
+	issue := api.Issue{ID: "issue-review", Identifier: "TEST-REVIEW", Title: "Adversarial review", State: "In Review"}
+	cfg := api.AgentRuntimeConfig{
+		Provider:      "codex",
+		Command:       "this-codex-command-must-not-run",
+		Model:         "gpt-coding",
+		ModelProvider: "openai",
+		TurnTimeoutMs: 30000,
+		ReadTimeoutMs: 5000,
+		StageOverrides: map[string]api.AgentStageOverride{
+			"review": {
+				Provider:       "claude",
+				Command:        mockCommand(mockModeNormal),
+				Model:          "claude-opus-review",
+				ModelProvider:  "anthropic",
+				PermissionMode: "acceptEdits",
+			},
+		},
+	}
+
+	var provider string
+	err := runner.Run(context.Background(), issue, workspace, nil, &cfg, api.PipelineStage{Kind: "review"}, 1, nil, func(event api.AgentEvent) {
+		if event.Event == "session_started" && event.Payload != nil {
+			provider, _ = event.Payload["provider"].(string)
+		}
+	})
+	if err != nil {
+		t.Fatalf("review stage run: %v", err)
+	}
+	if provider != "claude" {
+		t.Fatalf("session provider = %q, want claude", provider)
+	}
+	if cfg.Provider != "codex" || cfg.Command != "this-codex-command-must-not-run" {
+		t.Fatalf("base runtime mutated: %+v", cfg)
+	}
+}
+
 func TestRunnerMaxTurnsReached(t *testing.T) {
 	for _, e := range mockEnv(mockModeNormal) {
 		os.Setenv(strings.SplitN(e, "=", 2)[0], strings.SplitN(e, "=", 2)[1])
@@ -782,7 +827,7 @@ func TestBuildParamsIncludeModelSelection(t *testing.T) {
 		t.Fatalf("turn effort = %v, want high", turnParams["effort"])
 	}
 
-	reviewCfg := effectiveCodexConfig(cfg, api.PipelineStage{Kind: "review"})
+	reviewCfg := agentruntime.EffectiveConfig(cfg, api.PipelineStage{Kind: "review"})
 	if reviewCfg.Model != "claude-opus-4.1" {
 		t.Fatalf("review model = %q, want claude-opus-4.1", reviewCfg.Model)
 	}
@@ -801,6 +846,66 @@ func TestBuildParamsIncludeModelSelection(t *testing.T) {
 	reviewTurnParams := buildTurnStartParams("thread-1", workspace, &reviewCfg, "review", nil, nil)
 	if reviewTurnParams["model"] != "claude-opus-4.1" || reviewTurnParams["effort"] != "xhigh" {
 		t.Fatalf("review turn params = %v, want review model and xhigh effort", reviewTurnParams)
+	}
+}
+
+func TestEffectiveRuntimeConfigSwitchesSDKWithoutLeakingProviderSettings(t *testing.T) {
+	cfg := &api.AgentRuntimeConfig{
+		Provider:          "codex",
+		Command:           "custom-codex app-server",
+		Model:             "gpt-coding",
+		ModelProvider:     "openai",
+		EndpointURL:       "https://openai.example/v1",
+		APIKey:            "openai-key",
+		APIKeyConfigured:  true,
+		ApprovalPolicy:    "never",
+		ThreadSandbox:     "danger-full-access",
+		TurnSandboxPolicy: "danger-full-access",
+		TurnTimeoutMs:     1234,
+		ReadTimeoutMs:     5678,
+		StallTimeoutMs:    9012,
+		Env:               map[string]string{"OPENAI_BASE_URL": "should-not-cross", "COMMON_FLAG": "base"},
+		Skills:            []api.AgentSkillRef{{Name: "shared-review"}},
+		StageOverrides: map[string]api.AgentStageOverride{
+			"review": {
+				Provider:          "claude",
+				Model:             "claude-opus-test",
+				ModelProvider:     "anthropic",
+				APIKey:            "anthropic-key",
+				APIKeyConfigured:  true,
+				PermissionMode:    "acceptEdits",
+				AllowedTools:      []string{"Read", "Bash"},
+				SettingSources:    []string{"project"},
+				Env:               map[string]string{"STAGE_ONLY": "review"},
+				TurnSandboxPolicy: "workspace-write",
+			},
+		},
+	}
+
+	effective := agentruntime.EffectiveConfig(cfg, api.PipelineStage{Kind: "review"})
+	if effective.Provider != "claude" || effective.Command != "" {
+		t.Fatalf("effective provider/command = %q/%q, want claude with embedded shim", effective.Provider, effective.Command)
+	}
+	if effective.Model != "claude-opus-test" || effective.ModelProvider != "anthropic" || effective.APIKey != "anthropic-key" {
+		t.Fatalf("effective Claude routing = %+v", effective)
+	}
+	if effective.EndpointURL != "" || effective.AuthToken != "" || effective.ThreadSandbox != "none" {
+		t.Fatalf("Codex-only routing or sandbox leaked into Claude: %+v", effective)
+	}
+	if effective.PermissionMode != "acceptEdits" || effective.TurnSandboxPolicy != "workspace-write" {
+		t.Fatalf("Claude stage controls = %+v", effective)
+	}
+	if len(effective.Env) != 1 || effective.Env["STAGE_ONLY"] != "review" {
+		t.Fatalf("cross-provider env = %+v, want only stage env", effective.Env)
+	}
+	if len(effective.Skills) != 1 || effective.Skills[0].Name != "shared-review" {
+		t.Fatalf("shared skills = %+v", effective.Skills)
+	}
+	if effective.TurnTimeoutMs != 1234 || effective.ReadTimeoutMs != 5678 || effective.StallTimeoutMs != 9012 {
+		t.Fatalf("operational timeouts = %d/%d/%d", effective.TurnTimeoutMs, effective.ReadTimeoutMs, effective.StallTimeoutMs)
+	}
+	if cfg.Command != "custom-codex app-server" || cfg.Env["COMMON_FLAG"] != "base" {
+		t.Fatalf("base config mutated: %+v", cfg)
 	}
 }
 

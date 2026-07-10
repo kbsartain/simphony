@@ -26,6 +26,11 @@ export interface StateCounts {
   completed: number;
 }
 
+export interface ControlState {
+  paused: boolean;
+  paused_stages: string[];
+}
+
 export interface HealthIssue {
   code: string;
   severity: string;
@@ -55,6 +60,10 @@ export interface RunningSnapshot {
   priority: number | null;
   labels: string[];
   state: string;
+  stage?: string;
+  execution_provider?: string;
+  model?: string;
+  model_provider?: string;
   session_id: string;
   turn_count: number;
   last_event: string;
@@ -84,6 +93,7 @@ export interface StateSnapshot {
   generated_at: string;
   poll_interval_ms: number;
   max_concurrent_agents: number;
+  control: ControlState;
   counts: StateCounts;
   health: ProjectHealth;
   running: RunningSnapshot[];
@@ -120,6 +130,7 @@ export interface ProjectSummary {
   health: ProjectHealth;
   max_concurrent_agents?: number;
   counts: StateCounts;
+  control: ControlState;
   waiting_on_supervisor?: boolean;
   last_supervisor_deferred_at?: string;
   workflow_watcher_running: boolean;
@@ -389,6 +400,8 @@ export type CodexConfig = AgentRuntimeConfig;
 export type ClaudeConfig = AgentRuntimeConfig;
 
 export interface CodexStageOverride {
+  provider?: string;
+  command?: string;
   model?: string;
   model_provider?: string;
   reasoning_effort?: string;
@@ -397,6 +410,13 @@ export interface CodexStageOverride {
   auth_token_configured?: boolean;
   env?: Record<string, string>;
   skills?: CodexSkillRef[];
+  allowed_tools?: string[];
+  disallowed_tools?: string[];
+  permission_mode?: string;
+  setting_sources?: string[];
+  approval_policy?: string;
+  thread_sandbox?: string;
+  turn_sandbox_policy?: string;
 }
 
 export interface CodexSkillRef {
@@ -450,6 +470,8 @@ export interface ModelCatalogEntry {
 
 export interface ModelCatalogResponse {
   provider: string;
+  execution_provider?: string;
+  stage?: string;
   endpoint_url: string;
   refreshed_at: string;
   models: ModelCatalogEntry[];

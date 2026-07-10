@@ -48,6 +48,8 @@ type ObservableRuntime interface {
 	Snapshot() (api.StateSnapshot, bool)
 	IssueDetail(identifier string) (api.IssueDetailResponse, bool)
 	Refresh() (api.RefreshResponse, bool)
+	SetProjectPaused(paused bool) (api.ControlState, bool)
+	SetStagePaused(stage string, paused bool) (api.ControlState, bool, error)
 	WorkflowSettings() (WorkflowSettings, error)
 	UpdateWorkflowSettings(req api.SettingsUpdateRequest) (WorkflowSettings, error)
 	ValidateTrackerSettings(req api.SettingsUpdateRequest) (api.SettingsValidationResponse, error)

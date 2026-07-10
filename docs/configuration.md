@@ -83,7 +83,7 @@ tracker:
 ```
 
 - `kind` is required and currently supports `linear`.
-- `api_key` is required. Values beginning with `$` are resolved from the environment.
+- `api_key` is required. Values beginning with `$` are resolved from the environment. Literal values are rejected at config-load time to prevent credentials from being committed to workflow files.
 - `project_slug` is required for Linear.
 - `endpoint` defaults to Linear's GraphQL endpoint.
 - `active_states` defaults to `Todo` and `In Progress`; the configured pipeline merge state is added automatically.
@@ -222,9 +222,29 @@ agent_runtime:
 
 Common fields in `agent_runtime` override provider-specific defaults from `codex:` or `claude:`. This lets a workflow switch SDKs by changing one selector while keeping shared model, endpoint, token, timeout, and stage settings in one place.
 
-`endpoint_url`, `api_key`, `auth_token`, and `env` values beginning with `$` are resolved from environment variables. Secrets are passed only to the agent subprocess environment and are omitted from the resolved API JSON. For `provider: codex`, `api_key` maps to `OPENAI_API_KEY` and `endpoint_url` maps to `OPENAI_BASE_URL`. For `provider: claude`, `api_key` maps to `ANTHROPIC_API_KEY` and `endpoint_url` maps to `ANTHROPIC_BASE_URL`.
+`endpoint_url`, `api_key`, `auth_token`, and `env` values beginning with `$` are resolved from environment variables. Literal values in `api_key` and `auth_token` are rejected at config-load time with `literal_secret_in_config`. Secrets are passed only to the agent subprocess environment and are omitted from the resolved API JSON. For `provider: codex`, `api_key` maps to `OPENAI_API_KEY` and `endpoint_url` maps to `OPENAI_BASE_URL`. For `provider: claude`, `api_key` maps to `ANTHROPIC_API_KEY` and `endpoint_url` maps to `ANTHROPIC_BASE_URL`.
 
-`agent_runtime.provider` is selected once per project and applies to every stage in that project. `stage_overrides` can change model routing within that SDK for `coding`, `review`, `review_resolution`, and `merge`. Stage overrides support `model`, `model_provider`, `reasoning_effort`, `endpoint_url`, `api_key`, `auth_token`, `env`, and `skills`. Use stage-level endpoint and credential overrides when stages target different direct provider endpoints, such as Kimi for coding and OpenAI for review. If all models are available through one router endpoint, the top-level endpoint and key can be shared.
+`agent_runtime.provider` is the project default. A `stage_overrides` entry may set its own execution `provider` to `codex` or `claude` for `coding`, `review`, `review_resolution`, or `merge`. This is a new provider-native session at the stage boundary; Simphony passes the existing workspace, Git history, issue, and tracker state rather than attempting to transfer a live SDK thread.
+
+Stage overrides support `provider`, `command`, `model`, `model_provider`, `reasoning_effort`, `endpoint_url`, `api_key`, `auth_token`, `env`, `skills`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `setting_sources`, `approval_policy`, `thread_sandbox`, and `turn_sandbox_policy`. When a stage changes execution provider, Simphony recomputes provider-specific command, credential, permission, and sandbox defaults before applying the stage values. It does not inherit the other provider's model, endpoint, credentials, environment, command, or sandbox settings. Shared skills and operational timeout limits remain available.
+
+For example, coding can use Codex while review uses the Claude Agent SDK:
+
+```yaml
+agent_runtime:
+  provider: codex
+  model: gpt-5.6
+
+  stage_overrides:
+    review:
+      provider: claude
+      model: claude-opus-4.7
+      api_key: $ANTHROPIC_API_KEY
+      permission_mode: acceptEdits
+      allowed_tools: [Read, Edit, Bash]
+```
+
+Omit the Claude stage `command` to use Simphony's embedded Node.js SDK shim. Set it only for a custom wrapper. Use stage-level endpoint and credential overrides when stages target different provider endpoints. If every stage stays on one SDK and all models are available through one router endpoint, the top-level endpoint and key can still be shared.
 
 Use these fields for OpenAI-compatible or Anthropic-compatible gateways:
 
@@ -299,7 +319,9 @@ Provider presets describe connection defaults, not protocol compatibility guaran
 
 `skills` selects default Codex skills for every stage. `stage_overrides.<stage>.skills` adds stage-specific skills. Skill entries can be simple names, which Simphony resolves through Codex `skills/list` at runtime, or objects with `name` and `path` when you want to pin a specific local `SKILL.md`. Resolved skills are sent as Codex skill input items on each turn; unresolved names are included in the prompt as visible guidance.
 
-By default, `pipeline.review_state` is a handoff state. To make `In Review` an agent-run internal review stage, include the review state in `tracker.active_states`, then configure `codex.stage_overrides.review.reasoning_effort: xhigh` or a review-specific model.
+By default, `pipeline.review_state` is a durable human-review gate because it is omitted from `tracker.active_states`. An issue can enter `In Review`, but Simphony will not dispatch a review agent even after a process restart. Add the review state to `tracker.active_states` only when review should be agent-run, then configure `agent_runtime.stage_overrides.review.reasoning_effort: xhigh` or a review-specific model.
+
+Dashboard stage pauses are temporary operator controls and remain in memory only. A pause lets in-flight work finish while blocking new dispatches and retries for that stage, and it clears when Simphony restarts. Keep the review state out of `tracker.active_states` when the gate must survive restarts or require a human to advance the tracker state.
 
 `approval_policy: auto` is mapped to Codex protocol value `never`.
 

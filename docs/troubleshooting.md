@@ -11,6 +11,7 @@ Look for errors containing:
 - `unsupported_tracker_kind`
 - `missing_tracker_api_key`
 - `missing_tracker_project_slug`
+- `literal_secret_in_config`
 
 Checks:
 
@@ -19,6 +20,7 @@ Checks:
 - Confirm `tracker.kind` is `linear`.
 - Confirm `LINEAR_API_KEY` is set when `tracker.api_key` is `$LINEAR_API_KEY`.
 - Confirm `tracker.project_slug` is a real Linear project slug, not the example placeholder.
+- Confirm every `api_key` and `auth_token` value starts with `$`. Literal credentials are rejected at config-load time.
 
 ## No Issues Are Dispatched
 
