@@ -23,6 +23,7 @@ This document is the durable implementation and session-handoff record for near-
 6. A primary use case is adversarial review: implementation and review should be able to use different model families, providers, credentials, and execution SDKs.
 7. A stage switch does not transfer a live thread between SDKs. The repository workspace, Git history, issue data, and tracker state are the handoff boundary.
 8. Workflow hot reload must allow an operator to pause a stage, change its runtime/model configuration, and resume it without restarting the project.
+9. `projects[].start_paused` is the durable project startup policy. Runtime pause/resume remains in memory; stage pauses are never persisted.
 
 ## Original Capability Baseline
 
@@ -42,7 +43,7 @@ This document is the durable implementation and session-handoff record for near-
 - [x] Add project-level paused state to the running orchestrator.
 - [x] Add a paused-stage set keyed by normalized pipeline stage name.
 - [x] Expose paused state and paused stages in project/state snapshots.
-- [x] Decide and document restart semantics. Runtime pauses are in-memory and clear on process restart; durable human gates continue to use tracker/workflow configuration.
+- [x] Decide and document restart semantics. Runtime control mutations are in memory; on restart a project returns to registry `start_paused`, while stage pauses clear and durable human gates continue to use tracker/workflow configuration.
 - [x] Confirm no operator-action audit structure currently exists; do not add a database solely for pause attribution.
 
 Acceptance criteria:
@@ -104,6 +105,14 @@ POST /api/v1/projects/{project_id}/stages/{stage}/resume
 - [x] Add dashboard type/build coverage and browser-based visual verification.
 - [x] Document soft-pause semantics, restart behavior, and the difference between Pause and Stop.
 - [x] Document the static `tracker.active_states` human-review gate as a durable alternative.
+
+#### `PAUSE-6` Durable startup policy
+
+- [x] Add `projects[].start_paused` to the registry model and public project summaries.
+- [x] Apply startup pause before the orchestrator poll loop can dispatch backlog work.
+- [x] Preserve normal soft-pause semantics: polling and reconciliation continue, in-flight work is not terminated, and runtime resume does not rewrite the registry.
+- [x] Configure the active `simphony` and `geekli` projects with `start_paused: true`.
+- [x] Add deterministic configuration and pre-start dispatch tests.
 
 ### Phase 2: True Per-Stage Agent SDK Selection
 
@@ -217,11 +226,11 @@ This backlog is complete when:
 
 ## Session Handoff
 
-Current status: all three phases in this backlog are implemented. Stage configuration and the dashboard can select Codex or Claude with provider-specific command/tool/permission/sandbox fields; preflight checks stage SDK commands and explicit credential references; deterministic tests cover cross-provider lifecycle and paused hot reload; hook failures retain bounded head-and-tail output; and the recovered GitHub PR gate now tolerates delayed check registration while distinguishing missing, failed, and timed-out checks.
+Current status: all three original phases plus durable project startup pause are implemented. Stage configuration and the dashboard can select Codex or Claude with provider-specific command/tool/permission/sandbox fields; preflight checks stage SDK commands and explicit credential references; deterministic tests cover cross-provider lifecycle, paused hot reload, and pre-start dispatch gating; hook failures retain bounded head-and-tail output; and the recovered GitHub PR gate tolerates delayed check registration while distinguishing missing, failed, and timed-out checks.
 
 CON-199 recovery: the literal-secret validation guard, error code, focused tests, fixture updates, and documentation were ported into this checkout. The proposed deletion/untracking of root `WORKFLOW.md` was not copied because this checkout still uses that file; workflow relocation remains a separate migration decision. The original CON-199 worktree remains outside this managed checkout.
 
-Recommended next task: run the recovered merge gate against a sandbox repository with real GitHub Actions before enabling `github.enabled` for a production project.
+Real merge-gate verification: the dedicated private `kbsartain/simphony-merge-gate-sandbox` repository exercised `MergeIssueBranchViaGitHubPR` against a real pull-request Actions check. PR #1 passed `Verify sandbox change`, was squash-merged by Simphony, and local `main` refreshed successfully. Keep `github.enabled` opt-in per production project until its branch protections and required checks are reviewed.
 
 Latest verification:
 
@@ -231,6 +240,8 @@ cd dashboard && npm run build
 ```
 
 Result: all Go packages and the dashboard TypeScript/Vite production build passed on 2026-07-10. Browser verification also passed against a local mock API. A race-enabled orchestrator run was attempted but could not build because `gcc` is not installed on this Windows environment.
+
+The real GitHub integration test `TestGitHubMergeGateIntegration` also passed in 25.59 seconds when run with `SIMPHONY_GITHUB_GATE_REPO` pointing at the dedicated sandbox. It is skipped during ordinary local test runs unless that environment variable is set.
 
 Files changed for this backlog capture:
 

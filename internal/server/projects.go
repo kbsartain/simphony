@@ -338,6 +338,7 @@ func (s *ProjectServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 			Name:                   summary.Name,
 			WorkflowPath:           summary.WorkflowPath,
 			Enabled:                summary.Enabled,
+			StartPaused:            summary.StartPaused,
 			Running:                summary.Running,
 			LastError:              summary.LastError,
 			Health:                 summary.Health,
@@ -903,6 +904,7 @@ func registryResponse(registry *config.ProjectRegistry) (api.RegistryResponse, e
 			Name:                item.Name,
 			WorkflowPath:        item.WorkflowPath,
 			Enabled:             item.Enabled,
+			StartPaused:         item.StartPaused,
 			MaxConcurrentAgents: item.MaxConcurrentAgents,
 		})
 	}
@@ -1012,6 +1014,7 @@ func (s *ProjectServer) createRegistryProject(req api.RegistryProjectCreateReque
 		Name:                nextProject.Name,
 		WorkflowPath:        nextProject.WorkflowPath,
 		Enabled:             nextProject.Enabled,
+		StartPaused:         nextProject.StartPaused,
 		MaxConcurrentAgents: nextProject.MaxConcurrentAgents,
 	}
 	return api.RegistryProjectCreateResponse{
@@ -1116,6 +1119,7 @@ func (s *ProjectServer) updateRegistryProject(projectID string, req api.Registry
 		Name:                nextProject.Name,
 		WorkflowPath:        nextProject.WorkflowPath,
 		Enabled:             nextProject.Enabled,
+		StartPaused:         nextProject.StartPaused,
 		MaxConcurrentAgents: nextProject.MaxConcurrentAgents,
 	}
 	return api.RegistryProjectUpdateResponse{

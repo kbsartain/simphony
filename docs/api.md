@@ -125,7 +125,7 @@ Returns the current orchestrator snapshot.
 
 ## Soft Pause Controls
 
-Pause controls are idempotent and affect only future work. Running agents are not cancelled. Polling, reconciliation, event handling, and normal completion of in-flight work continue while paused. Runtime pauses are in memory and clear when the process restarts.
+Pause controls are idempotent and affect only future work. Running agents are not cancelled. Polling, reconciliation, event handling, and normal completion of in-flight work continue while paused. Runtime changes are in memory; after a process restart, each project returns to its registry `start_paused` policy and stage pauses clear.
 
 Pause is distinct from stopping a project runtime. Pause keeps the runtime, polling, reconciliation, hot reload, and in-flight workers alive while gating new dispatches and retries. Stop shuts down the runtime and cancels its workers. Use Pause for temporary operator intervention; use Stop only when the runtime itself should be taken offline.
 

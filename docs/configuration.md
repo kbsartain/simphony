@@ -52,6 +52,16 @@ Use `simphony validate -config ./simphony.yaml` to validate the registry and ena
 
 The dashboard Project Setup page can persist registry edits back to `simphony.yaml`. It supports project add/edit/remove, server defaults, global and per-project concurrency caps, isolation guardrails, and global `agent_runtime` defaults. These registry edits are restart-required for running workers. Agent runtime API key and auth-token fields are write-only in the UI: leaving them blank preserves the existing registry value, while entering a value replaces it.
 
+Set `start_paused: true` on a project registry entry when Simphony should start the runtime, continue polling and reconciliation, but dispatch no new work until an operator resumes the project. The startup pause is applied before the first poll loop begins, so an existing backlog cannot race the pause. It is the durable startup policy; resuming through the dashboard or API changes only the current in-memory runtime and does not rewrite `simphony.yaml`.
+
+```yaml
+projects:
+  - id: geekli
+    name: Geekli
+    workflow_path: ../geekli/WORKFLOW.md
+    start_paused: true
+```
+
 Registry-level `concurrency.max_concurrent_agents` is a supervisor-owned cap across all enabled projects. For example, `max_concurrent_agents: 10` means at most ten total agent sessions can run across the full multi-project process, even if each project's `WORKFLOW.md` allows more local concurrency.
 
 `concurrency.default_project_max_concurrent_agents` fills `agent.max_concurrent_agents` for project workflows that do not set their own local limit. `projects[].max_concurrent_agents` is stricter: it caps that specific project even if its `WORKFLOW.md` requests a higher value.
@@ -345,7 +355,7 @@ Provider presets describe connection defaults, not protocol compatibility guaran
 
 By default, `pipeline.review_state` is a durable human-review gate because it is omitted from `tracker.active_states`. An issue can enter `In Review`, but Simphony will not dispatch a review agent even after a process restart. Add the review state to `tracker.active_states` only when review should be agent-run, then configure `agent_runtime.stage_overrides.review.reasoning_effort: xhigh` or a review-specific model.
 
-Dashboard stage pauses are temporary operator controls and remain in memory only. A pause lets in-flight work finish while blocking new dispatches and retries for that stage, and it clears when Simphony restarts. Keep the review state out of `tracker.active_states` when the gate must survive restarts or require a human to advance the tracker state.
+Dashboard stage pauses and changes made with the runtime pause API remain in memory only. A pause lets in-flight work finish while blocking new dispatches and retries for that stage. On restart, a project returns to the registry's `start_paused` policy; stage pauses always clear. Keep the review state out of `tracker.active_states` when the gate must survive restarts or require a human to advance the tracker state.
 
 `approval_policy: auto` is mapped to Codex protocol value `never`.
 

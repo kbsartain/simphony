@@ -333,8 +333,12 @@ func isSecretLogEnvName(key string) bool {
 // Start initializes state, performs startup cleanup, and begins the poll loop.
 func (o *Orchestrator) Start() {
 	o.mu.Lock()
-	o.state.Paused = false
-	o.state.PausedStages = make(map[string]struct{})
+	// Preserve controls applied before Start so registry startup policy is in
+	// force before the poll loop can dispatch. A newly constructed orchestrator
+	// still begins unpaused because its zero-value control state is empty.
+	if o.state.PausedStages == nil {
+		o.state.PausedStages = make(map[string]struct{})
+	}
 	o.state.Running = make(map[string]*api.RunningEntry)
 	o.state.Claimed = make(map[string]struct{})
 	o.state.RetryAttempts = make(map[string]*api.RetryEntry)

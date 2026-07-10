@@ -435,6 +435,7 @@ type ProjectSummary struct {
 	Name                     string        `json:"name"`
 	WorkflowPath             string        `json:"workflow_path"`
 	Enabled                  bool          `json:"enabled"`
+	StartPaused              bool          `json:"start_paused"`
 	Running                  bool          `json:"running"`
 	LastError                string        `json:"last_error,omitempty"`
 	Health                   ProjectHealth `json:"health"`
@@ -627,6 +628,7 @@ type RegistryProjectSummary struct {
 	Name                string `json:"name"`
 	WorkflowPath        string `json:"workflow_path"`
 	Enabled             bool   `json:"enabled"`
+	StartPaused         bool   `json:"start_paused"`
 	MaxConcurrentAgents int    `json:"max_concurrent_agents,omitempty"`
 }
 

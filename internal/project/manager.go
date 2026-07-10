@@ -75,6 +75,7 @@ type RuntimeSummary struct {
 	Name                   string
 	WorkflowPath           string
 	Enabled                bool
+	StartPaused            bool
 	Running                bool
 	LastError              string
 	Health                 api.ProjectHealth
@@ -220,6 +221,7 @@ func (m *Manager) Summaries() []RuntimeSummary {
 			Name:                   project.Name,
 			WorkflowPath:           project.WorkflowPath,
 			Enabled:                project.Enabled,
+			StartPaused:            project.StartPaused,
 			Running:                false,
 			LastError:              lastError,
 			Health:                 startupHealth(project.Enabled, lastError),
@@ -303,6 +305,7 @@ func summaryFromRuntime(runtime ManagedRuntime, running bool, lastError string) 
 		Name:                   project.Name,
 		WorkflowPath:           project.WorkflowPath,
 		Enabled:                project.Enabled,
+		StartPaused:            project.StartPaused,
 		Running:                running,
 		LastError:              lastError,
 		Health:                 health,

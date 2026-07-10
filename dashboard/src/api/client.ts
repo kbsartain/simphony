@@ -76,6 +76,7 @@ export async function createRegistryProject(request: RegistryProjectCreateReques
       name: response.project?.name || response.project?.id || 'Unnamed project',
       workflow_path: response.project?.workflow_path || '',
       enabled: Boolean(response.project?.enabled),
+      start_paused: Boolean(response.project?.start_paused),
       max_concurrent_agents: response.project?.max_concurrent_agents || 0,
     },
     command: response.command || '',
@@ -195,6 +196,7 @@ function normalizeProjectSummary(project: ProjectSummary): ProjectSummary {
     name: project.name || project.id || 'Unnamed project',
     workflow_path: project.workflow_path || '',
     enabled: Boolean(project.enabled),
+    start_paused: Boolean(project.start_paused),
     running: Boolean(project.running),
     last_error: project.last_error || '',
     health: normalizeProjectHealth(project.health),
@@ -250,6 +252,7 @@ function normalizeRegistryProject(project: RegistryResponse['projects'][number])
     name: project?.name || project?.id || 'Unnamed project',
     workflow_path: project?.workflow_path || '',
     enabled: Boolean(project?.enabled),
+    start_paused: Boolean(project?.start_paused),
     max_concurrent_agents: project?.max_concurrent_agents || 0,
   }
 }

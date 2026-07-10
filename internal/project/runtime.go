@@ -72,6 +72,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.cfg = cfg
 	r.runner = runner
 	r.orch = orch
+	if r.project.StartPaused {
+		r.orch.SetProjectPaused(true)
+	}
 	r.orch.Start()
 	r.started = true
 

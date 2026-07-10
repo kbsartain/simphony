@@ -62,6 +62,7 @@ projects:
   - id: alpha
     name: Alpha Project
     workflow_path: workflows/alpha/WORKFLOW.md
+    start_paused: true
   - id: beta
     workflow_path: workflows/beta/WORKFLOW.md
     enabled: false
@@ -106,7 +107,7 @@ projects:
 		t.Fatalf("projects len = %d, want 2", len(registry.Projects))
 	}
 	alpha := registry.Projects[0]
-	if alpha.ID != "alpha" || alpha.Name != "Alpha Project" || !alpha.Enabled {
+	if alpha.ID != "alpha" || alpha.Name != "Alpha Project" || !alpha.Enabled || !alpha.StartPaused {
 		t.Fatalf("unexpected alpha project: %+v", alpha)
 	}
 	if !filepath.IsAbs(alpha.WorkflowPath) {

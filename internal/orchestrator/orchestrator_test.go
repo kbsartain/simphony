@@ -388,6 +388,41 @@ func TestOrchestrator_ProjectSoftPauseDefersAndResumeDispatches(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_ProjectSoftPauseAppliedBeforeStartPreventsInitialDispatch(t *testing.T) {
+	tracker := &mockTracker{}
+	tracker.setCandidates([]api.Issue{{ID: "1", Identifier: "A-1", Title: "First", State: "Todo"}})
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1}
+	cfg := defaultConfig()
+	cfg.Polling.IntervalMs = 10_000
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.SetProjectPaused(true)
+	orch.Start()
+	defer orch.Stop()
+	orch.Refresh()
+	time.Sleep(100 * time.Millisecond)
+
+	runner.mu.Lock()
+	runsWhilePaused := len(runner.runs)
+	runner.mu.Unlock()
+	if runsWhilePaused != 0 {
+		t.Fatalf("runs while initially paused = %d, want 0", runsWhilePaused)
+	}
+	if snap := orch.Snapshot(); !snap.Control.Paused || snap.LastDispatchDeferredReason != "project_paused" {
+		t.Fatalf("snapshot control = %+v deferred=%q, want startup project pause", snap.Control, snap.LastDispatchDeferredReason)
+	}
+
+	orch.SetProjectPaused(false)
+	time.Sleep(100 * time.Millisecond)
+	runner.mu.Lock()
+	runsAfterResume := len(runner.runs)
+	runner.mu.Unlock()
+	if runsAfterResume != 1 {
+		t.Fatalf("runs after startup pause resume = %d, want 1", runsAfterResume)
+	}
+}
+
 func TestOrchestrator_StageSoftPauseRecognizesEveryPipelineStage(t *testing.T) {
 	stages := []string{"coding", "review", "review_resolution", "merge"}
 

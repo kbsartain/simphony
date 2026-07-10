@@ -125,6 +125,7 @@ export interface ProjectSummary {
   name: string;
   workflow_path: string;
   enabled: boolean;
+  start_paused: boolean;
   running: boolean;
   last_error?: string;
   health: ProjectHealth;
@@ -281,6 +282,7 @@ export interface RegistryProjectSummary {
   name: string;
   workflow_path: string;
   enabled: boolean;
+  start_paused: boolean;
   max_concurrent_agents?: number;
 }
 
