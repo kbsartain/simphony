@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -177,7 +178,9 @@ func splitExecutable(command string) (string, string) {
 }
 
 func isCodexExecutable(path string) bool {
-	base := strings.ToLower(filepath.Base(strings.TrimSpace(path)))
+	// filepath.Base follows the host OS, so normalize Windows separators before
+	// classifying a configured Windows executable on Linux CI or tooling hosts.
+	base := strings.ToLower(pathpkg.Base(strings.ReplaceAll(strings.TrimSpace(path), `\`, "/")))
 	return base == "codex" || base == "codex.exe" || (strings.HasPrefix(base, "codex-") && strings.HasSuffix(base, ".exe"))
 }
 

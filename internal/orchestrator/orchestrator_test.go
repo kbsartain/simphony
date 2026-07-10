@@ -1645,7 +1645,7 @@ func TestOrchestrator_RecordsEffectiveStageSDKAndModel(t *testing.T) {
 	cfg.AgentRuntime.Model = "gpt-coding"
 	cfg.AgentRuntime.ModelProvider = "openai"
 	cfg.AgentRuntime.StageOverrides = map[string]api.AgentStageOverride{
-		"review": {Provider: "claude", Model: "claude-opus-review", ModelProvider: "anthropic"},
+		"review": {Provider: "claude", Command: "go version", Model: "claude-opus-review", ModelProvider: "anthropic"},
 	}
 
 	orch := New(cfg, tracker, wsMgr, runner)
