@@ -8,9 +8,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/kbsartain/simphony/internal/agentruntime"
+	"github.com/kbsartain/simphony/internal/codexcmd"
 	"github.com/kbsartain/simphony/pkg/api"
 )
 
@@ -36,10 +39,147 @@ func Check(cfg *api.WorkflowConfig) api.ProjectHealth {
 		return blocked(now, "config_missing", "Project configuration is not loaded", "", "Resolve the project workflow before dispatching work.")
 	}
 
-	addCommandCheck(&health, cfg.AgentRuntime.Command)
+	addRuntimeCommandCheck(&health, cfg.AgentRuntime, "")
+	addRuntimeCredentialCheck(&health, cfg.AgentRuntime, "")
+	stages := make([]string, 0, len(cfg.AgentRuntime.StageOverrides))
+	for stage := range cfg.AgentRuntime.StageOverrides {
+		stages = append(stages, stage)
+	}
+	sort.Strings(stages)
+	for _, stage := range stages {
+		override := cfg.AgentRuntime.StageOverrides[stage]
+		if strings.TrimSpace(override.Provider) == "" && strings.TrimSpace(override.Command) == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured {
+			continue
+		}
+		effective := agentruntime.EffectiveConfig(&cfg.AgentRuntime, api.PipelineStage{Kind: stage})
+		addRuntimeCommandCheck(&health, effective, stage)
+		addRuntimeCredentialCheck(&health, effective, stage)
+	}
+	addVerifyCommandsCheck(&health, cfg.Verify.Commands)
+	addGitHubCLICheck(&health, &cfg.GitHub)
 	addWorkspaceCheck(&health, &cfg.Workspace)
 	finalize(&health)
 	return health
+}
+
+func addVerifyCommandsCheck(health *api.ProjectHealth, commands []string) {
+	seen := make(map[string]struct{})
+	for _, command := range commands {
+		trimmed := strings.TrimSpace(command)
+		if trimmed == "" || containsShellOperators(trimmed) {
+			continue
+		}
+		executable := commandExecutable(trimmed)
+		if executable == "" || isShellBuiltin(executable) {
+			continue
+		}
+		if _, ok := seen[executable]; ok {
+			continue
+		}
+		seen[executable] = struct{}{}
+		if _, err := exec.LookPath(executable); err != nil {
+			addIssue(health, api.HealthIssue{
+				Code:       "verify_command_not_found",
+				Severity:   SeverityBlocker,
+				Message:    "A verify.commands executable was not found on PATH",
+				Detail:     executable,
+				Suggestion: fmt.Sprintf("Install %s or make it available to the Simphony process before enabling merge verification.", executable),
+			})
+		}
+	}
+}
+
+func containsShellOperators(command string) bool {
+	for _, operator := range []string{"&&", "||", "|", ";", "$(", "`", ">", "<"} {
+		if strings.Contains(command, operator) {
+			return true
+		}
+	}
+	return false
+}
+
+func isShellBuiltin(name string) bool {
+	switch strings.ToLower(filepath.Base(name)) {
+	case "cd", "echo", "set", "export", "source", "exit", "if", "for", "while", "test", "[":
+		return true
+	default:
+		return false
+	}
+}
+
+func addGitHubCLICheck(health *api.ProjectHealth, cfg *api.GitHubConfig) {
+	if cfg == nil || !cfg.Enabled {
+		return
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		addIssue(health, api.HealthIssue{
+			Code:       "github_cli_not_found",
+			Severity:   SeverityBlocker,
+			Message:    "github.enabled is true but the gh CLI was not found on PATH",
+			Suggestion: "Install GitHub CLI, or disable the GitHub PR merge gate.",
+		})
+		return
+	}
+	var out bytes.Buffer
+	cmd := exec.Command("gh", "auth", "status")
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		addIssue(health, api.HealthIssue{
+			Code:       "github_cli_not_authenticated",
+			Severity:   SeverityBlocker,
+			Message:    "gh CLI is installed but not authenticated",
+			Detail:     strings.TrimSpace(out.String()),
+			Suggestion: "Run `gh auth login` for the account used by Simphony.",
+		})
+	}
+}
+
+func addRuntimeCommandCheck(health *api.ProjectHealth, runtime api.AgentRuntimeConfig, stage string) {
+	command := runtime.Command
+	if strings.EqualFold(strings.TrimSpace(runtime.Provider), "claude") && strings.TrimSpace(command) == "" {
+		// The Claude runner materializes an embedded SDK shim and launches it
+		// through Node when no custom wrapper command is configured.
+		command = "node"
+	}
+	before := len(health.Issues)
+	addCommandCheck(health, command)
+	annotateStageIssues(health, before, stage)
+}
+
+func addRuntimeCredentialCheck(health *api.ProjectHealth, runtime api.AgentRuntimeConfig, stage string) {
+	before := len(health.Issues)
+	if runtime.APIKeyConfigured && strings.TrimSpace(runtime.APIKey) == "" {
+		addIssue(health, api.HealthIssue{
+			Code:       "agent_api_key_unresolved",
+			Severity:   SeverityBlocker,
+			Message:    "Configured agent API key resolved to an empty value",
+			Suggestion: "Set the referenced environment variable, or remove api_key to use an authenticated local SDK session.",
+		})
+	}
+	if runtime.AuthTokenConfigured && strings.TrimSpace(runtime.AuthToken) == "" {
+		addIssue(health, api.HealthIssue{
+			Code:       "agent_auth_token_unresolved",
+			Severity:   SeverityBlocker,
+			Message:    "Configured agent auth token resolved to an empty value",
+			Suggestion: "Set the referenced environment variable, or remove auth_token to use an authenticated local SDK session.",
+		})
+	}
+	annotateStageIssues(health, before, stage)
+}
+
+func annotateStageIssues(health *api.ProjectHealth, before int, stage string) {
+	if stage == "" {
+		return
+	}
+	for i := before; i < len(health.Issues); i++ {
+		health.Issues[i].Message = fmt.Sprintf("Stage %s: %s", stage, health.Issues[i].Message)
+		detail := strings.TrimSpace(health.Issues[i].Detail)
+		if detail == "" {
+			health.Issues[i].Detail = "stage=" + stage
+		} else {
+			health.Issues[i].Detail = "stage=" + stage + " " + detail
+		}
+	}
 }
 
 func addCommandCheck(health *api.ProjectHealth, command string) {
@@ -53,6 +193,18 @@ func addCommandCheck(health *api.ProjectHealth, command string) {
 		})
 		return
 	}
+	resolvedCommand, err := codexcmd.Resolve(command)
+	if err != nil {
+		addIssue(health, api.HealthIssue{
+			Code:       "agent_command_not_executable",
+			Severity:   SeverityBlocker,
+			Message:    "Agent runtime executable is not usable",
+			Detail:     err.Error(),
+			Suggestion: "Open the ChatGPT/Codex app once, install the standalone CLI, or configure an accessible absolute command path.",
+		})
+		return
+	}
+	command = resolvedCommand
 	executable := commandExecutable(command)
 	if executable == "" {
 		addIssue(health, api.HealthIssue{

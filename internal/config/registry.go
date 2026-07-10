@@ -53,6 +53,7 @@ type RegistryProject struct {
 	Name                string
 	WorkflowPath        string
 	Enabled             bool
+	StartPaused         bool
 	MaxConcurrentAgents int
 }
 
@@ -389,6 +390,11 @@ func resolveRegistryProjects(raw map[string]interface{}, registry *ProjectRegist
 			enabled = v
 		}
 
+		startPaused := false
+		if v, ok := getBool(projectMap, "start_paused"); ok {
+			startPaused = v
+		}
+
 		maxConcurrentAgents := 0
 		if v, ok := getInt(projectMap, "max_concurrent_agents"); ok {
 			if v <= 0 {
@@ -402,6 +408,7 @@ func resolveRegistryProjects(raw map[string]interface{}, registry *ProjectRegist
 			Name:                name,
 			WorkflowPath:        workflowPath,
 			Enabled:             enabled,
+			StartPaused:         startPaused,
 			MaxConcurrentAgents: maxConcurrentAgents,
 		})
 	}

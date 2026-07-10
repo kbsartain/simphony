@@ -1,6 +1,7 @@
 package preflight
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kbsartain/simphony/pkg/api"
@@ -13,6 +14,98 @@ func TestCheckBlocksMissingConfig(t *testing.T) {
 	}
 	if len(health.Issues) != 1 || health.Issues[0].Code != "config_missing" {
 		t.Fatalf("issues = %+v, want config_missing", health.Issues)
+	}
+}
+
+func TestCheckReportsStageSpecificSDKCommandFailure(t *testing.T) {
+	health := Check(&api.WorkflowConfig{
+		AgentRuntime: api.AgentRuntimeConfig{
+			Provider: "codex",
+			Command:  "go version",
+			StageOverrides: map[string]api.AgentStageOverride{
+				"review": {
+					Provider: "claude",
+					Command:  "definitely-missing-simphony-agent-command",
+				},
+			},
+		},
+		Workspace: api.WorkspaceConfig{Root: t.TempDir(), Mode: "directory"},
+	})
+
+	if health.Status != StatusBlocked {
+		t.Fatalf("status = %q, want %q", health.Status, StatusBlocked)
+	}
+	for _, issue := range health.Issues {
+		if issue.Code == "agent_command_not_found" && strings.Contains(issue.Message, "Stage review") && strings.Contains(issue.Detail, "stage=review") {
+			return
+		}
+	}
+	t.Fatalf("issues = %+v, want stage-specific command failure", health.Issues)
+}
+
+func TestCheckBlocksUnresolvedStageCredentialReference(t *testing.T) {
+	health := Check(&api.WorkflowConfig{
+		AgentRuntime: api.AgentRuntimeConfig{
+			Provider: "codex",
+			Command:  "go version",
+			StageOverrides: map[string]api.AgentStageOverride{
+				"review": {
+					Provider:         "claude",
+					Command:          "go version",
+					APIKeyConfigured: true,
+				},
+			},
+		},
+		Workspace: api.WorkspaceConfig{Root: t.TempDir(), Mode: "directory"},
+	})
+
+	if health.Status != StatusBlocked {
+		t.Fatalf("status = %q, want %q", health.Status, StatusBlocked)
+	}
+	for _, issue := range health.Issues {
+		if issue.Code == "agent_api_key_unresolved" && strings.Contains(issue.Message, "Stage review") && strings.Contains(issue.Detail, "stage=review") {
+			return
+		}
+	}
+	t.Fatalf("issues = %+v, want stage-specific unresolved credential", health.Issues)
+}
+
+func TestCheckAllowsUnconfiguredCredentialsForLocalSDKAuth(t *testing.T) {
+	health := Check(&api.WorkflowConfig{
+		AgentRuntime: api.AgentRuntimeConfig{Provider: "codex", Command: "go version"},
+		Workspace:    api.WorkspaceConfig{Root: t.TempDir(), Mode: "directory"},
+	})
+
+	for _, issue := range health.Issues {
+		if strings.Contains(issue.Code, "api_key") || strings.Contains(issue.Code, "auth_token") {
+			t.Fatalf("unexpected credential issue for local SDK auth: %+v", issue)
+		}
+	}
+}
+
+func TestCheckBlocksMissingVerifyExecutable(t *testing.T) {
+	health := Check(&api.WorkflowConfig{
+		AgentRuntime: api.AgentRuntimeConfig{Provider: "codex", Command: "go version"},
+		Workspace:    api.WorkspaceConfig{Root: t.TempDir(), Mode: "directory"},
+		Verify:       api.VerifyConfig{Commands: []string{"definitely-missing-verify-tool --check"}},
+	})
+	if health.Status != StatusBlocked {
+		t.Fatalf("status = %q, want blocked", health.Status)
+	}
+	for _, issue := range health.Issues {
+		if issue.Code == "verify_command_not_found" {
+			return
+		}
+	}
+	t.Fatalf("issues = %+v, want verify_command_not_found", health.Issues)
+}
+
+func TestGitHubPreflightBlocksMissingCLI(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	health := api.ProjectHealth{Status: StatusReady}
+	addGitHubCLICheck(&health, &api.GitHubConfig{Enabled: true})
+	if len(health.Issues) != 1 || health.Issues[0].Code != "github_cli_not_found" {
+		t.Fatalf("issues = %+v, want github_cli_not_found", health.Issues)
 	}
 }
 

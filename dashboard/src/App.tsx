@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ControlState,
   IssueDetailResponse,
+  ModelCatalogResponse,
   ProjectSummary,
   RegistryBootstrapResponse,
   RegistryProjectCreateResponse,
@@ -28,7 +30,10 @@ import {
   fetchSettings,
   fetchState,
   requestRefresh as requestRefreshAPI,
+  refreshModelCatalog as refreshModelCatalogAPI,
   saveSettings,
+  setProjectPaused as setProjectPausedAPI,
+  setStagePaused as setStagePausedAPI,
   updateRegistrySettings,
   updateRegistryProject,
   validateTrackerSettings,
@@ -65,6 +70,8 @@ type ProviderOption = {
   label: string
   models: ModelOption[]
   reasoning: ReasoningOption[]
+  endpointURL: string
+  apiKey: string
 }
 type ReasoningOption = {
   value: string
@@ -90,6 +97,7 @@ type RegistryProjectDraft = {
   name: string
   workflowPath: string
   enabled: boolean
+  startPaused: boolean
   maxConcurrentAgents: string
 }
 type RegistrySettingsDraft = {
@@ -134,6 +142,13 @@ const THINKING_REASONING_OPTIONS: ReasoningOption[] = [
   { value: 'medium', label: 'Thinking budget: medium' },
   { value: 'high', label: 'Thinking budget: high' },
 ]
+const ZAI_REASONING_OPTIONS: ReasoningOption[] = [
+  { value: '', label: 'Provider default' },
+  { value: 'low', label: 'Thinking budget: low' },
+  { value: 'medium', label: 'Thinking budget: medium' },
+  { value: 'high', label: 'Thinking budget: high' },
+  { value: 'max', label: 'Max' },
+]
 const GEMINI_3_PRO_REASONING_OPTIONS: ReasoningOption[] = [
   { value: '', label: 'Gemini default' },
   { value: 'low', label: 'Thinking level: low' },
@@ -162,8 +177,11 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'openai',
     label: 'OpenAI',
+    endpointURL: 'https://api.openai.com/v1',
+    apiKey: '$OPENAI_API_KEY',
     reasoning: CODEX_REASONING_OPTIONS,
     models: [
+      { id: 'openai:gpt-5.6', label: 'GPT-5.6 (preview)', model: 'gpt-5.6', modelProvider: 'openai' },
       { id: 'openai:gpt-5.5', label: 'GPT-5.5', model: 'gpt-5.5', modelProvider: 'openai' },
       { id: 'openai:gpt-5.4', label: 'GPT-5.4', model: 'gpt-5.4', modelProvider: 'openai' },
       { id: 'openai:gpt-5.4-mini', label: 'GPT-5.4 Mini', model: 'gpt-5.4-mini', modelProvider: 'openai' },
@@ -173,6 +191,8 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'anthropic',
     label: 'Anthropic',
+    endpointURL: 'https://api.anthropic.com',
+    apiKey: '$ANTHROPIC_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
     models: [
       { id: 'anthropic:claude-opus-4.7', label: 'Claude Opus 4.7', model: 'claude-opus-4.7', modelProvider: 'anthropic' },
@@ -182,6 +202,8 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'google',
     label: 'Google Gemini',
+    endpointURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    apiKey: '$GEMINI_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
     models: [
       {
@@ -210,14 +232,19 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'moonshot',
     label: 'Moonshot',
+    endpointURL: 'https://api.moonshot.ai/v1',
+    apiKey: '$MOONSHOT_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
     models: [{ id: 'moonshot:kimi-k2-2.6', label: 'Kimi K2 2.6', model: 'kimi-k2-2.6', modelProvider: 'moonshot' }],
   },
   {
     id: 'zai',
     label: 'Z.ai',
-    reasoning: THINKING_REASONING_OPTIONS,
+    endpointURL: 'https://api.z.ai/api/coding/paas/v4',
+    apiKey: '$ZAI_API_KEY',
+    reasoning: ZAI_REASONING_OPTIONS,
     models: [
+      { id: 'zai:glm-5.2', label: 'GLM 5.2', model: 'glm-5.2', modelProvider: 'zai' },
       { id: 'zai:glm-5.1', label: 'GLM 5.1', model: 'glm-5.1', modelProvider: 'zai' },
       { id: 'zai:glm-4.7', label: 'GLM 4.7', model: 'glm-4.7', modelProvider: 'zai' },
     ],
@@ -225,6 +252,8 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'deepseek',
     label: 'DeepSeek',
+    endpointURL: 'https://api.deepseek.com',
+    apiKey: '$DEEPSEEK_API_KEY',
     reasoning: DEFAULT_REASONING_OPTIONS,
     models: [
       { id: 'deepseek:deepseek-v4-pro', label: 'DeepSeek V4 Pro', model: 'deepseek-v4-pro', modelProvider: 'deepseek' },
@@ -267,6 +296,7 @@ function App() {
     name: '',
     workflowPath: '',
     enabled: true,
+    startPaused: true,
     maxConcurrentAgents: '',
   })
   const [registrySettingsDraft, setRegistrySettingsDraft] = useState<RegistrySettingsDraft>(emptyRegistrySettingsDraft())
@@ -281,6 +311,7 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [controlMutation, setControlMutation] = useState<string | null>(null)
   const [bootstrappingRegistry, setBootstrappingRegistry] = useState(false)
   const [creatingRegistryProject, setCreatingRegistryProject] = useState(false)
   const [savingRegistrySettings, setSavingRegistrySettings] = useState(false)
@@ -289,6 +320,8 @@ function App() {
   const [savingSettings, setSavingSettings] = useState(false)
   const [validatingTracker, setValidatingTracker] = useState(false)
   const [trackerValidation, setTrackerValidation] = useState<SettingsValidationResponse | null>(null)
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogResponse | null>(null)
+  const [refreshingModelCatalog, setRefreshingModelCatalog] = useState(false)
   const [refreshResult, setRefreshResult] = useState<RefreshResponse | null>(null)
   const [filter, setFilter] = useState<QueueFilter>('all')
   const [query, setQuery] = useState('')
@@ -367,6 +400,7 @@ function App() {
     setSettingsDraft(JSON.stringify(data.config || {}, null, 2))
     setPromptDraft(data.prompt_template || '')
     setTrackerValidation(null)
+    setModelCatalog(null)
     setError(null)
   }, [projectMode, selectedProjectId])
 
@@ -401,6 +435,7 @@ function App() {
     setState(null)
     setSettings(null)
     setTrackerValidation(null)
+    setModelCatalog(null)
     setRefreshResult(null)
     setDetailState({ status: 'idle' })
     setError(null)
@@ -466,6 +501,50 @@ function App() {
     }
   }
 
+  const applyControlState = (control: ControlState) => {
+    setState(current => (current ? { ...current, control } : current))
+    if (selectedProjectId) {
+      setProjects(current => current.map(project => (project.id === selectedProjectId ? { ...project, control } : project)))
+    }
+  }
+
+  const changeProjectPause = async (paused: boolean) => {
+    const mutation = paused ? 'project-pause' : 'project-resume'
+    setControlMutation(mutation)
+    setError(null)
+    try {
+      const control = await setProjectPausedAPI(paused, selectedAPIProjectId)
+      applyControlState(control)
+      setNotice(paused ? 'Project paused. In-flight work will finish.' : 'Project resumed. Eligible work is being refreshed.')
+      if (projectMode) {
+        await loadProjects()
+      }
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setControlMutation(null)
+    }
+  }
+
+  const changeStagePause = async (stage: string, paused: boolean) => {
+    const mutation = `${stage}-${paused ? 'pause' : 'resume'}`
+    setControlMutation(mutation)
+    setError(null)
+    try {
+      const control = await setStagePausedAPI(stage, paused, selectedAPIProjectId)
+      applyControlState(control)
+      const label = SKILL_STAGE_OPTIONS.find(option => option.id === stage)?.label || stage
+      setNotice(paused ? `${label} paused. In-flight work will finish.` : `${label} resumed. Eligible work is being refreshed.`)
+      if (projectMode) {
+        await loadProjects()
+      }
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setControlMutation(null)
+    }
+  }
+
   const createStarterRegistry = async () => {
     setBootstrappingRegistry(true)
     setNotice(null)
@@ -496,6 +575,7 @@ function App() {
         name: registryProjectDraft.name.trim(),
         workflow_path: registryProjectDraft.workflowPath.trim(),
         enabled: registryProjectDraft.enabled,
+        start_paused: registryProjectDraft.startPaused,
         max_concurrent_agents: editingRegistryProjectId ? maxConcurrentAgents : maxConcurrentAgents || undefined,
       }
       if (editingRegistryProjectId) {
@@ -516,7 +596,7 @@ function App() {
         setRegistryProjectDeleteResult(null)
         setNotice('Project added to registry')
       }
-      setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, maxConcurrentAgents: '' })
+      setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, startPaused: true, maxConcurrentAgents: '' })
       setEditingRegistryProjectId(null)
       setError(null)
     } catch (err) {
@@ -526,13 +606,14 @@ function App() {
     }
   }
 
-  const editRegistryProject = (project: { id: string; name: string; workflow_path: string; enabled: boolean; max_concurrent_agents?: number }) => {
+  const editRegistryProject = (project: { id: string; name: string; workflow_path: string; enabled: boolean; start_paused: boolean; max_concurrent_agents?: number }) => {
     setEditingRegistryProjectId(project.id)
     setRegistryProjectDraft({
       id: project.id,
       name: project.name || project.id,
       workflowPath: project.workflow_path || '',
       enabled: project.enabled,
+      startPaused: project.start_paused,
       maxConcurrentAgents: project.max_concurrent_agents ? String(project.max_concurrent_agents) : '',
     })
     setRegistryProjectResult(null)
@@ -542,7 +623,7 @@ function App() {
 
   const cancelRegistryProjectEdit = () => {
     setEditingRegistryProjectId(null)
-    setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, maxConcurrentAgents: '' })
+    setRegistryProjectDraft({ id: '', name: '', workflowPath: '', enabled: true, startPaused: true, maxConcurrentAgents: '' })
   }
 
   const removeRegistryProject = async (project: { id: string; name: string }) => {
@@ -692,6 +773,21 @@ function App() {
       setError(normalizeError(err))
     } finally {
       setValidatingTracker(false)
+    }
+  }
+
+  const refreshModels = async () => {
+    setRefreshingModelCatalog(true)
+    setNotice(null)
+    try {
+      const result = await refreshModelCatalogAPI(selectedAPIProjectId)
+      setModelCatalog(result)
+      setNotice(`Found ${result.models.length.toLocaleString()} models from ${result.provider}`)
+      setError(null)
+    } catch (err) {
+      setError(normalizeError(err))
+    } finally {
+      setRefreshingModelCatalog(false)
     }
   }
 
@@ -902,6 +998,12 @@ function App() {
 
         {page === 'runtime' && (
           <>
+            <WorkflowControlPanel
+              control={state.control}
+              mutation={controlMutation}
+              onProjectPause={changeProjectPause}
+              onStagePause={changeStagePause}
+            />
             {showAggregateProjectHealth && projectOverview && (
               <section className="project-overview" aria-label="Project overview">
                 <div className="project-overview-heading">
@@ -1055,11 +1157,14 @@ function App() {
             saving={savingSettings}
             validatingTracker={validatingTracker}
             trackerValidation={trackerValidation}
+            modelCatalog={modelCatalog}
+            refreshingModelCatalog={refreshingModelCatalog}
             onSettingsDraftChange={setSettingsDraft}
             onPromptDraftChange={setPromptDraft}
             onReload={() => loadSettings().catch(err => setError(normalizeError(err)))}
             onSave={saveWorkflowSettings}
             onValidateTracker={validateLinearSettings}
+            onRefreshModels={refreshModels}
           />
         )}
 
@@ -1104,6 +1209,62 @@ function App() {
         )}
       </section>
     </main>
+  )
+}
+
+function WorkflowControlPanel(props: {
+  control: ControlState
+  mutation: string | null
+  onProjectPause: (paused: boolean) => void
+  onStagePause: (stage: string, paused: boolean) => void
+}) {
+  const projectPaused = props.control.paused
+  const pausedStages = new Set(props.control.paused_stages)
+  const busy = props.mutation !== null
+
+  return (
+    <section className={projectPaused ? 'workflow-control paused' : 'workflow-control'} aria-label="Workflow controls">
+      <div className="workflow-control-copy">
+        <div>
+          <p className="eyebrow">Operator control</p>
+          <h2>{projectPaused ? 'Project paused' : pausedStages.size > 0 ? 'Stage pause active' : 'Workflow running'}</h2>
+        </div>
+        <p>
+          Soft pause blocks new dispatches and retries. Agents already running continue normally, and workflow settings can still hot reload.
+        </p>
+      </div>
+      <div className="workflow-control-actions">
+        <button
+          className={projectPaused ? 'secondary-button resume-button' : 'secondary-button pause-button'}
+          type="button"
+          onClick={() => props.onProjectPause(!projectPaused)}
+          disabled={busy}
+          aria-pressed={projectPaused}
+        >
+          {props.mutation?.startsWith('project-') ? 'Updating…' : projectPaused ? 'Resume project' : 'Pause project'}
+        </button>
+        <div className="stage-control-list" role="group" aria-label="Pipeline stage pause controls">
+          {SKILL_STAGE_OPTIONS.map(stage => {
+            const paused = pausedStages.has(stage.id)
+            const mutation = `${stage.id}-${paused ? 'resume' : 'pause'}`
+            return (
+              <button
+                key={stage.id}
+                className={paused ? 'stage-control paused' : 'stage-control'}
+                type="button"
+                onClick={() => props.onStagePause(stage.id, !paused)}
+                disabled={busy}
+                aria-pressed={paused}
+                title={paused ? `Resume ${stage.label}` : `Pause ${stage.label}`}
+              >
+                <span>{stage.label}</span>
+                <strong>{props.mutation === mutation ? 'Updating…' : paused ? 'Paused' : 'Running'}</strong>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -1340,7 +1501,7 @@ function ProjectSetupView(props: {
   onSaveRegistrySettings: () => void
   onRegistryRuntimeDraftChange: (draft: RegistryRuntimeDraft) => void
   onSaveRegistryRuntime: () => void
-  onEditRegistryProject: (project: { id: string; name: string; workflow_path: string; enabled: boolean; max_concurrent_agents?: number }) => void
+  onEditRegistryProject: (project: { id: string; name: string; workflow_path: string; enabled: boolean; start_paused: boolean; max_concurrent_agents?: number }) => void
   onCancelRegistryProjectEdit: () => void
   onRemoveRegistryProject: (project: { id: string; name: string }) => void
   onSelectProject: (projectID: string) => void
@@ -1641,7 +1802,13 @@ function ProjectSetupView(props: {
                       provider && props.registryRuntimeDraft.model && !provider.models.some(option => option.model === props.registryRuntimeDraft.model)
                         ? ''
                         : props.registryRuntimeDraft.model
-                    props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, modelProvider: nextProvider, model: nextModel })
+                    props.onRegistryRuntimeDraftChange({
+                      ...props.registryRuntimeDraft,
+                      modelProvider: nextProvider,
+                      model: nextModel,
+                      endpointURL: provider?.endpointURL || props.registryRuntimeDraft.endpointURL,
+                      apiKey: provider?.apiKey || props.registryRuntimeDraft.apiKey,
+                    })
                   }}
                 >
                   <option value="">SDK default</option>
@@ -1835,6 +2002,14 @@ function ProjectSetupView(props: {
                 />
                 <span>Enabled on restart</span>
               </label>
+              <label className="registry-checkbox">
+                <input
+                  type="checkbox"
+                  checked={props.registryProjectDraft.startPaused}
+                  onChange={event => props.onRegistryProjectDraftChange({ ...props.registryProjectDraft, startPaused: event.target.checked })}
+                />
+                <span>Start paused (recommended while configuring)</span>
+              </label>
             </div>
             {props.registryProjectResult && (
               <div className="bootstrap-result" role="status">
@@ -1883,6 +2058,10 @@ function ProjectSetupView(props: {
                     <div>
                       <dt>Project cap</dt>
                       <dd>{registryProject?.max_concurrent_agents ? registryProject.max_concurrent_agents.toLocaleString() : 'Default'}</dd>
+                    </div>
+                    <div>
+                      <dt>Startup policy</dt>
+                      <dd>{registryProject?.start_paused ? 'Paused — no new work' : 'Active — dispatch backlog'}</dd>
                     </div>
                   </dl>
                   {registryProject && (
@@ -2134,11 +2313,14 @@ function SettingsView(props: {
   saving: boolean
   validatingTracker: boolean
   trackerValidation: SettingsValidationResponse | null
+  modelCatalog: ModelCatalogResponse | null
+  refreshingModelCatalog: boolean
   onSettingsDraftChange: (value: string) => void
   onPromptDraftChange: (value: string) => void
   onReload: () => void
   onSave: () => void
   onValidateTracker: () => void
+  onRefreshModels: () => void
 }) {
   if (!props.settings) {
     return (
@@ -2156,7 +2338,20 @@ function SettingsView(props: {
   const draftConfig = parseSettingsConfig(props.settingsDraft)
   const selectedProviderID = draftConfig ? getSelectedProviderID(draftConfig) : ''
   const selectedModelID = draftConfig ? getSelectedModelID(draftConfig) : ''
-  const globalModels = modelOptionsForProvider(selectedProviderID, draftConfig ? getRuntimeStringField(draftConfig, 'model') : '')
+  const catalogModels: ModelOption[] =
+    props.modelCatalog && props.modelCatalog.provider === selectedProviderID
+      ? props.modelCatalog.models.map(model => ({
+          id: `${selectedProviderID}:${model.id}`,
+          label: model.label,
+          model: model.id,
+          modelProvider: selectedProviderID,
+        }))
+      : []
+  const globalModels = modelOptionsForProvider(
+    selectedProviderID,
+    draftConfig ? getRuntimeStringField(draftConfig, 'model') : '',
+    catalogModels,
+  )
   const resolvedRuntime = props.settings.resolved_config.agent_runtime || props.settings.resolved_config.codex
   const trackerValidation = props.trackerValidation
 
@@ -2177,9 +2372,13 @@ function SettingsView(props: {
     const nextConfig = applyProviderSelection(config, providerID)
     props.onSettingsDraftChange(JSON.stringify(nextConfig, null, 2))
   }
+  const changeRuntimeField = (field: StageRuntimeField, value: string) => {
+    const config = draftConfig || {}
+    props.onSettingsDraftChange(JSON.stringify(applyRuntimeStringField(config, field, value), null, 2))
+  }
   const changeModel = (optionID: string) => {
     const config = draftConfig || {}
-    const nextConfig = applyModelSelection(config, selectedProviderID, getRuntimeStringField(config, 'model'), optionID)
+    const nextConfig = applyModelSelection(config, selectedProviderID, getRuntimeStringField(config, 'model'), optionID, catalogModels)
     props.onSettingsDraftChange(JSON.stringify(nextConfig, null, 2))
   }
   const changeGlobalSkills = (value: string) => {
@@ -2349,7 +2548,17 @@ function SettingsView(props: {
           </div>
         )}
         <div className="settings-field">
-          <span>Model</span>
+          <div className="model-settings-heading">
+            <span>Model and provider</span>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={props.onRefreshModels}
+              disabled={!draftConfig || props.saving || props.refreshingModelCatalog}
+            >
+              {props.refreshingModelCatalog ? 'Refreshing' : 'Refresh model catalog'}
+            </button>
+          </div>
           <div className="settings-control-row">
             <label className="select-field">
               <span className="sr-only">Model provider</span>
@@ -2378,6 +2587,50 @@ function SettingsView(props: {
               <span>{resolvedRuntime.provider || resolvedRuntime.model_provider || 'default provider'}</span>
             </div>
           </div>
+          <p className="field-help">Provider selection applies its endpoint and environment-key preset. Save settings before refreshing the catalog.</p>
+          {props.modelCatalog && (
+            <p className="field-help">
+              Catalog refreshed {formatDateTime(props.modelCatalog.refreshed_at)} from {props.modelCatalog.endpoint_url}.
+            </p>
+          )}
+        </div>
+        <div className="settings-grid three-up">
+          <label className="form-field">
+            <span>Provider endpoint</span>
+            <input
+              value={draftConfig ? getRuntimeStringField(draftConfig, 'endpoint_url') : ''}
+              onChange={event => changeRuntimeField('endpoint_url', event.target.value)}
+              placeholder="Provider default"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Provider API key</span>
+            <input
+              value={draftConfig ? getRuntimeStringField(draftConfig, 'api_key') : ''}
+              onChange={event => changeRuntimeField('api_key', event.target.value)}
+              placeholder="$OPENAI_API_KEY"
+              disabled={!draftConfig || props.saving}
+            />
+          </label>
+          <label className="form-field">
+            <span>Reasoning</span>
+            <select
+              value={draftConfig ? getRuntimeStringField(draftConfig, 'reasoning_effort') : ''}
+              onChange={event => changeRuntimeField('reasoning_effort', event.target.value)}
+              disabled={!draftConfig || props.saving}
+            >
+              {reasoningOptionsForSelection(
+                draftConfig ? getRuntimeStringField(draftConfig, 'model') : '',
+                selectedProviderID,
+                draftConfig ? getRuntimeStringField(draftConfig, 'reasoning_effort') : '',
+              ).map(option => (
+                <option key={option.value || 'default'} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
         <div className="settings-field">
           <span>Default Skills</span>
@@ -2400,11 +2653,22 @@ function SettingsView(props: {
               <label key={stage.id} className="stage-skill-card">
                 <strong>{stage.label}</strong>
                 <select
+                  aria-label={`${stage.label} execution SDK`}
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'provider') : ''}
+                  onChange={event => changeStageField(stage.id, 'provider', event.target.value)}
+                  disabled={!draftConfig || props.saving}
+                >
+                  <option value="">Default execution SDK</option>
+                  <option value="codex">Codex app-server</option>
+                  <option value="claude">Claude Agent SDK</option>
+                </select>
+                <select
+                  aria-label={`${stage.label} model provider`}
                   value={draftConfig ? getStageProviderID(draftConfig, stage.id) : ''}
                   onChange={event => changeStageField(stage.id, 'model_provider', event.target.value)}
                   disabled={!draftConfig || props.saving}
                 >
-                  <option value="">Default provider</option>
+                  <option value="">Default model provider</option>
                   {providerOptionsWithCurrent(draftConfig ? getStageProviderID(draftConfig, stage.id) : '').map(option => (
                     <option key={option.id} value={option.id}>
                       {option.label}
@@ -2441,6 +2705,31 @@ function SettingsView(props: {
                     </option>
                   ))}
                 </select>
+                <input
+                  value={draftConfig ? getStageStringField(draftConfig, stage.id, 'command') : ''}
+                  onChange={event => changeStageField(stage.id, 'command', event.target.value)}
+                  placeholder={
+                    draftConfig && getEffectiveStageSDK(draftConfig, stage.id) === 'claude'
+                      ? 'Custom Claude wrapper (optional)'
+                      : 'Stage SDK command (optional)'
+                  }
+                  disabled={!draftConfig || props.saving}
+                />
+                {draftConfig && getEffectiveStageSDK(draftConfig, stage.id) === 'claude' ? (
+                  <input
+                    value={getStageStringField(draftConfig, stage.id, 'permission_mode')}
+                    onChange={event => changeStageField(stage.id, 'permission_mode', event.target.value)}
+                    placeholder="Claude permission mode (acceptEdits)"
+                    disabled={props.saving}
+                  />
+                ) : (
+                  <input
+                    value={draftConfig ? getStageStringField(draftConfig, stage.id, 'turn_sandbox_policy') : ''}
+                    onChange={event => changeStageField(stage.id, 'turn_sandbox_policy', event.target.value)}
+                    placeholder="Codex turn sandbox policy"
+                    disabled={!draftConfig || props.saving}
+                  />
+                )}
                 <input
                   value={draftConfig ? getStageStringField(draftConfig, stage.id, 'endpoint_url') : ''}
                   onChange={event => changeStageField(stage.id, 'endpoint_url', event.target.value)}
@@ -2612,7 +2901,17 @@ function applyPipelineStringField(
   return nextConfig
 }
 
-type StageRuntimeField = 'model' | 'model_provider' | 'reasoning_effort' | 'endpoint_url' | 'api_key' | 'auth_token'
+type StageRuntimeField =
+  | 'provider'
+  | 'command'
+  | 'model'
+  | 'model_provider'
+  | 'reasoning_effort'
+  | 'endpoint_url'
+  | 'api_key'
+  | 'auth_token'
+  | 'permission_mode'
+  | 'turn_sandbox_policy'
 
 function runtimeConfigKey(config: Record<string, unknown>) {
   return isPlainObject(config.agent_runtime) ? 'agent_runtime' : 'codex'
@@ -2653,6 +2952,8 @@ function applyProviderSelection(config: Record<string, unknown>, providerID: str
     delete runtime.model
   } else {
     runtime.model_provider = provider.id
+    runtime.endpoint_url = provider.endpointURL
+    runtime.api_key = provider.apiKey
     const currentModel = typeof runtime.model === 'string' ? runtime.model : ''
     if (currentModel && !provider.models.some(option => option.model === currentModel)) {
       delete runtime.model
@@ -2663,11 +2964,31 @@ function applyProviderSelection(config: Record<string, unknown>, providerID: str
   return nextConfig
 }
 
-function applyModelSelection(config: Record<string, unknown>, providerID: string, currentModel: string, optionID: string) {
+function applyRuntimeStringField(config: Record<string, unknown>, field: StageRuntimeField, value: string) {
   const nextConfig = { ...config }
   const key = runtimeConfigKey(nextConfig)
   const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
-  const option = modelOptionsForProvider(providerID, currentModel).find(item => item.id === optionID)
+  const trimmedValue = value.trim()
+  if (trimmedValue === '') {
+    delete runtime[field]
+  } else {
+    runtime[field] = trimmedValue
+  }
+  nextConfig[key] = runtime
+  return nextConfig
+}
+
+function applyModelSelection(
+  config: Record<string, unknown>,
+  providerID: string,
+  currentModel: string,
+  optionID: string,
+  additionalModels: ModelOption[] = [],
+) {
+  const nextConfig = { ...config }
+  const key = runtimeConfigKey(nextConfig)
+  const runtime = isPlainObject(nextConfig[key]) ? { ...nextConfig[key] } : {}
+  const option = modelOptionsForProvider(providerID, currentModel, additionalModels).find(item => item.id === optionID)
 
   if (!option) {
     delete runtime.model
@@ -2706,6 +3027,13 @@ function getStageProviderID(config: Record<string, unknown>, stage: string) {
   return selectedProviderID(getStageStringField(config, stage, 'model'), getStageStringField(config, stage, 'model_provider'))
 }
 
+function getEffectiveStageSDK(config: Record<string, unknown>, stage: string) {
+  const stageProvider = getStageStringField(config, stage, 'provider')
+  if (stageProvider) return stageProvider
+  const runtime = getRuntimeConfig(config)
+  return typeof runtime.provider === 'string' && runtime.provider ? runtime.provider : 'codex'
+}
+
 function getStageModelID(config: Record<string, unknown>, stage: string) {
   return selectedModelID(getStageStringField(config, stage, 'model'), getStageStringField(config, stage, 'model_provider'))
 }
@@ -2732,7 +3060,35 @@ function applyStageField(config: Record<string, unknown>, stage: string, field: 
   const stageConfig = isPlainObject(overrides[stage]) ? { ...overrides[stage] } : {}
   const trimmedValue = value.trim()
 
-  if (field === 'model_provider') {
+  if (field === 'provider') {
+    const previousProvider = typeof stageConfig.provider === 'string' ? stageConfig.provider : ''
+    if (trimmedValue === '') {
+      delete stageConfig.provider
+    } else {
+      stageConfig.provider = trimmedValue
+    }
+    if (previousProvider !== trimmedValue) {
+      for (const keyToReset of [
+        'command',
+        'model',
+        'model_provider',
+        'reasoning_effort',
+        'endpoint_url',
+        'api_key',
+        'auth_token',
+        'env',
+        'allowed_tools',
+        'disallowed_tools',
+        'permission_mode',
+        'setting_sources',
+        'approval_policy',
+        'thread_sandbox',
+        'turn_sandbox_policy',
+      ]) {
+        delete stageConfig[keyToReset]
+      }
+    }
+  } else if (field === 'model_provider') {
     const provider = PROVIDER_OPTIONS.find(item => item.id === trimmedValue)
     if (!provider) {
       delete stageConfig.model_provider
@@ -2861,12 +3217,21 @@ function providerOptionsWithCurrent(providerID: string) {
   if (!providerID || PROVIDER_OPTIONS.some(option => option.id === providerID)) {
     return PROVIDER_OPTIONS
   }
-  return [{ id: providerID, label: `${providerID} (custom)`, models: [], reasoning: DEFAULT_REASONING_OPTIONS }, ...PROVIDER_OPTIONS]
+  return [
+    { id: providerID, label: `${providerID} (custom)`, models: [], reasoning: DEFAULT_REASONING_OPTIONS, endpointURL: '', apiKey: '' },
+    ...PROVIDER_OPTIONS,
+  ]
 }
 
-function modelOptionsForProvider(providerID: string, currentModel: string) {
+function modelOptionsForProvider(providerID: string, currentModel: string, additionalModels: ModelOption[] = []) {
   const provider = PROVIDER_OPTIONS.find(option => option.id === providerID)
-  const options = provider ? provider.models : MODEL_OPTIONS
+  const baseOptions = provider ? provider.models : MODEL_OPTIONS
+  const options = [...baseOptions]
+  for (const model of additionalModels) {
+    if (!options.some(option => option.model === model.model && option.modelProvider === model.modelProvider)) {
+      options.push(model)
+    }
+  }
   if (!currentModel || options.some(option => option.model === currentModel)) {
     return options
   }

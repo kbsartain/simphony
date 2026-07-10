@@ -1,12 +1,15 @@
 package workspace
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -202,6 +205,89 @@ func TestPrepareWorkspace_GitWorktree_UsesIssueBranchName(t *testing.T) {
 	}
 }
 
+func TestMergeWorkspaceToBaseBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repo := initTestRepo(t)
+	root := t.TempDir()
+	m, err := NewManagerWithConfig(api.WorkspaceConfig{
+		Root:       root,
+		Mode:       "git_worktree",
+		Repo:       repo,
+		BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("NewManagerWithConfig failed: %v", err)
+	}
+
+	issue := api.Issue{Identifier: "TEST-126"}
+	ws, err := m.PrepareWorkspace(issue)
+	if err != nil {
+		t.Fatalf("PrepareWorkspace failed: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(ws.Path, "feature.txt"), []byte("feature"), 0644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	runGitForTest(t, ws.Path, "add", "feature.txt")
+	runGitForTest(t, ws.Path, "commit", "-m", "feature change")
+
+	if err := m.MergeWorkspaceToBaseBranch(issue, ws.Path); err != nil {
+		t.Fatalf("MergeWorkspaceToBaseBranch failed: %v", err)
+	}
+	branch := gitOutput(t, ws.Path, "branch", "--show-current")
+	expectedBranch := m.branchName(issue, sanitizeKey(issue.Identifier))
+	if branch != expectedBranch {
+		t.Fatalf("expected issue worktree to remain on %q after merge, got %q", expectedBranch, branch)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "feature.txt")); err != nil {
+		t.Fatalf("expected merged file on base worktree, got %v", err)
+	}
+
+	if err := m.MergeWorkspaceToBaseBranch(issue, ws.Path); err != nil {
+		t.Fatalf("MergeWorkspaceToBaseBranch second merge failed: %v", err)
+	}
+}
+
+func TestMergeWorkspaceToBaseBranchVerifiedRollsBackFailure(t *testing.T) {
+	repo := initTestRepo(t)
+	root := t.TempDir()
+	m, err := NewManagerWithConfig(api.WorkspaceConfig{Root: root, Mode: "git_worktree", Repo: repo, BaseBranch: "main"})
+	if err != nil {
+		t.Fatalf("NewManagerWithConfig: %v", err)
+	}
+	issue := api.Issue{Identifier: "TEST-VERIFY"}
+	ws, err := m.PrepareWorkspace(issue)
+	if err != nil {
+		t.Fatalf("PrepareWorkspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.Path, "broken.txt"), []byte("broken"), 0644); err != nil {
+		t.Fatalf("write broken file: %v", err)
+	}
+	runGitForTest(t, ws.Path, "add", "broken.txt")
+	runGitForTest(t, ws.Path, "commit", "-m", "broken change")
+	before := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	err = m.MergeWorkspaceToBaseBranchVerified(issue, ws.Path, func(repoPath string) error {
+		if repoPath != repo {
+			t.Fatalf("verify path = %q, want %q", repoPath, repo)
+		}
+		return errors.New("verification failed")
+	})
+	if err == nil || !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("merge error = %v, want rollback failure", err)
+	}
+	after := gitOutput(t, repo, "rev-parse", "HEAD")
+	if after != before {
+		t.Fatalf("HEAD after rollback = %s, want %s", after, before)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "broken.txt")); !os.IsNotExist(err) {
+		t.Fatalf("broken file remains after rollback: %v", err)
+	}
+}
+
 func TestRemoveWorkspace_GitWorktreeCleanup(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -311,6 +397,115 @@ func TestRunHook_Failure(t *testing.T) {
 	err = m.RunHook("before_run", script, wsPath, 5000)
 	if err == nil {
 		t.Fatal("expected failure error, got nil")
+	}
+}
+
+func TestBoundedOutputBufferPreservesHeadTailAndStripsANSI(t *testing.T) {
+	buffer := newBoundedOutputBuffer(80, 32)
+	_, _ = buffer.Write([]byte("\x1b[32mFIRST-SUMMARY\x1b[0m\n"))
+	_, _ = buffer.Write([]byte(strings.Repeat("middle-output-", 20)))
+	_, _ = buffer.Write([]byte("\n\x1b[31mFINAL-FAILURE\x1b[0m\n"))
+
+	got := buffer.String()
+	if !strings.Contains(got, "FIRST-SUMMARY") || !strings.Contains(got, "FINAL-FAILURE") {
+		t.Fatalf("bounded output lost head or tail: %q", got)
+	}
+	if !strings.Contains(got, "output truncated: original_bytes=") {
+		t.Fatalf("bounded output lacks truncation marker: %q", got)
+	}
+	if strings.Contains(got, "\x1b[") {
+		t.Fatalf("bounded output retained ANSI controls: %q", got)
+	}
+}
+
+func TestRunHookFailureRetainsLongOutputFailureTail(t *testing.T) {
+	root := t.TempDir()
+	m, err := NewManager(root)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	wsPath := filepath.Join(root, "ws")
+	if err := os.MkdirAll(wsPath, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	var script string
+	if runtime.GOOS == "windows" {
+		script = `(for /L %i in (0,1,5000) do @echo passing-suite-%i) & echo FINAL_FAILURE_SUMMARY 1>&2 & exit /B 1`
+	} else {
+		script = `i=0; while [ $i -lt 5000 ]; do echo "passing-suite-$i"; i=$((i+1)); done; echo FINAL_FAILURE_SUMMARY >&2; exit 1`
+	}
+
+	err = m.RunHook("before_run", script, wsPath, 15000)
+	if err == nil {
+		t.Fatal("expected long-output hook failure")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "passing-suite-0") || !strings.Contains(message, "FINAL_FAILURE_SUMMARY") {
+		t.Fatalf("hook error lost useful head or failure tail: %s", message)
+	}
+	if !strings.Contains(message, "output truncated: original_bytes=") {
+		t.Fatalf("hook error lacks truncation metadata: %s", message)
+	}
+	if len(message) > maxHookOutputBytes+2048 {
+		t.Fatalf("hook error length = %d, want bounded output", len(message))
+	}
+}
+
+func TestWaitForGitHubChecksAllowsDelayedRegistration(t *testing.T) {
+	probeCalls := 0
+	runner := func(ctx context.Context, watch bool) (string, error) {
+		if watch {
+			return "build pass", nil
+		}
+		probeCalls++
+		if probeCalls < 3 {
+			return "no checks reported on the branch", errors.New("exit status 1")
+		}
+		return "build pending", errors.New("exit status 8")
+	}
+
+	if err := waitForGitHubChecksWithRunner(time.Second, 100*time.Millisecond, time.Millisecond, runner); err != nil {
+		t.Fatalf("waitForGitHubChecksWithRunner: %v", err)
+	}
+	if probeCalls != 3 {
+		t.Fatalf("probe calls = %d, want 3", probeCalls)
+	}
+}
+
+func TestWaitForGitHubChecksDistinguishesRegistrationTimeout(t *testing.T) {
+	runner := func(ctx context.Context, watch bool) (string, error) {
+		return "no checks reported", errors.New("exit status 1")
+	}
+	err := waitForGitHubChecksWithRunner(time.Second, 5*time.Millisecond, time.Millisecond, runner)
+	if err == nil || !strings.Contains(err.Error(), "checks_not_registered") || strings.Contains(err.Error(), "checks_failed") {
+		t.Fatalf("error = %v, want checks_not_registered", err)
+	}
+}
+
+func TestWaitForGitHubChecksDistinguishesFailedCheck(t *testing.T) {
+	runner := func(ctx context.Context, watch bool) (string, error) {
+		if watch {
+			return "unit-tests fail", errors.New("exit status 1")
+		}
+		return "unit-tests pending", errors.New("exit status 8")
+	}
+	err := waitForGitHubChecksWithRunner(time.Second, 100*time.Millisecond, time.Millisecond, runner)
+	if err == nil || !strings.Contains(err.Error(), "checks_failed") || !strings.Contains(err.Error(), "unit-tests fail") {
+		t.Fatalf("error = %v, want checks_failed with output", err)
+	}
+}
+
+func TestWaitForGitHubChecksHonorsOverallTimeout(t *testing.T) {
+	runner := func(ctx context.Context, watch bool) (string, error) {
+		if !watch {
+			return "unit-tests pending", errors.New("exit status 8")
+		}
+		<-ctx.Done()
+		return "still pending", ctx.Err()
+	}
+	err := waitForGitHubChecksWithRunner(10*time.Millisecond, 100*time.Millisecond, time.Millisecond, runner)
+	if err == nil || !strings.Contains(err.Error(), "checks_timeout") {
+		t.Fatalf("error = %v, want checks_timeout", err)
 	}
 }
 

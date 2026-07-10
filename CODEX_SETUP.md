@@ -12,6 +12,8 @@ codex app-server --listen stdio://
 
 If `codex` is not on `PATH`, set `codex.command` in `WORKFLOW.md` to the full executable path followed by `app-server`.
 
+On Windows, the combined ChatGPT/Codex Store application may place its packaged `codex.exe` on `PATH` even though background processes cannot execute that package path directly. Older workflows may also pin the retired WinGet package executable and remain stuck on an incompatible CLI version. Simphony detects both cases and resolves them to the newest user-accessible CLI copy under `%LOCALAPPDATA%\OpenAI\Codex\bin` or `%USERPROFILE%\.codex`. Open the ChatGPT/Codex app once after an update so it can stage the user-accessible copy. Preflight reports `agent_command_not_executable` when no usable copy is available.
+
 ```yaml
 codex:
   command: codex app-server

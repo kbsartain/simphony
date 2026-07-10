@@ -14,6 +14,14 @@ Build the CLI:
 go build ./cmd/simphony
 ```
 
+On Windows, prefer the verified production build script:
+
+```powershell
+.\build.ps1
+```
+
+It runs vet and tests, builds the root `simphony.exe` explicitly, and verifies that the executable timestamp changed. This prevents a successful package build from leaving an older production executable in place.
+
 Install the CLI from the public module path:
 
 ```bash

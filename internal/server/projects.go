@@ -79,7 +79,11 @@ func (s *ProjectServer) registerRoutes() {
 	s.mux.HandleFunc(s.apiPrefix+"/registry/projects/", s.withCORS(s.handleRegistryProjectRoute))
 	s.mux.HandleFunc(s.apiPrefix+"/state", s.withCORS(s.handleDefaultProjectState))
 	s.mux.HandleFunc(s.apiPrefix+"/refresh", s.withCORS(s.handleDefaultProjectRefresh))
+	s.mux.HandleFunc(s.apiPrefix+"/pause", s.withCORS(s.handleDefaultProjectPause))
+	s.mux.HandleFunc(s.apiPrefix+"/resume", s.withCORS(s.handleDefaultProjectResume))
+	s.mux.HandleFunc(s.apiPrefix+"/stages/", s.withCORS(s.handleDefaultProjectStageControl))
 	s.mux.HandleFunc(s.apiPrefix+"/settings/validate-tracker", s.withCORS(s.handleDefaultProjectValidateTrackerSettings))
+	s.mux.HandleFunc(s.apiPrefix+"/settings/models", s.withCORS(s.handleDefaultProjectModelCatalog))
 	s.mux.HandleFunc(s.apiPrefix+"/settings", s.withCORS(s.handleDefaultProjectSettings))
 	s.mux.HandleFunc(projectsPath, s.withCORS(s.handleProjects))
 	s.mux.HandleFunc(projectsPath+"/", s.withCORS(s.handleProjectRoute))
@@ -334,6 +338,7 @@ func (s *ProjectServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 			Name:                   summary.Name,
 			WorkflowPath:           summary.WorkflowPath,
 			Enabled:                summary.Enabled,
+			StartPaused:            summary.StartPaused,
 			Running:                summary.Running,
 			LastError:              summary.LastError,
 			Health:                 summary.Health,
@@ -344,6 +349,7 @@ func (s *ProjectServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if runtime, ok := s.manager.Runtime(summary.ID); ok {
 			if snapshot, ok := runtime.Snapshot(); ok {
 				projectSummary.Counts = snapshot.Counts
+				projectSummary.Control = snapshot.Control
 				projectSummary.Health = snapshot.Health
 				if snapshot.LastDispatchDeferredReason == "no_supervisor_slots" {
 					projectSummary.WaitingOnSupervisor = true
@@ -391,12 +397,31 @@ func (s *ProjectServer) handleProjectRoute(w http.ResponseWriter, r *http.Reques
 		s.handleProjectRefresh(w, r, runtime)
 		return
 	}
+	if len(parts) == 2 && (parts[1] == "pause" || parts[1] == "resume") {
+		s.handleProjectPause(w, r, runtime, parts[1] == "pause")
+		return
+	}
+	if len(parts) == 4 && parts[1] == "stages" && (parts[3] == "pause" || parts[3] == "resume") {
+		stage, err := url.PathUnescape(parts[2])
+		if err != nil || strings.TrimSpace(stage) == "" {
+			s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+				Error: api.APIError{Code: "invalid_stage", Message: "Pipeline stage is invalid"},
+			})
+			return
+		}
+		s.handleProjectStagePause(w, r, runtime, stage, parts[3] == "pause")
+		return
+	}
 	if len(parts) == 2 && parts[1] == "settings" {
 		s.handleProjectSettings(w, r, runtime)
 		return
 	}
 	if len(parts) == 3 && parts[1] == "settings" && parts[2] == "validate-tracker" {
 		s.handleProjectValidateTrackerSettings(w, r, runtime)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "settings" && parts[2] == "models" {
+		s.handleProjectModelCatalog(w, r, runtime)
 		return
 	}
 	if len(parts) == 3 && parts[1] == "issues" {
@@ -471,6 +496,46 @@ func (s *ProjectServer) handleProjectRefresh(w http.ResponseWriter, r *http.Requ
 	s.writeJSON(w, http.StatusAccepted, response)
 }
 
+func (s *ProjectServer) handleProjectPause(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime, paused bool) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+	state, ok := runtime.SetProjectPaused(paused)
+	if !ok {
+		s.writeJSON(w, http.StatusServiceUnavailable, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_not_running", Message: "Project runtime is not running"},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, state)
+}
+
+func (s *ProjectServer) handleProjectStagePause(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime, stage string, paused bool) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+	state, ok, err := runtime.SetStagePaused(stage, paused)
+	if !ok {
+		s.writeJSON(w, http.StatusServiceUnavailable, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_not_running", Message: "Project runtime is not running"},
+		})
+		return
+	}
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "invalid_stage", Message: err.Error()},
+		})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, state)
+}
+
 func (s *ProjectServer) handleProjectIssue(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime, identifier string) {
 	if r.Method != http.MethodGet {
 		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
@@ -510,6 +575,49 @@ func (s *ProjectServer) handleDefaultProjectRefresh(w http.ResponseWriter, r *ht
 	s.handleProjectRefresh(w, r, runtime)
 }
 
+func (s *ProjectServer) handleDefaultProjectPause(w http.ResponseWriter, r *http.Request) {
+	s.handleDefaultProjectControl(w, r, true)
+}
+
+func (s *ProjectServer) handleDefaultProjectResume(w http.ResponseWriter, r *http.Request) {
+	s.handleDefaultProjectControl(w, r, false)
+}
+
+func (s *ProjectServer) handleDefaultProjectControl(w http.ResponseWriter, r *http.Request, paused bool) {
+	runtime, ok := s.singleRunningRuntime()
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_required", Message: "Use a project-scoped pause or resume route when zero or multiple projects are running"},
+		})
+		return
+	}
+	s.handleProjectPause(w, r, runtime, paused)
+}
+
+func (s *ProjectServer) handleDefaultProjectStageControl(w http.ResponseWriter, r *http.Request) {
+	runtime, ok := s.singleRunningRuntime()
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_required", Message: "Use a project-scoped stage pause or resume route when zero or multiple projects are running"},
+		})
+		return
+	}
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, s.apiPrefix+"/stages/"), "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 2 || (parts[1] != "pause" && parts[1] != "resume") {
+		s.handleProjectAPINotFound(w, r)
+		return
+	}
+	stage, err := url.PathUnescape(parts[0])
+	if err != nil || strings.TrimSpace(stage) == "" {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "invalid_stage", Message: "Pipeline stage is invalid"},
+		})
+		return
+	}
+	s.handleProjectStagePause(w, r, runtime, stage, parts[1] == "pause")
+}
+
 func (s *ProjectServer) handleDefaultProjectSettings(w http.ResponseWriter, r *http.Request) {
 	runtime, ok := s.singleRunningRuntime()
 	if !ok {
@@ -530,6 +638,57 @@ func (s *ProjectServer) handleDefaultProjectValidateTrackerSettings(w http.Respo
 		return
 	}
 	s.handleProjectValidateTrackerSettings(w, r, runtime)
+}
+
+func (s *ProjectServer) handleDefaultProjectModelCatalog(w http.ResponseWriter, r *http.Request) {
+	runtime, ok := s.singleRunningRuntime()
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, api.APIErrorResponse{
+			Error: api.APIError{Code: "project_required", Message: "Use /api/v1/projects/{project_id}/settings/models when zero or multiple projects are running"},
+		})
+		return
+	}
+	s.handleProjectModelCatalog(w, r, runtime)
+}
+
+func (s *ProjectServer) handleProjectModelCatalog(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime) {
+	if r.Method != http.MethodPost {
+		s.writeJSON(w, http.StatusMethodNotAllowed, api.APIErrorResponse{
+			Error: api.APIError{Code: "method_not_allowed", Message: "Only POST is allowed"},
+		})
+		return
+	}
+	settings, err := runtime.WorkflowSettings()
+	if err != nil {
+		status, code := projectSettingsErrorStatus(err)
+		s.writeJSON(w, status, api.APIErrorResponse{Error: api.APIError{Code: code, Message: err.Error()}})
+		return
+	}
+	if settings.ResolvedConfig == nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "settings_validation_error", Message: "Project settings are not resolved"},
+		})
+		return
+	}
+	runtimeConfig, stage, err := modelCatalogRuntime(settings.ResolvedConfig, r.URL.Query().Get("stage"))
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
+			Error: api.APIError{Code: "invalid_stage", Message: err.Error()},
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	result, err := fetchModelCatalog(ctx, runtimeConfig)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadGateway, api.APIErrorResponse{
+			Error: api.APIError{Code: "model_catalog_error", Message: err.Error()},
+		})
+		return
+	}
+	result.ExecutionProvider = runtimeConfig.Provider
+	result.Stage = stage
+	s.writeJSON(w, http.StatusOK, result)
 }
 
 func (s *ProjectServer) handleProjectSettings(w http.ResponseWriter, r *http.Request, runtime project.ObservableRuntime) {
@@ -745,6 +904,7 @@ func registryResponse(registry *config.ProjectRegistry) (api.RegistryResponse, e
 			Name:                item.Name,
 			WorkflowPath:        item.WorkflowPath,
 			Enabled:             item.Enabled,
+			StartPaused:         item.StartPaused,
 			MaxConcurrentAgents: item.MaxConcurrentAgents,
 		})
 	}
@@ -827,6 +987,7 @@ func (s *ProjectServer) createRegistryProject(req api.RegistryProjectCreateReque
 		Name:                name,
 		WorkflowPath:        resolvedWorkflowPath,
 		Enabled:             enabled,
+		StartPaused:         req.StartPaused != nil && *req.StartPaused,
 		MaxConcurrentAgents: req.MaxConcurrentAgents,
 	}
 	nextRegistry.Projects = append(nextRegistry.Projects, nextProject)
@@ -839,6 +1000,7 @@ func (s *ProjectServer) createRegistryProject(req api.RegistryProjectCreateReque
 		Name:                name,
 		WorkflowPath:        filepath.ToSlash(workflowPathForYAML),
 		Enabled:             &enabled,
+		StartPaused:         req.StartPaused,
 		MaxConcurrentAgents: req.MaxConcurrentAgents,
 	}); err != nil {
 		return api.RegistryProjectCreateResponse{}, http.StatusInternalServerError, "registry_write_error", err
@@ -854,6 +1016,7 @@ func (s *ProjectServer) createRegistryProject(req api.RegistryProjectCreateReque
 		Name:                nextProject.Name,
 		WorkflowPath:        nextProject.WorkflowPath,
 		Enabled:             nextProject.Enabled,
+		StartPaused:         nextProject.StartPaused,
 		MaxConcurrentAgents: nextProject.MaxConcurrentAgents,
 	}
 	return api.RegistryProjectCreateResponse{
@@ -923,6 +1086,10 @@ func (s *ProjectServer) updateRegistryProject(projectID string, req api.Registry
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	startPaused := registry.Projects[projectIndex].StartPaused
+	if req.StartPaused != nil {
+		startPaused = *req.StartPaused
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = registry.Projects[projectIndex].ID
@@ -933,6 +1100,7 @@ func (s *ProjectServer) updateRegistryProject(projectID string, req api.Registry
 	nextProject.Name = name
 	nextProject.WorkflowPath = resolvedWorkflowPath
 	nextProject.Enabled = enabled
+	nextProject.StartPaused = startPaused
 	nextProject.MaxConcurrentAgents = maxConcurrentAgents
 	nextRegistry.Projects[projectIndex] = nextProject
 	if _, err := config.ValidateProjectIsolation(nextRegistry); err != nil {
@@ -943,6 +1111,7 @@ func (s *ProjectServer) updateRegistryProject(projectID string, req api.Registry
 		Name:                name,
 		WorkflowPath:        filepath.ToSlash(workflowPathForYAML),
 		Enabled:             &enabled,
+		StartPaused:         &startPaused,
 		MaxConcurrentAgents: &maxConcurrentAgents,
 	}); err != nil {
 		return api.RegistryProjectUpdateResponse{}, http.StatusInternalServerError, "registry_write_error", err
@@ -958,6 +1127,7 @@ func (s *ProjectServer) updateRegistryProject(projectID string, req api.Registry
 		Name:                nextProject.Name,
 		WorkflowPath:        nextProject.WorkflowPath,
 		Enabled:             nextProject.Enabled,
+		StartPaused:         nextProject.StartPaused,
 		MaxConcurrentAgents: nextProject.MaxConcurrentAgents,
 	}
 	return api.RegistryProjectUpdateResponse{
@@ -1543,6 +1713,13 @@ func updateRegistryProjectInFile(registryPath string, projectID string, req api.
 			setMappingValue(projectNode, "enabled", boolNode(false))
 		}
 	}
+	if req.StartPaused != nil {
+		if *req.StartPaused {
+			setMappingValue(projectNode, "start_paused", boolNode(true))
+		} else {
+			removeMappingValue(projectNode, "start_paused")
+		}
+	}
 	if req.MaxConcurrentAgents != nil {
 		if *req.MaxConcurrentAgents > 0 {
 			setMappingValue(projectNode, "max_concurrent_agents", intNode(*req.MaxConcurrentAgents))
@@ -1627,6 +1804,9 @@ func registryProjectNode(req api.RegistryProjectCreateRequest) *yaml.Node {
 	}
 	if req.Enabled != nil && !*req.Enabled {
 		content = append(content, scalarNode("enabled"), boolNode(false))
+	}
+	if req.StartPaused != nil && *req.StartPaused {
+		content = append(content, scalarNode("start_paused"), boolNode(true))
 	}
 	if req.MaxConcurrentAgents > 0 {
 		content = append(content, scalarNode("max_concurrent_agents"), intNode(req.MaxConcurrentAgents))

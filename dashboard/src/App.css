@@ -582,6 +582,111 @@ h3 {
   margin-bottom: 16px;
 }
 
+.workflow-control {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(420px, 1.15fr);
+  gap: 20px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--green);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 14px 40px rgba(31, 45, 39, 0.07);
+}
+
+.workflow-control.paused {
+  border-left-color: var(--amber);
+  background: #fffdf7;
+}
+
+.workflow-control-copy,
+.workflow-control-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.workflow-control-actions {
+  gap: 10px;
+}
+
+.workflow-control-copy h2,
+.workflow-control-copy p {
+  margin: 0;
+}
+
+.workflow-control-copy h2 {
+  font-size: 1.25rem;
+}
+
+.workflow-control-copy > p {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.pause-button {
+  border-color: #d6b16f;
+  color: #8b5816;
+  background: #fffaf0;
+}
+
+.resume-button {
+  border-color: #8bc5a7;
+  color: #226a48;
+  background: #f2fbf6;
+}
+
+.stage-control-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stage-control {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  gap: 3px;
+  align-content: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f9f4;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.stage-control span {
+  overflow: hidden;
+  font-size: 0.77rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-control strong {
+  color: var(--green);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.stage-control.paused {
+  border-color: #dfbd84;
+  background: var(--amber-soft);
+}
+
+.stage-control.paused strong {
+  color: #8b5816;
+}
+
+.stage-control:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .project-overview-heading {
   display: flex;
   align-items: end;
@@ -1776,6 +1881,13 @@ h3 {
   text-transform: uppercase;
 }
 
+.model-settings-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .settings-field textarea {
   width: 100%;
   min-height: 280px;
@@ -2137,6 +2249,10 @@ h3 {
 }
 
 @media (max-width: 1040px) {
+	.workflow-control {
+		grid-template-columns: 1fr;
+	}
+
   .project-health-row {
     grid-template-columns: 12px minmax(0, 1fr);
   }
@@ -2234,6 +2350,10 @@ h3 {
 
   .project-overview-stats {
     justify-content: flex-start;
+  }
+
+  .stage-control-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .project-health-row {

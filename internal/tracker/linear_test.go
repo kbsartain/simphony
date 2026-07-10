@@ -462,6 +462,63 @@ func TestNormalization(t *testing.T) {
 	}
 }
 
+func TestNormalization_BlockerRelationIsCaseInsensitive(t *testing.T) {
+	issue := normalizeIssue(linearIssue{
+		ID:         "issue-1",
+		Identifier: "TEST-1",
+		State: struct {
+			Name string `json:"name"`
+		}{Name: "Todo"},
+		InverseRelations: struct {
+			Nodes []struct {
+				Type  string `json:"type"`
+				Issue struct {
+					ID         string `json:"id"`
+					Identifier string `json:"identifier"`
+					State      struct {
+						Name string `json:"name"`
+					} `json:"state"`
+				} `json:"issue"`
+			} `json:"nodes"`
+		}{
+			Nodes: []struct {
+				Type  string `json:"type"`
+				Issue struct {
+					ID         string `json:"id"`
+					Identifier string `json:"identifier"`
+					State      struct {
+						Name string `json:"name"`
+					} `json:"state"`
+				} `json:"issue"`
+			}{
+				{
+					Type: "BLOCKS",
+					Issue: struct {
+						ID         string `json:"id"`
+						Identifier string `json:"identifier"`
+						State      struct {
+							Name string `json:"name"`
+						} `json:"state"`
+					}{
+						ID:         "blocker-1",
+						Identifier: "TEST-9",
+						State: struct {
+							Name string `json:"name"`
+						}{Name: "In Progress"},
+					},
+				},
+			},
+		},
+	})
+
+	if len(issue.BlockedBy) != 1 {
+		t.Fatalf("blocked_by length = %d, want 1", len(issue.BlockedBy))
+	}
+	if *issue.BlockedBy[0].ID != "blocker-1" {
+		t.Fatalf("blocked_by[0].id = %q, want blocker-1", *issue.BlockedBy[0].ID)
+	}
+}
+
 func TestErrorHandling_TransportError(t *testing.T) {
 	client := mustNewClient(t, "http://127.0.0.1:1", "proj", []string{"Todo"})
 

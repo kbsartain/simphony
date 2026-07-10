@@ -5,7 +5,7 @@ agent:
     max_turns: 20
 codex:
     approval_policy: never
-    command: C:\Users\kbsar\AppData\Local\Microsoft\WinGet\Packages\OpenAI.Codex_Microsoft.Winget.Source_8wekyb3d8bbwe\codex-x86_64-pc-windows-msvc.exe app-server
+    command: codex app-server
     read_timeout_ms: 5000
     reasoning_effort: high
     stall_timeout_ms: 300000

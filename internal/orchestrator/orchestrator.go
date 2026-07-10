@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kbsartain/simphony/internal/agentruntime"
 	"github.com/kbsartain/simphony/internal/preflight"
 	"github.com/kbsartain/simphony/internal/workspace"
 	"github.com/kbsartain/simphony/pkg/api"
@@ -49,6 +50,13 @@ const (
 	retryKindAgent                = "agent"
 	retryKindCompletionTransition = "completion_transition"
 )
+
+var controllablePipelineStages = map[string]struct{}{
+	"coding":            {},
+	"review":            {},
+	"review_resolution": {},
+	"merge":             {},
+}
 
 // Orchestrator owns the poll loop, dispatch, retries, and reconciliation.
 type Orchestrator struct {
@@ -99,6 +107,124 @@ func (o *Orchestrator) SetDispatchLimiter(limiter DispatchLimiter) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.limiter = limiter
+}
+
+// SetProjectPaused enables or disables a project-wide soft pause. Running
+// workers are not cancelled; only future dispatch and retry work is gated.
+func (o *Orchestrator) SetProjectPaused(paused bool) api.ControlState {
+	o.mu.Lock()
+	o.state.Paused = paused
+	state := o.controlStateLocked()
+	if !paused && o.lastDispatchDeferredReason == "project_paused" {
+		o.lastDispatchDeferredReason = ""
+		o.lastDispatchDeferredAt = time.Time{}
+	}
+	o.mu.Unlock()
+
+	if !paused {
+		o.wakeAfterResume()
+	}
+	return state
+}
+
+// SetStagePaused enables or disables a soft pause for one pipeline stage.
+// The accepted stages are coding, review, review_resolution, and merge.
+func (o *Orchestrator) SetStagePaused(stage string, paused bool) (api.ControlState, error) {
+	stage = normalizeControlStage(stage)
+	if _, ok := controllablePipelineStages[stage]; !ok {
+		return o.ControlState(), fmt.Errorf("unknown pipeline stage %q", stage)
+	}
+
+	o.mu.Lock()
+	if o.state.PausedStages == nil {
+		o.state.PausedStages = make(map[string]struct{})
+	}
+	if paused {
+		o.state.PausedStages[stage] = struct{}{}
+	} else {
+		delete(o.state.PausedStages, stage)
+		if o.lastDispatchDeferredReason == "stage_paused:"+stage {
+			o.lastDispatchDeferredReason = ""
+			o.lastDispatchDeferredAt = time.Time{}
+		}
+	}
+	state := o.controlStateLocked()
+	o.mu.Unlock()
+
+	if !paused {
+		o.wakeAfterResume()
+	}
+	return state, nil
+}
+
+// ControlState returns the current project and stage soft-pause state.
+func (o *Orchestrator) ControlState() api.ControlState {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.controlStateLocked()
+}
+
+func (o *Orchestrator) controlStateLocked() api.ControlState {
+	stages := make([]string, 0, len(o.state.PausedStages))
+	for stage := range o.state.PausedStages {
+		stages = append(stages, stage)
+	}
+	sort.Strings(stages)
+	return api.ControlState{Paused: o.state.Paused, PausedStages: stages}
+}
+
+func normalizeControlStage(stage string) string {
+	stage = strings.ToLower(strings.TrimSpace(stage))
+	stage = strings.ReplaceAll(stage, "-", "_")
+	stage = strings.ReplaceAll(stage, " ", "_")
+	return stage
+}
+
+func (o *Orchestrator) pauseReason(stage string) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.pauseReasonLocked(stage)
+}
+
+func (o *Orchestrator) pauseReasonLocked(stage string) string {
+	if o.state.Paused {
+		return "project_paused"
+	}
+	stage = normalizeControlStage(stage)
+	if _, paused := o.state.PausedStages[stage]; paused {
+		return "stage_paused:" + stage
+	}
+	return ""
+}
+
+func (o *Orchestrator) wakeAfterResume() {
+	o.mu.Lock()
+	retryIDs := make([]string, 0, len(o.state.RetryAttempts))
+	for issueID := range o.state.RetryAttempts {
+		retryIDs = append(retryIDs, issueID)
+	}
+	retryCh := o.retryCh
+	refreshCh := o.refreshCh
+	stopCh := o.stopCh
+	o.mu.Unlock()
+
+	if retryCh != nil {
+		for _, issueID := range retryIDs {
+			issueID := issueID
+			go func() {
+				select {
+				case retryCh <- issueID:
+				case <-stopCh:
+				}
+			}()
+		}
+	}
+	if refreshCh != nil {
+		select {
+		case refreshCh <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // SetLogContext configures project metadata added to orchestrator log messages.
@@ -207,6 +333,12 @@ func isSecretLogEnvName(key string) bool {
 // Start initializes state, performs startup cleanup, and begins the poll loop.
 func (o *Orchestrator) Start() {
 	o.mu.Lock()
+	// Preserve controls applied before Start so registry startup policy is in
+	// force before the poll loop can dispatch. A newly constructed orchestrator
+	// still begins unpaused because its zero-value control state is empty.
+	if o.state.PausedStages == nil {
+		o.state.PausedStages = make(map[string]struct{})
+	}
 	o.state.Running = make(map[string]*api.RunningEntry)
 	o.state.Claimed = make(map[string]struct{})
 	o.state.RetryAttempts = make(map[string]*api.RetryEntry)
@@ -586,7 +718,7 @@ func (o *Orchestrator) filterEligible(candidates []api.Issue) []api.Issue {
 			continue
 		}
 
-		if o.hasOpenBlocker(cfg, issue) {
+		if strings.EqualFold(stateNorm, "todo") && o.hasOpenBlocker(cfg, issue) {
 			continue
 		}
 
@@ -679,6 +811,12 @@ func issueSequence(identifier string) (string, int, bool) {
 
 func (o *Orchestrator) dispatch(issue api.Issue) bool {
 	runtime := o.runtimeSnapshot()
+	stage := o.pipelineStage(issue, runtime.cfg)
+	if reason := o.pauseReason(stage.Kind); reason != "" {
+		o.logf("issue_id=%s issue_identifier=%s action=dispatch_deferred reason=%s stage=%s", issue.ID, issue.Identifier, reason, stage.Kind)
+		o.setDispatchDeferred(reason, time.Now())
+		return reason != "project_paused"
+	}
 	if o.perStateSlots(issue.State) <= 0 {
 		o.logf("issue_id=%s issue_identifier=%s action=dispatch_deferred reason=no_state_slots state=%q", issue.ID, issue.Identifier, issue.State)
 		return true
@@ -698,7 +836,6 @@ func (o *Orchestrator) dispatch(issue api.Issue) bool {
 	o.state.Claimed[issue.ID] = struct{}{}
 	o.mu.Unlock()
 
-	stage := o.pipelineStage(issue, runtime.cfg)
 	workspace, err := runtime.workspaceMgr.PrepareWorkspace(issue)
 	if err != nil {
 		o.logf("issue_id=%s issue_identifier=%s action=workspace_prepare failed=%v", issue.ID, issue.Identifier, err)
@@ -742,16 +879,34 @@ func (o *Orchestrator) dispatch(issue api.Issue) bool {
 		}
 	}
 
+	// Pause may have been requested while workspace preparation or hooks were
+	// running. Re-check immediately before launching the worker so a completed
+	// pause request never starts a new agent process.
+	if reason := o.pauseReason(stage.Kind); reason != "" {
+		o.logf("issue_id=%s issue_identifier=%s action=dispatch_deferred reason=%s stage=%s checkpoint=before_worker", issue.ID, issue.Identifier, reason, stage.Kind)
+		o.setDispatchDeferred(reason, time.Now())
+		o.mu.Lock()
+		delete(o.state.Claimed, issue.ID)
+		o.mu.Unlock()
+		o.releaseSupervisorSlot(supervisorSlotAcquired)
+		return reason != "project_paused"
+	}
+
+	effectiveRuntime := agentruntime.EffectiveConfig(&runtime.cfg.AgentRuntime, stage)
 	o.mu.Lock()
 	o.state.Running[issue.ID] = &api.RunningEntry{
 		Issue:                  issue,
+		Stage:                  stage.Kind,
+		ExecutionProvider:      effectiveRuntime.Provider,
+		Model:                  effectiveRuntime.Model,
+		ModelProvider:          effectiveRuntime.ModelProvider,
 		StartedAt:              time.Now(),
 		WorkspacePath:          workspace.Path,
 		SupervisorSlotAcquired: supervisorSlotAcquired,
 	}
 	o.mu.Unlock()
 	o.clearDispatchDeferred("no_supervisor_slots")
-	o.logf("issue_id=%s issue_identifier=%s action=dispatch_started state=%q workspace=%q", issue.ID, issue.Identifier, issue.State, workspace.Path)
+	o.logf("issue_id=%s issue_identifier=%s action=dispatch_started state=%q stage=%s execution_provider=%s model_provider=%s model=%s workspace=%q", issue.ID, issue.Identifier, issue.State, stage.Kind, effectiveRuntime.Provider, effectiveRuntime.ModelProvider, effectiveRuntime.Model, workspace.Path)
 	if stage.Kind == "review_resolution" {
 		o.postStatusComment(issue, runtime, "Simphony review resolution started", fmt.Sprintf("Autonomous PR/code-review resolution is running.\n\nPolicy:\n- Require checks green: %t\n- Require review approval: %t\n- Unresolved comments: %s",
 			runtime.cfg.ReviewResolution.RequireChecksGreen,
@@ -1334,6 +1489,13 @@ func (o *Orchestrator) handleRetry(issueID string) {
 		return
 	}
 
+	stage := o.pipelineStage(*issue, runtime.cfg)
+	if reason := o.pauseReason(stage.Kind); reason != "" {
+		o.logf("issue_id=%s issue_identifier=%s action=retry_deferred reason=%s stage=%s", issueID, issue.Identifier, reason, stage.Kind)
+		o.setDispatchDeferred(reason, time.Now())
+		return
+	}
+
 	if !o.canDispatch() || o.perStateSlots(issue.State) <= 0 {
 		o.logf("issue_id=%s issue_identifier=%s action=retry_no_slots requeuing", issueID, issue.Identifier)
 		o.scheduleFailureRetry(issueID, issue.Identifier, "no available orchestrator slots")
@@ -1388,6 +1550,12 @@ func (o *Orchestrator) handleCompletionTransitionRetry(ctx context.Context, runt
 		o.releaseClaim(issueID)
 		return
 	}
+	stage := o.pipelineStage(issue, runtime.cfg)
+	if reason := o.pauseReason(stage.Kind); reason != "" {
+		o.logf("issue_id=%s issue_identifier=%s action=completion_transition_retry deferred=%s stage=%s", issueID, identifier, reason, stage.Kind)
+		o.setDispatchDeferred(reason, time.Now())
+		return
+	}
 	if equalState(issue.State, runtime.cfg.Pipeline.MergeState) {
 		o.transitionMergeIssueToDone(ctx, runtime, issue, identifier, "")
 		return
@@ -1416,6 +1584,33 @@ func (o *Orchestrator) handleCompletionTransitionRetry(ctx context.Context, runt
 }
 
 func (o *Orchestrator) transitionMergeIssueToDone(ctx context.Context, runtime runtimeSnapshot, issue api.Issue, identifier string, workspacePath string) {
+	if runtime.workspaceMgr != nil {
+		if strings.TrimSpace(workspacePath) == "" {
+			workspacePath = runtime.workspaceMgr.GetWorkspacePath(issue.Identifier)
+		}
+		var verify func(string) error
+		if len(runtime.cfg.Verify.Commands) > 0 {
+			verify = func(repoPath string) error {
+				return runtime.workspaceMgr.RunVerifyCommands(repoPath, runtime.cfg.Verify.Commands, runtime.cfg.Verify.TimeoutMs)
+			}
+		}
+		var mergeErr error
+		mergeAction := "merge_branch"
+		if runtime.cfg.GitHub.Enabled {
+			mergeAction = "merge_branch_github_pr"
+			mergeErr = runtime.workspaceMgr.MergeIssueBranchViaGitHubPR(issue, workspacePath, verify, runtime.cfg.GitHub)
+		} else {
+			mergeErr = runtime.workspaceMgr.MergeWorkspaceToBaseBranchVerified(issue, workspacePath, verify)
+		}
+		if mergeErr != nil {
+			o.logf("issue_id=%s issue_identifier=%s action=%s status=failed error=%v", issue.ID, identifier, mergeAction, mergeErr)
+			_ = runtime.tracker.AddIssueComment(ctx, issue, fmt.Sprintf("**Simphony merge failed**\n\nThe branch was not merged into `%s`:\n\n```\n%v\n```\n\nSimphony will retry automatically.", runtime.cfg.Workspace.BaseBranch, mergeErr))
+			o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("branch merge into %s: %v", runtime.cfg.Workspace.BaseBranch, mergeErr), retryKindCompletionTransition)
+			return
+		}
+		o.logf("issue_id=%s issue_identifier=%s action=%s status=success", issue.ID, identifier, mergeAction)
+	}
+
 	updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, runtime.cfg.Pipeline.DoneState)
 	if err != nil {
 		o.logf("issue_id=%s issue_identifier=%s action=merge_completion_transition status=failed error=%v", issue.ID, identifier, err)
@@ -1636,19 +1831,23 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 		}
 
 		running = append(running, api.RunningSnapshot{
-			IssueID:         entry.Issue.ID,
-			IssueIdentifier: entry.Issue.Identifier,
-			IssueTitle:      entry.Issue.Title,
-			IssueURL:        entry.Issue.URL,
-			Priority:        entry.Issue.Priority,
-			Labels:          cloneStringSlice(entry.Issue.Labels),
-			State:           entry.Issue.State,
-			SessionID:       entry.Session.SessionID,
-			TurnCount:       entry.Session.TurnCount,
-			LastEvent:       lastEvent,
-			LastMessage:     lastMessage,
-			StartedAt:       entry.StartedAt,
-			LastEventAt:     lastEventAt,
+			IssueID:           entry.Issue.ID,
+			IssueIdentifier:   entry.Issue.Identifier,
+			IssueTitle:        entry.Issue.Title,
+			IssueURL:          entry.Issue.URL,
+			Priority:          entry.Issue.Priority,
+			Labels:            cloneStringSlice(entry.Issue.Labels),
+			State:             entry.Issue.State,
+			Stage:             entry.Stage,
+			ExecutionProvider: entry.ExecutionProvider,
+			Model:             entry.Model,
+			ModelProvider:     entry.ModelProvider,
+			SessionID:         entry.Session.SessionID,
+			TurnCount:         entry.Session.TurnCount,
+			LastEvent:         lastEvent,
+			LastMessage:       lastMessage,
+			StartedAt:         entry.StartedAt,
+			LastEventAt:       lastEventAt,
 			Tokens: api.TokenSnapshot{
 				InputTokens:  entry.Session.CodexInputTokens,
 				OutputTokens: entry.Session.CodexOutputTokens,
@@ -1688,6 +1887,7 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 		GeneratedAt:                now,
 		PollIntervalMs:             o.state.PollIntervalMs,
 		MaxConcurrentAgents:        o.state.MaxConcurrentAgents,
+		Control:                    o.controlStateLocked(),
 		LastDispatchDeferredReason: o.lastDispatchDeferredReason,
 		LastDispatchDeferredAt:     lastDeferredAt,
 		Health:                     o.preflightHealth,
@@ -1794,18 +1994,22 @@ func (o *Orchestrator) IssueDetail(identifier string) (api.IssueDetailResponse, 
 				Workspace:       api.WorkspaceDetail{Path: entry.WorkspacePath},
 				Attempts:        api.AttemptDetail{RestartCount: entry.Session.TurnCount},
 				Running: &api.RunningSnapshot{
-					IssueID:         entry.Issue.ID,
-					IssueIdentifier: identifier,
-					IssueTitle:      entry.Issue.Title,
-					IssueURL:        entry.Issue.URL,
-					Priority:        entry.Issue.Priority,
-					Labels:          cloneStringSlice(entry.Issue.Labels),
-					State:           entry.Issue.State,
-					SessionID:       entry.Session.SessionID,
-					TurnCount:       entry.Session.TurnCount,
-					LastEvent:       lastEvent,
-					LastMessage:     lastMessage,
-					StartedAt:       entry.StartedAt,
+					IssueID:           entry.Issue.ID,
+					IssueIdentifier:   identifier,
+					IssueTitle:        entry.Issue.Title,
+					IssueURL:          entry.Issue.URL,
+					Priority:          entry.Issue.Priority,
+					Labels:            cloneStringSlice(entry.Issue.Labels),
+					State:             entry.Issue.State,
+					Stage:             entry.Stage,
+					ExecutionProvider: entry.ExecutionProvider,
+					Model:             entry.Model,
+					ModelProvider:     entry.ModelProvider,
+					SessionID:         entry.Session.SessionID,
+					TurnCount:         entry.Session.TurnCount,
+					LastEvent:         lastEvent,
+					LastMessage:       lastMessage,
+					StartedAt:         entry.StartedAt,
 					LastEventAt: func() time.Time {
 						if entry.Session.LastCodexTimestamp != nil {
 							return *entry.Session.LastCodexTimestamp

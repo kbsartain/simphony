@@ -26,7 +26,7 @@ agent_runtime:
   endpoint_url: $ANTHROPIC_BASE_URL
 ```
 
-Only values that begin with `$` are resolved this way. Other strings are used literally.
+Only values that begin with `$` are resolved this way. Literal `api_key` and `auth_token` values are rejected; non-secret configuration strings are used literally.
 
 ## Setting Values Locally
 
@@ -71,12 +71,15 @@ Before dispatching work, Simphony runs a local environment preflight for each ru
 
 The preflight currently checks:
 
-- agent runtime command availability,
+- default and per-stage agent runtime command availability,
+- explicitly configured agent API-key and auth-token references resolve to non-empty values,
 - workspace root configuration,
 - Git repository readability for `git_worktree` projects,
 - Windows-incompatible tracked paths when running on Windows.
 
 The dashboard shows each project as `Ready`, `Warning`, or `Blocked` with the concrete finding. A blocked project is skipped until the configuration or host environment is corrected.
+
+If `api_key` or `auth_token` is present in workflow configuration but its environment variable resolves empty, preflight blocks dispatch and identifies the affected stage. If neither field is configured, preflight permits dispatch because Codex or Claude may use an authenticated local SDK session. Simphony cannot verify that local session in advance; an authentication failure from the SDK follows normal runtime error and retry handling.
 
 ## Windows And WSL
 

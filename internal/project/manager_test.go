@@ -14,6 +14,11 @@ import (
 	"github.com/kbsartain/simphony/internal/workspace"
 )
 
+func TestMain(m *testing.M) {
+	_ = os.Setenv("SIM_TEST_TRACKER_KEY", "test-key")
+	os.Exit(m.Run())
+}
+
 type fakeRuntime struct {
 	project      config.RegistryProject
 	startErr     error
@@ -358,7 +363,7 @@ func writeRuntimeWorkflow(t *testing.T, path string, projectSlug string, workspa
 	writeRawWorkflow(t, path, fmt.Sprintf(`---
 tracker:
   kind: linear
-  api_key: test-linear-key
+  api_key: $SIM_TEST_TRACKER_KEY
   project_slug: %s
 workspace:
   root: %q

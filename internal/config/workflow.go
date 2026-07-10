@@ -186,6 +186,16 @@ func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.Workfl
 		return nil, err
 	}
 
+	verifyMap := getSubMap(def.Config, "verify")
+	if err := resolveVerify(verifyMap, cfg); err != nil {
+		return nil, err
+	}
+
+	githubMap := getSubMap(def.Config, "github")
+	if err := resolveGitHubConfig(githubMap, cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
 }
 
@@ -332,6 +342,9 @@ func resolveTracker(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	apiKeyRaw, ok := getString(m, "api_key")
 	if !ok {
 		return fmt.Errorf("%s: tracker.api_key is required", api.ErrMissingTrackerAPIKey)
+	}
+	if err := validateSecretRef("tracker.api_key", apiKeyRaw); err != nil {
+		return err
 	}
 	apiKey := ResolveEnvVar(apiKeyRaw)
 	if apiKey == "" {
@@ -894,10 +907,16 @@ func applyRuntimeCommon(m map[string]interface{}, runtime *api.AgentRuntimeConfi
 		runtime.EndpointURL = strings.TrimSpace(ResolveEnvVar(v))
 	}
 	if v, ok := getString(m, "api_key"); ok {
+		if err := validateSecretRef(section+".api_key", v); err != nil {
+			return err
+		}
 		runtime.APIKey = ResolveEnvVar(strings.TrimSpace(v))
 		runtime.APIKeyConfigured = strings.TrimSpace(v) != ""
 	}
 	if v, ok := getString(m, "auth_token"); ok {
+		if err := validateSecretRef(section+".auth_token", v); err != nil {
+			return err
+		}
 		runtime.AuthToken = ResolveEnvVar(strings.TrimSpace(v))
 		runtime.AuthTokenConfigured = strings.TrimSpace(v) != ""
 	}
@@ -966,6 +985,17 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 			return nil, fmt.Errorf("%s: %s.stage_overrides.%s must be a map", api.ErrWorkflowParseError, section, stageName)
 		}
 		override := api.AgentStageOverride{}
+		if v, ok := getString(stageMap, "provider"); ok && strings.TrimSpace(v) != "" {
+			override.Provider = strings.ToLower(strings.TrimSpace(v))
+			switch override.Provider {
+			case "codex", "claude":
+			default:
+				return nil, fmt.Errorf("%s: %s.stage_overrides.%s.provider must be codex or claude, got %q", api.ErrWorkflowParseError, section, stageName, override.Provider)
+			}
+		}
+		if v, ok := getString(stageMap, "command"); ok {
+			override.Command = strings.TrimSpace(v)
+		}
 		if v, ok := getString(stageMap, "model"); ok {
 			override.Model = strings.TrimSpace(v)
 		}
@@ -983,10 +1013,16 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 			override.EndpointURL = strings.TrimSpace(ResolveEnvVar(v))
 		}
 		if v, ok := getString(stageMap, "api_key"); ok {
+			if err := validateSecretRef(fmt.Sprintf("%s.stage_overrides.%s.api_key", section, stageName), v); err != nil {
+				return nil, err
+			}
 			override.APIKey = ResolveEnvVar(strings.TrimSpace(v))
 			override.APIKeyConfigured = strings.TrimSpace(v) != ""
 		}
 		if v, ok := getString(stageMap, "auth_token"); ok {
+			if err := validateSecretRef(fmt.Sprintf("%s.stage_overrides.%s.auth_token", section, stageName), v); err != nil {
+				return nil, err
+			}
 			override.AuthToken = ResolveEnvVar(strings.TrimSpace(v))
 			override.AuthTokenConfigured = strings.TrimSpace(v) != ""
 		}
@@ -1001,7 +1037,28 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 			return nil, fmt.Errorf("%s: %s.stage_overrides.%s.skills %w", api.ErrWorkflowParseError, section, stageName, err)
 		}
 		override.Skills = skills
-		if override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && override.EndpointURL == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured && len(override.Env) == 0 && len(override.Skills) == 0 {
+		if v, ok := getStringSlice(stageMap, "allowed_tools"); ok {
+			override.AllowedTools = v
+		}
+		if v, ok := getStringSlice(stageMap, "disallowed_tools"); ok {
+			override.DisallowedTools = v
+		}
+		if v, ok := getString(stageMap, "permission_mode"); ok {
+			override.PermissionMode = strings.TrimSpace(v)
+		}
+		if v, ok := getStringSlice(stageMap, "setting_sources"); ok {
+			override.SettingSources = v
+		}
+		if v, ok := getString(stageMap, "approval_policy"); ok {
+			override.ApprovalPolicy = strings.TrimSpace(v)
+		}
+		if v, ok := getString(stageMap, "thread_sandbox"); ok {
+			override.ThreadSandbox = strings.TrimSpace(v)
+		}
+		if v, ok := getString(stageMap, "turn_sandbox_policy"); ok {
+			override.TurnSandboxPolicy = strings.TrimSpace(v)
+		}
+		if override.Provider == "" && override.Command == "" && override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && override.EndpointURL == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured && len(override.Env) == 0 && len(override.Skills) == 0 && len(override.AllowedTools) == 0 && len(override.DisallowedTools) == 0 && override.PermissionMode == "" && len(override.SettingSources) == 0 && override.ApprovalPolicy == "" && override.ThreadSandbox == "" && override.TurnSandboxPolicy == "" {
 			continue
 		}
 		overrides[stageKey] = override
@@ -1023,8 +1080,10 @@ func normalizeReasoningEffort(value string) (string, error) {
 		return "", nil
 	case "none", "minimal", "low", "medium", "high", "xhigh":
 		return normalized, nil
+	case "max":
+		return "xhigh", nil
 	default:
-		return "", fmt.Errorf("must be one of none, minimal, low, medium, high, or xhigh, got %q", raw)
+		return "", fmt.Errorf("must be one of none, minimal, low, medium, high, xhigh, or max, got %q", raw)
 	}
 }
 
@@ -1102,12 +1161,73 @@ func resolveServer(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	return nil
 }
 
+func resolveVerify(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	verify := api.VerifyConfig{TimeoutMs: 600000}
+	if v, ok := getStringSlice(m, "commands"); ok {
+		verify.Commands = v
+	}
+	if v, ok := getInt(m, "timeout_ms"); ok {
+		if v <= 0 {
+			return fmt.Errorf("%s: verify.timeout_ms must be positive, got %d", api.ErrWorkflowParseError, v)
+		}
+		verify.TimeoutMs = v
+	}
+	cfg.Verify = verify
+	return nil
+}
+
+func resolveGitHubConfig(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	github := api.GitHubConfig{
+		MergeMethod:               "squash",
+		ChecksTimeoutMs:           1800000,
+		ChecksRegistrationGraceMs: 60000,
+	}
+	if v, ok := getBool(m, "enabled"); ok {
+		github.Enabled = v
+	}
+	if v, ok := getString(m, "merge_method"); ok && strings.TrimSpace(v) != "" {
+		method := strings.ToLower(strings.TrimSpace(v))
+		if method != "merge" && method != "squash" && method != "rebase" {
+			return fmt.Errorf("%s: github.merge_method must be merge, squash, or rebase, got %q", api.ErrWorkflowParseError, method)
+		}
+		github.MergeMethod = method
+	}
+	if v, ok := getInt(m, "checks_timeout_ms"); ok {
+		if v <= 0 {
+			return fmt.Errorf("%s: github.checks_timeout_ms must be positive, got %d", api.ErrWorkflowParseError, v)
+		}
+		github.ChecksTimeoutMs = v
+	}
+	if v, ok := getInt(m, "checks_registration_grace_ms"); ok {
+		if v < 0 {
+			return fmt.Errorf("%s: github.checks_registration_grace_ms must be non-negative, got %d", api.ErrWorkflowParseError, v)
+		}
+		github.ChecksRegistrationGraceMs = v
+	}
+	cfg.GitHub = github
+	return nil
+}
+
 // ResolveEnvVar replaces $VAR_NAME with the environment variable value.
 func ResolveEnvVar(value string) string {
 	if strings.HasPrefix(value, "$") {
 		return os.Getenv(value[1:])
 	}
 	return value
+}
+
+// validateSecretRef rejects literal values in known secret fields. Secrets
+// must be referenced through environment variables so credentials cannot be
+// silently committed to a workflow or registry file.
+func validateSecretRef(fieldPath, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "$") {
+		return nil
+	}
+	return fmt.Errorf("%s: %s must reference an environment variable (start with $), but a literal value was provided", api.ErrLiteralSecret, fieldPath)
 }
 
 // DefaultWorkflowPath returns the default WORKFLOW.md path in the current working directory.

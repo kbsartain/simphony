@@ -352,6 +352,323 @@ func TestOrchestrator_DispatchEligibility(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_ProjectSoftPauseDefersAndResumeDispatches(t *testing.T) {
+	tracker := &mockTracker{}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1}
+	cfg := defaultConfig()
+	cfg.Polling.IntervalMs = 10_000
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+	orch.SetProjectPaused(true)
+	tracker.setCandidates([]api.Issue{{ID: "1", Identifier: "A-1", Title: "First", State: "Todo"}})
+	orch.Refresh()
+	time.Sleep(100 * time.Millisecond)
+
+	runner.mu.Lock()
+	runsWhilePaused := len(runner.runs)
+	runner.mu.Unlock()
+	if runsWhilePaused != 0 {
+		t.Fatalf("runs while project paused = %d, want 0", runsWhilePaused)
+	}
+	snap := orch.Snapshot()
+	if !snap.Control.Paused || snap.LastDispatchDeferredReason != "project_paused" {
+		t.Fatalf("snapshot control = %+v deferred=%q, want project paused", snap.Control, snap.LastDispatchDeferredReason)
+	}
+
+	orch.SetProjectPaused(false)
+	time.Sleep(100 * time.Millisecond)
+	runner.mu.Lock()
+	runsAfterResume := len(runner.runs)
+	runner.mu.Unlock()
+	if runsAfterResume != 1 {
+		t.Fatalf("runs after resume = %d, want 1", runsAfterResume)
+	}
+}
+
+func TestOrchestrator_ProjectSoftPauseAppliedBeforeStartPreventsInitialDispatch(t *testing.T) {
+	tracker := &mockTracker{}
+	tracker.setCandidates([]api.Issue{{ID: "1", Identifier: "A-1", Title: "First", State: "Todo"}})
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1}
+	cfg := defaultConfig()
+	cfg.Polling.IntervalMs = 10_000
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.SetProjectPaused(true)
+	orch.Start()
+	defer orch.Stop()
+	orch.Refresh()
+	time.Sleep(100 * time.Millisecond)
+
+	runner.mu.Lock()
+	runsWhilePaused := len(runner.runs)
+	runner.mu.Unlock()
+	if runsWhilePaused != 0 {
+		t.Fatalf("runs while initially paused = %d, want 0", runsWhilePaused)
+	}
+	if snap := orch.Snapshot(); !snap.Control.Paused || snap.LastDispatchDeferredReason != "project_paused" {
+		t.Fatalf("snapshot control = %+v deferred=%q, want startup project pause", snap.Control, snap.LastDispatchDeferredReason)
+	}
+
+	orch.SetProjectPaused(false)
+	time.Sleep(100 * time.Millisecond)
+	runner.mu.Lock()
+	runsAfterResume := len(runner.runs)
+	runner.mu.Unlock()
+	if runsAfterResume != 1 {
+		t.Fatalf("runs after startup pause resume = %d, want 1", runsAfterResume)
+	}
+}
+
+func TestOrchestrator_StageSoftPauseRecognizesEveryPipelineStage(t *testing.T) {
+	stages := []string{"coding", "review", "review_resolution", "merge"}
+
+	for _, stage := range stages {
+		t.Run(stage, func(t *testing.T) {
+			orch := New(defaultConfig(), nil, nil, nil)
+			state, err := orch.SetStagePaused(stage, true)
+			if err != nil {
+				t.Fatalf("pause %s: %v", stage, err)
+			}
+			if len(state.PausedStages) != 1 || state.PausedStages[0] != stage {
+				t.Fatalf("paused stages = %v, want [%s]", state.PausedStages, stage)
+			}
+			if got, want := orch.pauseReason(stage), "stage_paused:"+stage; got != want {
+				t.Fatalf("pauseReason(%q) = %q, want %q", stage, got, want)
+			}
+
+			state, err = orch.SetStagePaused(stage, false)
+			if err != nil {
+				t.Fatalf("resume %s: %v", stage, err)
+			}
+			if len(state.PausedStages) != 0 || orch.pauseReason(stage) != "" {
+				t.Fatalf("state after resume = %+v reason=%q", state, orch.pauseReason(stage))
+			}
+		})
+	}
+}
+
+func TestOrchestrator_StageSoftPauseOnlyDefersMatchingStage(t *testing.T) {
+	tracker := &mockTracker{byIDs: make(map[string]api.Issue)}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1, delay: 500 * time.Millisecond}
+	cfg := defaultConfig()
+	cfg.Polling.IntervalMs = 10_000
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "In Review", "Approved"}
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+	// Let the immediate startup tick observe the intentionally empty tracker
+	// before installing candidates for the pause-specific refresh.
+	time.Sleep(50 * time.Millisecond)
+	if _, err := orch.SetStagePaused("In Review", true); err == nil {
+		t.Fatal("expected issue-state name to be rejected as an unknown pipeline stage")
+	}
+	state, err := orch.SetStagePaused("review", true)
+	if err != nil {
+		t.Fatalf("pause review: %v", err)
+	}
+	if len(state.PausedStages) != 1 || state.PausedStages[0] != "review" {
+		t.Fatalf("paused stages = %v, want [review]", state.PausedStages)
+	}
+	issues := []api.Issue{
+		{ID: "1", Identifier: "A-1", Title: "Coding", State: "Todo"},
+		{ID: "2", Identifier: "A-2", Title: "Review", State: "In Review"},
+	}
+	tracker.setCandidates(issues)
+	tracker.setByID(map[string]api.Issue{"1": issues[0], "2": issues[1]})
+	orch.Refresh()
+	time.Sleep(100 * time.Millisecond)
+
+	runner.mu.Lock()
+	stages := append([]api.PipelineStage(nil), runner.stages...)
+	runner.mu.Unlock()
+	if len(stages) != 1 || stages[0].Kind != "coding" {
+		t.Fatalf("stages while review paused = %v, want only coding", stages)
+	}
+
+	if _, err := orch.SetStagePaused("review", false); err != nil {
+		t.Fatalf("resume review: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	runner.mu.Lock()
+	stages = append([]api.PipelineStage(nil), runner.stages...)
+	runner.mu.Unlock()
+	if len(stages) != 2 || stages[1].Kind != "review" {
+		t.Fatalf("stages after review resume = %v, want coding then review", stages)
+	}
+}
+
+func TestOrchestrator_PausedStageUsesHotReloadedSDKOnResume(t *testing.T) {
+	tracker := &mockTracker{byIDs: make(map[string]api.Issue)}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1, delay: 500 * time.Millisecond}
+	cfg := defaultConfig()
+	cfg.Polling.IntervalMs = 10_000
+	cfg.Tracker.ActiveStates = append(cfg.Tracker.ActiveStates, "In Review")
+	cfg.AgentRuntime.Provider = "codex"
+	cfg.AgentRuntime.Model = "gpt-review-old"
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+	time.Sleep(50 * time.Millisecond)
+	if _, err := orch.SetStagePaused("review", true); err != nil {
+		t.Fatalf("pause review: %v", err)
+	}
+
+	issue := api.Issue{ID: "1", Identifier: "A-1", Title: "Reloaded review", State: "In Review"}
+	tracker.setCandidates([]api.Issue{issue})
+	tracker.setByID(map[string]api.Issue{"1": issue})
+
+	reloaded := *cfg
+	reloaded.AgentRuntime = cfg.AgentRuntime
+	reloaded.AgentRuntime.StageOverrides = map[string]api.AgentStageOverride{
+		"review": {
+			Provider:      "claude",
+			Model:         "claude-opus-reloaded",
+			ModelProvider: "anthropic",
+		},
+	}
+	orch.UpdateConfig(&reloaded)
+	orch.Refresh()
+	time.Sleep(100 * time.Millisecond)
+	runner.mu.Lock()
+	runsWhilePaused := len(runner.runs)
+	runner.mu.Unlock()
+	if runsWhilePaused != 0 {
+		t.Fatalf("runs while review paused = %d, want 0", runsWhilePaused)
+	}
+
+	if _, err := orch.SetStagePaused("review", false); err != nil {
+		t.Fatalf("resume review: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := orch.Snapshot()
+		if len(snapshot.Running) == 1 {
+			running := snapshot.Running[0]
+			if running.ExecutionProvider != "claude" || running.Model != "claude-opus-reloaded" || running.ModelProvider != "anthropic" {
+				t.Fatalf("effective runtime after resume = %+v", running)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("review did not dispatch after resume")
+}
+
+func TestOrchestrator_SoftPauseDoesNotCancelInFlightWorker(t *testing.T) {
+	issue := api.Issue{ID: "1", Identifier: "A-1", Title: "First", State: "In Progress"}
+	tracker := &mockTracker{
+		candidates: []api.Issue{issue},
+		byIDs:      map[string]api.Issue{"1": issue},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1, delay: 150 * time.Millisecond}
+	cfg := defaultConfig()
+	cfg.Polling.IntervalMs = 10_000
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+	time.Sleep(50 * time.Millisecond)
+	if got := orch.Snapshot().Counts.Running; got != 1 {
+		t.Fatalf("running before pause = %d, want 1", got)
+	}
+	orch.SetProjectPaused(true)
+	time.Sleep(200 * time.Millisecond)
+
+	tracker.mu.Lock()
+	moves := append([]string(nil), tracker.movedIssues...)
+	tracker.mu.Unlock()
+	if len(moves) != 1 || moves[0] != "1" {
+		t.Fatalf("completion transitions after soft pause = %v, want [1]", moves)
+	}
+	if got := orch.Snapshot().Counts.Running; got != 0 {
+		t.Fatalf("running after worker completion = %d, want 0", got)
+	}
+}
+
+func TestOrchestrator_PausedRetryRetainsAttemptAndResumes(t *testing.T) {
+	issue := api.Issue{ID: "1", Identifier: "A-1", Title: "Retry", State: "Todo"}
+	tracker := &mockTracker{candidates: []api.Issue{issue}, byIDs: map[string]api.Issue{"1": issue}}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1}
+	cfg := defaultConfig()
+	cfg.Polling.IntervalMs = 10_000
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+	orch.SetProjectPaused(true)
+	orch.mu.Lock()
+	orch.state.Claimed[issue.ID] = struct{}{}
+	orch.state.RetryAttempts[issue.ID] = &api.RetryEntry{
+		IssueID: issue.ID, Identifier: issue.Identifier, Kind: retryKindAgent, Attempt: 3, DueAtMs: time.Now().Add(-time.Second).UnixMilli(),
+	}
+	orch.mu.Unlock()
+
+	orch.handleRetry(issue.ID)
+	orch.mu.Lock()
+	retry := orch.state.RetryAttempts[issue.ID]
+	orch.mu.Unlock()
+	if retry == nil || retry.Attempt != 3 {
+		t.Fatalf("retry while paused = %#v, want retained attempt 3", retry)
+	}
+	runner.mu.Lock()
+	runs := len(runner.runs)
+	runner.mu.Unlock()
+	if runs != 0 {
+		t.Fatalf("runs while retry paused = %d, want 0", runs)
+	}
+
+	orch.SetProjectPaused(false)
+	time.Sleep(100 * time.Millisecond)
+	runner.mu.Lock()
+	runs = len(runner.runs)
+	runner.mu.Unlock()
+	if runs != 1 {
+		t.Fatalf("runs after retry resume = %d, want 1", runs)
+	}
+}
+
+func TestOrchestrator_PausedMergeBlocksCompletionTransitionRetry(t *testing.T) {
+	issue := api.Issue{ID: "1", Identifier: "A-1", Title: "Merge", State: "Approved"}
+	tracker := &mockTracker{byIDs: map[string]api.Issue{"1": issue}}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	orch := New(defaultConfig(), tracker, wsMgr, &mockRunner{errAfter: -1})
+	orch.Start()
+	defer orch.Stop()
+	if _, err := orch.SetStagePaused("merge", true); err != nil {
+		t.Fatalf("pause merge: %v", err)
+	}
+	orch.mu.Lock()
+	orch.state.Claimed[issue.ID] = struct{}{}
+	orch.state.RetryAttempts[issue.ID] = &api.RetryEntry{
+		IssueID: issue.ID, Identifier: issue.Identifier, Kind: retryKindCompletionTransition, Attempt: 2, DueAtMs: time.Now().Add(-time.Second).UnixMilli(),
+	}
+	orch.mu.Unlock()
+
+	orch.handleRetry(issue.ID)
+	tracker.mu.Lock()
+	moves := append([]string(nil), tracker.movedIssues...)
+	tracker.mu.Unlock()
+	if len(moves) != 0 {
+		t.Fatalf("merge moves while paused = %v, want none", moves)
+	}
+	orch.mu.Lock()
+	retry := orch.state.RetryAttempts[issue.ID]
+	orch.mu.Unlock()
+	if retry == nil || retry.Attempt != 2 {
+		t.Fatalf("merge retry while paused = %#v, want retained attempt 2", retry)
+	}
+}
+
 func TestOrchestrator_LogPrefixIncludesProjectContext(t *testing.T) {
 	orch := New(defaultConfig(), nil, nil, nil)
 	orch.SetLogContext(" simphony ", " Simphony ")
@@ -1078,13 +1395,13 @@ func TestOrchestrator_BlockerRule_NonTerminalBlocker(t *testing.T) {
 	}
 }
 
-func TestOrchestrator_BlockerRule_AppliesToReviewAndMergeStates(t *testing.T) {
+func TestOrchestrator_BlockerRule_AppliesOnlyInTodo(t *testing.T) {
 	tracker := &mockTracker{
 		candidates: []api.Issue{
-			{ID: "1", Identifier: "A-1", Title: "Blocked Review", State: "In Review", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
-			{ID: "2", Identifier: "A-2", Title: "Unblocked Review", State: "In Review", BlockedBy: []api.Blocker{{State: strPtr("Done")}}},
-			{ID: "3", Identifier: "A-3", Title: "Blocked Merge", State: "Approved", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
-			{ID: "4", Identifier: "A-4", Title: "Unblocked Merge", State: "Approved", BlockedBy: []api.Blocker{{State: strPtr("Done")}}},
+			{ID: "1", Identifier: "A-1", Title: "Blocked Todo", State: "Todo", BlockedBy: []api.Blocker{{State: strPtr("Todo")}}},
+			{ID: "2", Identifier: "A-2", Title: "Unblocked Todo", State: "Todo", BlockedBy: []api.Blocker{{State: strPtr("Done")}}},
+			{ID: "3", Identifier: "A-3", Title: "Blocked Review", State: "In Review", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
+			{ID: "4", Identifier: "A-4", Title: "Blocked Merge", State: "Approved", BlockedBy: []api.Blocker{{State: strPtr("In Review")}}},
 		},
 	}
 	wsMgr, _ := workspace.NewManager(t.TempDir())
@@ -1101,14 +1418,14 @@ func TestOrchestrator_BlockerRule_AppliesToReviewAndMergeStates(t *testing.T) {
 
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	if len(runner.runs) != 2 {
-		t.Fatalf("expected 2 dispatches for unblocked review/merge issues, got %d", len(runner.runs))
+	if len(runner.runs) != 3 {
+		t.Fatalf("expected 3 dispatches for unblocked todo, review, and merge issues, got %d", len(runner.runs))
 	}
 	dispatched := map[string]bool{}
 	for _, run := range runner.runs {
 		dispatched[run.Identifier] = true
 	}
-	for _, want := range []string{"A-2", "A-4"} {
+	for _, want := range []string{"A-2", "A-3", "A-4"} {
 		if !dispatched[want] {
 			t.Fatalf("expected %s to dispatch, got %#v", want, dispatched)
 		}
@@ -1313,6 +1630,36 @@ func TestOrchestrator_DispatchesCodingAndReviewWithStageModelOverrides(t *testin
 	}
 	if seen["A-2"].Kind != "review" {
 		t.Fatalf("A-2 stage = %+v, want review", seen["A-2"])
+	}
+}
+
+func TestOrchestrator_RecordsEffectiveStageSDKAndModel(t *testing.T) {
+	issue := api.Issue{ID: "1", Identifier: "A-1", Title: "Adversarial review", State: "In Review"}
+	tracker := &mockTracker{candidates: []api.Issue{issue}, byIDs: map[string]api.Issue{"1": issue}}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{errAfter: -1, delay: 500 * time.Millisecond}
+	cfg := defaultConfig()
+	cfg.Tracker.ActiveStates = append(cfg.Tracker.ActiveStates, "In Review")
+	cfg.AgentRuntime.Provider = "codex"
+	cfg.AgentRuntime.Command = "go version"
+	cfg.AgentRuntime.Model = "gpt-coding"
+	cfg.AgentRuntime.ModelProvider = "openai"
+	cfg.AgentRuntime.StageOverrides = map[string]api.AgentStageOverride{
+		"review": {Provider: "claude", Command: "go version", Model: "claude-opus-review", ModelProvider: "anthropic"},
+	}
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+	time.Sleep(100 * time.Millisecond)
+
+	snapshot := orch.Snapshot()
+	if len(snapshot.Running) != 1 {
+		t.Fatalf("running = %+v, want one review run", snapshot.Running)
+	}
+	running := snapshot.Running[0]
+	if running.Stage != "review" || running.ExecutionProvider != "claude" || running.Model != "claude-opus-review" || running.ModelProvider != "anthropic" {
+		t.Fatalf("running effective runtime = %+v", running)
 	}
 }
 

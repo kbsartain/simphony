@@ -16,11 +16,30 @@ import (
 	"github.com/kbsartain/simphony/pkg/api"
 )
 
+func TestMain(m *testing.M) {
+	for key, value := range map[string]string{
+		"SIM_TEST_TRACKER_KEY": "test-key",
+		"SIM_TEST_OPENAI_KEY":  "test-openai-key",
+		"SIM_TEST_AUTH_TOKEN":  "test-auth-token",
+		"OLD_RUNTIME_KEY":      "old-secret",
+		"OLD_RUNTIME_TOKEN":    "old-token",
+		"SIM_NEW_TRACKER_KEY":  "new-key",
+		"EXISTING_TRACKER_KEY": "existing-linear-secret",
+		"EXISTING_AGENT_KEY":   "existing-agent-secret",
+		"EXISTING_STAGE_KEY":   "existing-stage-secret",
+		"EXISTING_STAGE_TOKEN": "existing-stage-token",
+	} {
+		_ = os.Setenv(key, value)
+	}
+	os.Exit(m.Run())
+}
+
 type fakeOrchestrator struct {
 	snapshot     api.StateSnapshot
 	details      map[string]api.IssueDetailResponse
 	refresh      api.RefreshResponse
 	refreshCalls int
+	control      api.ControlState
 }
 
 func (f *fakeOrchestrator) Snapshot() api.StateSnapshot {
@@ -35,6 +54,34 @@ func (f *fakeOrchestrator) IssueDetail(identifier string) (api.IssueDetailRespon
 func (f *fakeOrchestrator) Refresh() api.RefreshResponse {
 	f.refreshCalls++
 	return f.refresh
+}
+
+func (f *fakeOrchestrator) SetProjectPaused(paused bool) api.ControlState {
+	f.control.Paused = paused
+	return f.control
+}
+
+func (f *fakeOrchestrator) SetStagePaused(stage string, paused bool) (api.ControlState, error) {
+	valid := map[string]bool{"coding": true, "review": true, "review_resolution": true, "merge": true}
+	if !valid[stage] {
+		return f.control, errors.New("unknown pipeline stage")
+	}
+	stages := make(map[string]bool)
+	for _, existing := range f.control.PausedStages {
+		stages[existing] = true
+	}
+	if paused {
+		stages[stage] = true
+	} else {
+		delete(stages, stage)
+	}
+	f.control.PausedStages = nil
+	for _, candidate := range []string{"coding", "merge", "review", "review_resolution"} {
+		if stages[candidate] {
+			f.control.PausedStages = append(f.control.PausedStages, candidate)
+		}
+	}
+	return f.control, nil
 }
 
 func newTestServer(orch *fakeOrchestrator) *Server {
@@ -165,6 +212,50 @@ func TestHandleRefreshRejectsGet(t *testing.T) {
 	}
 }
 
+func TestHandleSoftPauseControls(t *testing.T) {
+	orch := &fakeOrchestrator{}
+	s := newTestServer(orch)
+
+	for _, tt := range []struct {
+		path       string
+		wantPaused bool
+		wantStages []string
+	}{
+		{path: "/api/v1/pause", wantPaused: true},
+		{path: "/api/v1/stages/review/pause", wantPaused: true, wantStages: []string{"review"}},
+		{path: "/api/v1/resume", wantPaused: false, wantStages: []string{"review"}},
+		{path: "/api/v1/stages/review/resume", wantPaused: false},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+		rec := httptest.NewRecorder()
+		s.mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST %s status = %d body=%s", tt.path, rec.Code, rec.Body.String())
+		}
+		var state api.ControlState
+		if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
+			t.Fatalf("POST %s decode: %v", tt.path, err)
+		}
+		if state.Paused != tt.wantPaused || strings.Join(state.PausedStages, ",") != strings.Join(tt.wantStages, ",") {
+			t.Fatalf("POST %s state = %+v, want paused=%t stages=%v", tt.path, state, tt.wantPaused, tt.wantStages)
+		}
+	}
+
+	bad := httptest.NewRequest(http.MethodPost, "/api/v1/stages/unknown/pause", nil)
+	badRec := httptest.NewRecorder()
+	s.mux.ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "invalid_stage") {
+		t.Fatalf("invalid stage status=%d body=%s", badRec.Code, badRec.Body.String())
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/api/v1/pause", nil)
+	getRec := httptest.NewRecorder()
+	s.mux.ServeHTTP(getRec, get)
+	if getRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET pause status=%d, want 405", getRec.Code)
+	}
+}
+
 func TestHandleRuntimeModeReturnsSingleWorkflow(t *testing.T) {
 	workflowPath := writeWorkflowForSettingsTest(t, "---\ntracker:\n  kind: linear\n---\n\nPrompt body\n")
 	s := NewWithSettings(&fakeOrchestrator{}, 8080, workflowPath, nil)
@@ -192,7 +283,7 @@ func TestHandleRegistryBootstrapCreatesStarterRegistry(t *testing.T) {
 	workflowPath := writeWorkflowForSettingsTest(t, `---
 tracker:
   kind: linear
-  api_key: test-linear-key
+  api_key: $SIM_TEST_TRACKER_KEY
   project_slug: simphony
 workspace:
   root: ./simphony_workspaces
@@ -601,15 +692,15 @@ func TestSettingsPutPreservesMaskedSecrets(t *testing.T) {
 	workflowPath := writeWorkflowForSettingsTest(t, `---
 tracker:
   kind: linear
-  api_key: literal-linear-secret
+  api_key: $EXISTING_TRACKER_KEY
   project_slug: old-proj
 agent_runtime:
   provider: codex
-  api_key: literal-agent-secret
+  api_key: $EXISTING_AGENT_KEY
   stage_overrides:
     coding:
-      api_key: literal-stage-secret
-      auth_token: literal-stage-token
+      api_key: $EXISTING_STAGE_KEY
+      auth_token: $EXISTING_STAGE_TOKEN
 ---
 
 Prompt body
@@ -653,16 +744,16 @@ Prompt body
 		t.Fatalf("load saved workflow: %v", err)
 	}
 	trackerConfig := saved.Config["tracker"].(map[string]interface{})
-	if trackerConfig["api_key"] != "literal-linear-secret" || trackerConfig["project_slug"] != "new-proj" {
+	if trackerConfig["api_key"] != "$EXISTING_TRACKER_KEY" || trackerConfig["project_slug"] != "new-proj" {
 		t.Fatalf("saved tracker = %v, want preserved secret and new project", trackerConfig)
 	}
 	runtimeConfig := saved.Config["agent_runtime"].(map[string]interface{})
-	if runtimeConfig["api_key"] != "literal-agent-secret" {
+	if runtimeConfig["api_key"] != "$EXISTING_AGENT_KEY" {
 		t.Fatalf("saved agent_runtime = %v, want preserved secret", runtimeConfig)
 	}
 	stageOverrides := runtimeConfig["stage_overrides"].(map[string]interface{})
 	coding := stageOverrides["coding"].(map[string]interface{})
-	if coding["api_key"] != "literal-stage-secret" || coding["auth_token"] != "literal-stage-token" {
+	if coding["api_key"] != "$EXISTING_STAGE_KEY" || coding["auth_token"] != "$EXISTING_STAGE_TOKEN" {
 		t.Fatalf("saved stage override = %v, want preserved secrets", coding)
 	}
 	if strings.Contains(rec.Body.String(), "literal-linear-secret") || strings.Contains(rec.Body.String(), "literal-agent-secret") || strings.Contains(rec.Body.String(), "literal-stage-secret") {
@@ -674,7 +765,7 @@ func TestSettingsPutValidatesBeforeSaving(t *testing.T) {
 	workflowPath := writeWorkflowForSettingsTest(t, `---
 tracker:
   kind: linear
-  api_key: key
+  api_key: $SIM_TEST_TRACKER_KEY
   project_slug: proj
 ---
 
@@ -686,7 +777,7 @@ Original prompt
 	}
 
 	srv := NewWithSettings(&fakeOrchestrator{}, 8080, workflowPath, nil)
-	reqBody := `{"config":{"tracker":{"kind":"linear","api_key":"key","project_slug":"proj"},"polling":{"interval_ms":0}}}`
+	reqBody := `{"config":{"tracker":{"kind":"linear","api_key":"$SIM_TEST_TRACKER_KEY","project_slug":"proj"},"polling":{"interval_ms":0}}}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -709,7 +800,7 @@ func TestSettingsPutSavesAndAppliesWorkflow(t *testing.T) {
 	workflowPath := writeWorkflowForSettingsTest(t, `---
 tracker:
   kind: linear
-  api_key: key
+  api_key: $SIM_TEST_TRACKER_KEY
   project_slug: proj
 ---
 
@@ -728,7 +819,7 @@ Original prompt
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "new-key",
+				"api_key":      "$SIM_NEW_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 			"polling": map[string]interface{}{
@@ -779,7 +870,7 @@ func TestSettingsPutAppliesBeforeSavingAndDoesNotSaveWhenApplyFails(t *testing.T
 	workflowPath := writeWorkflowForSettingsTest(t, `---
 tracker:
   kind: linear
-  api_key: key
+  api_key: $SIM_TEST_TRACKER_KEY
   project_slug: proj
 polling:
   interval_ms: 30000
@@ -807,7 +898,7 @@ Original prompt
 		Config: map[string]interface{}{
 			"tracker": map[string]interface{}{
 				"kind":         "linear",
-				"api_key":      "key",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
 				"project_slug": "proj",
 			},
 			"polling": map[string]interface{}{

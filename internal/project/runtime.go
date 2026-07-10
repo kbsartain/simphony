@@ -72,6 +72,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.cfg = cfg
 	r.runner = runner
 	r.orch = orch
+	if r.project.StartPaused {
+		r.orch.SetProjectPaused(true)
+	}
 	r.orch.Start()
 	r.started = true
 
@@ -191,6 +194,31 @@ func (r *Runtime) Refresh() (api.RefreshResponse, bool) {
 		return api.RefreshResponse{}, false
 	}
 	return orch.Refresh(), true
+}
+
+// SetProjectPaused updates the project-wide soft-pause state when running.
+func (r *Runtime) SetProjectPaused(paused bool) (api.ControlState, bool) {
+	r.mu.Lock()
+	orch := r.orch
+	started := r.started
+	r.mu.Unlock()
+	if !started || orch == nil {
+		return api.ControlState{}, false
+	}
+	return orch.SetProjectPaused(paused), true
+}
+
+// SetStagePaused updates one pipeline stage's soft-pause state when running.
+func (r *Runtime) SetStagePaused(stage string, paused bool) (api.ControlState, bool, error) {
+	r.mu.Lock()
+	orch := r.orch
+	started := r.started
+	r.mu.Unlock()
+	if !started || orch == nil {
+		return api.ControlState{}, false, nil
+	}
+	state, err := orch.SetStagePaused(stage, paused)
+	return state, true, err
 }
 
 // WorkflowSettings returns editable and resolved settings for this project.

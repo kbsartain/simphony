@@ -19,6 +19,8 @@ import (
 
 	_ "embed"
 
+	"github.com/kbsartain/simphony/internal/agentruntime"
+	"github.com/kbsartain/simphony/internal/codexcmd"
 	"github.com/kbsartain/simphony/internal/prompt"
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -144,7 +146,7 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	if cfg == nil {
 		return fmt.Errorf("%s: agent runtime config is nil", api.ErrCodexNotFound)
 	}
-	effectiveCfg := effectiveCodexConfig(cfg, stage)
+	effectiveCfg := agentruntime.EffectiveConfig(cfg, stage)
 	cfg = &effectiveCfg
 	if strings.EqualFold(cfg.Provider, "claude") {
 		return r.runClaude(ctx, issue, workspace, attempt, cfg, stage, maxTurns, shouldContinue, eventCallback)
@@ -158,12 +160,23 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	if command == "" {
 		return fmt.Errorf("%s: command is empty", api.ErrCodexNotFound)
 	}
+	command, err := codexcmd.Resolve(command)
+	if err != nil {
+		return fmt.Errorf("%s: %w", api.ErrCodexNotFound, err)
+	}
+	command = ensureCodexShellEnvironment(command)
 
 	if !strings.Contains(command, "--listen") {
 		command += " --listen stdio://"
 	}
 
-	cmd := shellCommandContext(ctx, command)
+	cmd, direct, err := codexcmd.CommandContext(ctx, command)
+	if err != nil {
+		return fmt.Errorf("%s: %w", api.ErrCodexNotFound, err)
+	}
+	if !direct {
+		cmd = shellCommandContext(ctx, command)
+	}
 	cmd.Dir = workspace.Path
 	cmd.Stderr = os.Stderr
 	if err := configureSubprocessEnv(cmd, workspace.Path, cfg); err != nil {
@@ -930,11 +943,21 @@ func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentR
 	if rgPath, err := exec.LookPath("rg"); err == nil {
 		env = prependPath(env, filepath.Dir(rgPath))
 	}
+	if !strings.EqualFold(cfg.Provider, "claude") {
+		env = prependCodexToolPaths(env)
+	}
 	env = prependWorkspaceToolPaths(env, workspacePath)
 	env = applyRuntimeEnv(env, cfg)
 
 	cmd.Env = env
 	return nil
+}
+
+func ensureCodexShellEnvironment(command string) string {
+	if strings.Contains(strings.ToLower(command), "shell_environment_policy.") {
+		return command
+	}
+	return command + " -c shell_environment_policy.inherit=all"
 }
 
 var inheritedAgentEnvKeys = map[string]struct{}{
@@ -1065,6 +1088,17 @@ func prependWorkspaceToolPaths(env []string, workspacePath string) []string {
 	return env
 }
 
+func prependCodexToolPaths(env []string) []string {
+	if runtime.GOOS != "windows" {
+		return env
+	}
+	binDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "OpenAI", "Codex", "bin")
+	if fi, err := os.Stat(filepath.Join(binDir, "rg.exe")); err == nil && !fi.IsDir() {
+		return prependPath(env, binDir)
+	}
+	return env
+}
+
 func buildTurnStartParams(threadID string, workspace *api.Workspace, cfg *api.CodexConfig, prompt string, skills []api.CodexSkillRef, unresolvedSkills []string) map[string]interface{} {
 	params := map[string]interface{}{
 		"threadId": threadID,
@@ -1178,77 +1212,6 @@ func resolveConfiguredSkills(workspace *api.Workspace, cfg *api.CodexConfig, sen
 		resolved = append(resolved, skill)
 	}
 	return resolved, unresolved
-}
-
-func effectiveCodexConfig(cfg *api.CodexConfig, stage api.PipelineStage) api.CodexConfig {
-	if cfg == nil {
-		return api.CodexConfig{}
-	}
-	effective := *cfg
-	stageKey := strings.ToLower(strings.TrimSpace(stage.Kind))
-	if stageKey == "" || cfg.StageOverrides == nil {
-		return effective
-	}
-	override, ok := cfg.StageOverrides[stageKey]
-	if !ok {
-		return effective
-	}
-	if override.Model != "" {
-		effective.Model = override.Model
-	}
-	if override.ModelProvider != "" {
-		effective.ModelProvider = override.ModelProvider
-	}
-	if override.ReasoningEffort != "" {
-		effective.ReasoningEffort = override.ReasoningEffort
-	}
-	if override.EndpointURL != "" {
-		effective.EndpointURL = override.EndpointURL
-	}
-	if override.APIKeyConfigured {
-		effective.APIKey = override.APIKey
-		effective.APIKeyConfigured = true
-	}
-	if override.AuthTokenConfigured {
-		effective.AuthToken = override.AuthToken
-		effective.AuthTokenConfigured = true
-	}
-	if len(override.Env) > 0 {
-		env := make(map[string]string, len(effective.Env)+len(override.Env))
-		for key, value := range effective.Env {
-			env[key] = value
-		}
-		for key, value := range override.Env {
-			env[key] = value
-		}
-		effective.Env = env
-	}
-	if len(override.Skills) > 0 {
-		effective.Skills = appendUniqueSkills(effective.Skills, override.Skills...)
-	}
-	return effective
-}
-
-func appendUniqueSkills(base []api.CodexSkillRef, extras ...api.CodexSkillRef) []api.CodexSkillRef {
-	seen := make(map[string]struct{}, len(base)+len(extras))
-	out := make([]api.CodexSkillRef, 0, len(base)+len(extras))
-	for _, skill := range append(base, extras...) {
-		skill.Name = strings.TrimSpace(skill.Name)
-		skill.Path = strings.TrimSpace(skill.Path)
-		if skill.Name == "" && skill.Path == "" {
-			continue
-		}
-		if skill.Name == "" {
-			skill.Name = filepath.Base(skill.Path)
-		}
-		key := strings.ToLower(skill.Name) + "\x00" + strings.ToLower(skill.Path)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, skill)
-	}
-	return out
 }
 
 func mapSandboxPolicy(policy string) interface{} {

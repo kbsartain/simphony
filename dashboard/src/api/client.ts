@@ -1,5 +1,6 @@
 import {
   APIErrorResponse,
+  ControlState,
   IssueDetailResponse,
   RegistryBootstrapResponse,
   RegistryProjectCreateRequest,
@@ -19,6 +20,7 @@ import {
   SettingsResponse,
   SettingsUpdateRequest,
   SettingsValidationResponse,
+  ModelCatalogResponse,
   StateSnapshot,
 } from './types'
 
@@ -74,6 +76,7 @@ export async function createRegistryProject(request: RegistryProjectCreateReques
       name: response.project?.name || response.project?.id || 'Unnamed project',
       workflow_path: response.project?.workflow_path || '',
       enabled: Boolean(response.project?.enabled),
+      start_paused: Boolean(response.project?.start_paused),
       max_concurrent_agents: response.project?.max_concurrent_agents || 0,
     },
     command: response.command || '',
@@ -129,6 +132,18 @@ export async function requestRefresh(projectID?: string): Promise<RefreshRespons
   return fetchJSON<RefreshResponse>(projectPath(projectID, 'refresh'), { method: 'POST' })
 }
 
+export async function setProjectPaused(paused: boolean, projectID?: string): Promise<ControlState> {
+  const action = paused ? 'pause' : 'resume'
+  return normalizeControlState(await fetchJSON<ControlState>(projectPath(projectID, action), { method: 'POST' }))
+}
+
+export async function setStagePaused(stage: string, paused: boolean, projectID?: string): Promise<ControlState> {
+  const action = paused ? 'pause' : 'resume'
+  return normalizeControlState(
+    await fetchJSON<ControlState>(projectPath(projectID, `stages/${encodeURIComponent(stage)}/${action}`), { method: 'POST' }),
+  )
+}
+
 export async function fetchIssueDetail(identifier: string, projectID?: string): Promise<IssueDetailResponse> {
   const path = projectID
     ? `/api/v1/projects/${encodeURIComponent(projectID)}/issues/${encodeURIComponent(identifier)}`
@@ -156,6 +171,20 @@ export async function validateTrackerSettings(request: SettingsUpdateRequest, pr
   })
 }
 
+export async function refreshModelCatalog(projectID?: string, stage?: string): Promise<ModelCatalogResponse> {
+  const path = projectPath(projectID, 'settings/models')
+  const url = stage ? `${path}?stage=${encodeURIComponent(stage)}` : path
+  const response = await fetchJSON<ModelCatalogResponse>(url, { method: 'POST' })
+  return {
+    provider: response.provider || '',
+    execution_provider: response.execution_provider || '',
+    stage: response.stage || '',
+    endpoint_url: response.endpoint_url || '',
+    refreshed_at: response.refreshed_at || '',
+    models: response.models || [],
+  }
+}
+
 function projectPath(projectID: string | undefined, suffix: string) {
   return projectID ? `/api/v1/projects/${encodeURIComponent(projectID)}/${suffix}` : `/api/v1/${suffix}`
 }
@@ -167,11 +196,13 @@ function normalizeProjectSummary(project: ProjectSummary): ProjectSummary {
     name: project.name || project.id || 'Unnamed project',
     workflow_path: project.workflow_path || '',
     enabled: Boolean(project.enabled),
+    start_paused: Boolean(project.start_paused),
     running: Boolean(project.running),
     last_error: project.last_error || '',
     health: normalizeProjectHealth(project.health),
     max_concurrent_agents: project.max_concurrent_agents || 0,
     counts: normalizeCounts(project.counts),
+    control: normalizeControlState(project.control),
     waiting_on_supervisor: Boolean(project.waiting_on_supervisor),
     last_supervisor_deferred_at: project.last_supervisor_deferred_at || '',
     workflow_watcher_running: Boolean(project.workflow_watcher_running),
@@ -221,6 +252,7 @@ function normalizeRegistryProject(project: RegistryResponse['projects'][number])
     name: project?.name || project?.id || 'Unnamed project',
     workflow_path: project?.workflow_path || '',
     enabled: Boolean(project?.enabled),
+    start_paused: Boolean(project?.start_paused),
     max_concurrent_agents: project?.max_concurrent_agents || 0,
   }
 }
@@ -230,6 +262,7 @@ function normalizeStateSnapshot(snapshot: StateSnapshot): StateSnapshot {
     ...snapshot,
     poll_interval_ms: snapshot.poll_interval_ms || 0,
     max_concurrent_agents: snapshot.max_concurrent_agents || 0,
+    control: normalizeControlState(snapshot.control),
     counts: normalizeCounts(snapshot.counts),
     health: normalizeProjectHealth(snapshot.health),
     running: (snapshot.running || []).map(normalizeRunningSnapshot),
@@ -238,6 +271,13 @@ function normalizeStateSnapshot(snapshot: StateSnapshot): StateSnapshot {
     rate_limits: snapshot.rate_limits || null,
     last_dispatch_deferred_reason: snapshot.last_dispatch_deferred_reason || '',
     last_dispatch_deferred_at: snapshot.last_dispatch_deferred_at || '',
+  }
+}
+
+function normalizeControlState(control: ControlState | undefined): ControlState {
+  return {
+    paused: Boolean(control?.paused),
+    paused_stages: control?.paused_stages || [],
   }
 }
 

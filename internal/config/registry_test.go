@@ -12,7 +12,7 @@ func writeTestWorkflow(t *testing.T, path string, extraFrontMatter string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		t.Fatalf("mkdir workflow dir: %v", err)
 	}
-	content := "---\ntracker:\n  kind: linear\n  api_key: test-linear-key\n  project_slug: test-project\n"
+	content := "---\ntracker:\n  kind: linear\n  api_key: $SIM_TEST_TRACKER_KEY\n  project_slug: test-project\n"
 	if strings.TrimSpace(extraFrontMatter) != "" {
 		content += extraFrontMatter + "\n"
 	}
@@ -62,6 +62,7 @@ projects:
   - id: alpha
     name: Alpha Project
     workflow_path: workflows/alpha/WORKFLOW.md
+    start_paused: true
   - id: beta
     workflow_path: workflows/beta/WORKFLOW.md
     enabled: false
@@ -106,7 +107,7 @@ projects:
 		t.Fatalf("projects len = %d, want 2", len(registry.Projects))
 	}
 	alpha := registry.Projects[0]
-	if alpha.ID != "alpha" || alpha.Name != "Alpha Project" || !alpha.Enabled {
+	if alpha.ID != "alpha" || alpha.Name != "Alpha Project" || !alpha.Enabled || !alpha.StartPaused {
 		t.Fatalf("unexpected alpha project: %+v", alpha)
 	}
 	if !filepath.IsAbs(alpha.WorkflowPath) {

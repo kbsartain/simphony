@@ -26,6 +26,11 @@ export interface StateCounts {
   completed: number;
 }
 
+export interface ControlState {
+  paused: boolean;
+  paused_stages: string[];
+}
+
 export interface HealthIssue {
   code: string;
   severity: string;
@@ -55,6 +60,10 @@ export interface RunningSnapshot {
   priority: number | null;
   labels: string[];
   state: string;
+  stage?: string;
+  execution_provider?: string;
+  model?: string;
+  model_provider?: string;
   session_id: string;
   turn_count: number;
   last_event: string;
@@ -84,6 +93,7 @@ export interface StateSnapshot {
   generated_at: string;
   poll_interval_ms: number;
   max_concurrent_agents: number;
+  control: ControlState;
   counts: StateCounts;
   health: ProjectHealth;
   running: RunningSnapshot[];
@@ -115,11 +125,13 @@ export interface ProjectSummary {
   name: string;
   workflow_path: string;
   enabled: boolean;
+  start_paused: boolean;
   running: boolean;
   last_error?: string;
   health: ProjectHealth;
   max_concurrent_agents?: number;
   counts: StateCounts;
+  control: ControlState;
   waiting_on_supervisor?: boolean;
   last_supervisor_deferred_at?: string;
   workflow_watcher_running: boolean;
@@ -159,6 +171,7 @@ export interface RegistryProjectCreateRequest {
   name?: string;
   workflow_path: string;
   enabled?: boolean;
+  start_paused?: boolean;
   max_concurrent_agents?: number;
 }
 
@@ -173,6 +186,7 @@ export interface RegistryProjectUpdateRequest {
   name?: string;
   workflow_path: string;
   enabled?: boolean;
+  start_paused?: boolean;
   max_concurrent_agents?: number;
 }
 
@@ -270,6 +284,7 @@ export interface RegistryProjectSummary {
   name: string;
   workflow_path: string;
   enabled: boolean;
+  start_paused: boolean;
   max_concurrent_agents?: number;
 }
 
@@ -389,6 +404,8 @@ export type CodexConfig = AgentRuntimeConfig;
 export type ClaudeConfig = AgentRuntimeConfig;
 
 export interface CodexStageOverride {
+  provider?: string;
+  command?: string;
   model?: string;
   model_provider?: string;
   reasoning_effort?: string;
@@ -397,6 +414,13 @@ export interface CodexStageOverride {
   auth_token_configured?: boolean;
   env?: Record<string, string>;
   skills?: CodexSkillRef[];
+  allowed_tools?: string[];
+  disallowed_tools?: string[];
+  permission_mode?: string;
+  setting_sources?: string[];
+  approval_policy?: string;
+  thread_sandbox?: string;
+  turn_sandbox_policy?: string;
 }
 
 export interface CodexSkillRef {
@@ -406,6 +430,18 @@ export interface CodexSkillRef {
 
 export interface ServerConfig {
   port: number;
+}
+
+export interface VerifyConfig {
+  commands?: string[];
+  timeout_ms: number;
+}
+
+export interface GitHubConfig {
+  enabled: boolean;
+  merge_method: 'merge' | 'squash' | 'rebase' | string;
+  checks_timeout_ms: number;
+  checks_registration_grace_ms: number;
 }
 
 export interface WorkflowConfig {
@@ -420,6 +456,8 @@ export interface WorkflowConfig {
   codex: CodexConfig;
   claude?: ClaudeConfig;
   server?: ServerConfig;
+  verify?: VerifyConfig;
+  github?: GitHubConfig;
 }
 
 export interface SettingsResponse {
@@ -441,4 +479,18 @@ export interface SettingsValidationResponse {
   active_states?: string[];
   candidate_count: number;
   message?: string;
+}
+
+export interface ModelCatalogEntry {
+  id: string;
+  label: string;
+}
+
+export interface ModelCatalogResponse {
+  provider: string;
+  execution_provider?: string;
+  stage?: string;
+  endpoint_url: string;
+  refreshed_at: string;
+  models: ModelCatalogEntry[];
 }
