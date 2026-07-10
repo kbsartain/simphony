@@ -44,6 +44,22 @@ type WorkflowConfig struct {
 	Codex            CodexConfig            `json:"codex"`
 	Claude           ClaudeConfig           `json:"claude,omitempty"`
 	Server           *ServerConfig          `json:"server,omitempty"`
+	Verify           VerifyConfig           `json:"verify,omitempty"`
+	GitHub           GitHubConfig           `json:"github,omitempty"`
+}
+
+// VerifyConfig configures deterministic pre-merge verification commands.
+type VerifyConfig struct {
+	Commands  []string `json:"commands,omitempty"`
+	TimeoutMs int      `json:"timeout_ms"`
+}
+
+// GitHubConfig configures the optional GitHub PR-based merge flow.
+type GitHubConfig struct {
+	Enabled                   bool   `json:"enabled"`
+	MergeMethod               string `json:"merge_method"`
+	ChecksTimeoutMs           int    `json:"checks_timeout_ms"`
+	ChecksRegistrationGraceMs int    `json:"checks_registration_grace_ms"`
 }
 
 // TrackerConfig configures the issue tracker integration.

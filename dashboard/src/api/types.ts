@@ -428,6 +428,18 @@ export interface ServerConfig {
   port: number;
 }
 
+export interface VerifyConfig {
+  commands?: string[];
+  timeout_ms: number;
+}
+
+export interface GitHubConfig {
+  enabled: boolean;
+  merge_method: 'merge' | 'squash' | 'rebase' | string;
+  checks_timeout_ms: number;
+  checks_registration_grace_ms: number;
+}
+
 export interface WorkflowConfig {
   tracker: TrackerConfig;
   pipeline: PipelineConfig;
@@ -440,6 +452,8 @@ export interface WorkflowConfig {
   codex: CodexConfig;
   claude?: ClaudeConfig;
   server?: ServerConfig;
+  verify?: VerifyConfig;
+  github?: GitHubConfig;
 }
 
 export interface SettingsResponse {

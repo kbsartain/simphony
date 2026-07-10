@@ -1,12 +1,15 @@
 package workspace
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kbsartain/simphony/pkg/api"
 )
@@ -248,6 +251,43 @@ func TestMergeWorkspaceToBaseBranch(t *testing.T) {
 	}
 }
 
+func TestMergeWorkspaceToBaseBranchVerifiedRollsBackFailure(t *testing.T) {
+	repo := initTestRepo(t)
+	root := t.TempDir()
+	m, err := NewManagerWithConfig(api.WorkspaceConfig{Root: root, Mode: "git_worktree", Repo: repo, BaseBranch: "main"})
+	if err != nil {
+		t.Fatalf("NewManagerWithConfig: %v", err)
+	}
+	issue := api.Issue{Identifier: "TEST-VERIFY"}
+	ws, err := m.PrepareWorkspace(issue)
+	if err != nil {
+		t.Fatalf("PrepareWorkspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.Path, "broken.txt"), []byte("broken"), 0644); err != nil {
+		t.Fatalf("write broken file: %v", err)
+	}
+	runGitForTest(t, ws.Path, "add", "broken.txt")
+	runGitForTest(t, ws.Path, "commit", "-m", "broken change")
+	before := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	err = m.MergeWorkspaceToBaseBranchVerified(issue, ws.Path, func(repoPath string) error {
+		if repoPath != repo {
+			t.Fatalf("verify path = %q, want %q", repoPath, repo)
+		}
+		return errors.New("verification failed")
+	})
+	if err == nil || !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("merge error = %v, want rollback failure", err)
+	}
+	after := gitOutput(t, repo, "rev-parse", "HEAD")
+	if after != before {
+		t.Fatalf("HEAD after rollback = %s, want %s", after, before)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "broken.txt")); !os.IsNotExist(err) {
+		t.Fatalf("broken file remains after rollback: %v", err)
+	}
+}
+
 func TestRemoveWorkspace_GitWorktreeCleanup(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -408,6 +448,64 @@ func TestRunHookFailureRetainsLongOutputFailureTail(t *testing.T) {
 	}
 	if len(message) > maxHookOutputBytes+2048 {
 		t.Fatalf("hook error length = %d, want bounded output", len(message))
+	}
+}
+
+func TestWaitForGitHubChecksAllowsDelayedRegistration(t *testing.T) {
+	probeCalls := 0
+	runner := func(ctx context.Context, watch bool) (string, error) {
+		if watch {
+			return "build pass", nil
+		}
+		probeCalls++
+		if probeCalls < 3 {
+			return "no checks reported on the branch", errors.New("exit status 1")
+		}
+		return "build pending", errors.New("exit status 8")
+	}
+
+	if err := waitForGitHubChecksWithRunner(time.Second, 100*time.Millisecond, time.Millisecond, runner); err != nil {
+		t.Fatalf("waitForGitHubChecksWithRunner: %v", err)
+	}
+	if probeCalls != 3 {
+		t.Fatalf("probe calls = %d, want 3", probeCalls)
+	}
+}
+
+func TestWaitForGitHubChecksDistinguishesRegistrationTimeout(t *testing.T) {
+	runner := func(ctx context.Context, watch bool) (string, error) {
+		return "no checks reported", errors.New("exit status 1")
+	}
+	err := waitForGitHubChecksWithRunner(time.Second, 5*time.Millisecond, time.Millisecond, runner)
+	if err == nil || !strings.Contains(err.Error(), "checks_not_registered") || strings.Contains(err.Error(), "checks_failed") {
+		t.Fatalf("error = %v, want checks_not_registered", err)
+	}
+}
+
+func TestWaitForGitHubChecksDistinguishesFailedCheck(t *testing.T) {
+	runner := func(ctx context.Context, watch bool) (string, error) {
+		if watch {
+			return "unit-tests fail", errors.New("exit status 1")
+		}
+		return "unit-tests pending", errors.New("exit status 8")
+	}
+	err := waitForGitHubChecksWithRunner(time.Second, 100*time.Millisecond, time.Millisecond, runner)
+	if err == nil || !strings.Contains(err.Error(), "checks_failed") || !strings.Contains(err.Error(), "unit-tests fail") {
+		t.Fatalf("error = %v, want checks_failed with output", err)
+	}
+}
+
+func TestWaitForGitHubChecksHonorsOverallTimeout(t *testing.T) {
+	runner := func(ctx context.Context, watch bool) (string, error) {
+		if !watch {
+			return "unit-tests pending", errors.New("exit status 8")
+		}
+		<-ctx.Done()
+		return "still pending", ctx.Err()
+	}
+	err := waitForGitHubChecksWithRunner(10*time.Millisecond, 100*time.Millisecond, time.Millisecond, runner)
+	if err == nil || !strings.Contains(err.Error(), "checks_timeout") {
+		t.Fatalf("error = %v, want checks_timeout", err)
 	}
 }
 

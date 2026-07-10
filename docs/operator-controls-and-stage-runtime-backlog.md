@@ -187,12 +187,12 @@ Acceptance criteria:
 
 #### `DIAG-1` GitHub check registration race
 
-Implementation audit: this checkout does not currently execute `gh pr checks` in the orchestrator or workspace merge path. Review/review-resolution prompts delegate check inspection to the selected agent, while `MergeWorkspaceToBaseBranch` performs a local Git merge and optional push. The error observed for GEE-129 therefore came from a different or newer merge-gate implementation than the one present here. Before implementing these items, decide whether to recover that implementation or introduce a native, configurable GitHub gate in this repository.
+Recovery result: the GEE-129 error came from unpublished commit `def094e` in the external running clone. Its deterministic local verification and GitHub PR gate were selectively ported into this managed checkout without copying the external clone's unrelated eleven commits or dirty files. The one-shot check watcher was replaced with explicit registration probing and bounded grace-period handling.
 
-- [ ] Treat `gh pr checks` reporting “no checks reported” as pending for a bounded grace period after PR creation or branch update.
-- [ ] Continue polling until checks appear, the grace period expires, or the overall checks timeout expires.
-- [ ] Distinguish no-check timeout from an actual failed check in errors and Linear comments.
-- [ ] Add deterministic tests for delayed check registration.
+- [x] Treat `gh pr checks` reporting “no checks reported” as pending for a bounded grace period after PR creation or branch update.
+- [x] Continue polling until checks appear, the grace period expires, or the overall checks timeout expires.
+- [x] Distinguish no-check timeout from an actual failed check in errors and Linear comments.
+- [x] Add deterministic tests for delayed check registration.
 
 #### `DIAG-2` Verification output retention
 
@@ -217,11 +217,11 @@ This backlog is complete when:
 
 ## Session Handoff
 
-Current status: Phase 1, Phase 2, and `DIAG-2` are implemented. Stage configuration and the dashboard can select Codex or Claude with provider-specific command/tool/permission/sandbox fields; the runner resolves the effective stage runtime before SDK selection without leaking cross-provider credentials or commands; preflight checks stage SDK commands and explicit credential references with stage-specific diagnostics; running snapshots/logs identify the effective SDK and model; and model catalogs accept a stage selector. Browser verification exercised both pause controls and a live stage SDK-selector change with zero console errors. A deterministic subprocess test drives one issue through Codex coding -> Claude review -> Codex merge -> Done, and a paused-review test proves hot-reloaded SDK/model settings apply on resume. Hook failures now retain bounded head-and-tail output so the final failure summary survives verbose test runs.
+Current status: all three phases in this backlog are implemented. Stage configuration and the dashboard can select Codex or Claude with provider-specific command/tool/permission/sandbox fields; preflight checks stage SDK commands and explicit credential references; deterministic tests cover cross-provider lifecycle and paused hot reload; hook failures retain bounded head-and-tail output; and the recovered GitHub PR gate now tolerates delayed check registration while distinguishing missing, failed, and timed-out checks.
 
 CON-199 recovery: the literal-secret validation guard, error code, focused tests, fixture updates, and documentation were ported into this checkout. The proposed deletion/untracking of root `WORKFLOW.md` was not copied because this checkout still uses that file; workflow relocation remains a separate migration decision. The original CON-199 worktree remains outside this managed checkout.
 
-Recommended next task: resolve the `DIAG-1` architecture choice—recover the merge-gate implementation that emitted the GEE-129 error, or add a new native configurable GitHub checks gate before `MergeWorkspaceToBaseBranch`.
+Recommended next task: run the recovered merge gate against a sandbox repository with real GitHub Actions before enabling `github.enabled` for a production project.
 
 Latest verification:
 

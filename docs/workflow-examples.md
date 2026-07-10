@@ -220,6 +220,15 @@ agent_runtime:
     merge:
       provider: codex
       model: gpt-5.6
+verify:
+  commands:
+    - go test ./...
+  timeout_ms: 600000
+github:
+  enabled: true
+  merge_method: squash
+  checks_timeout_ms: 1800000
+  checks_registration_grace_ms: 60000
 server:
   port: 8080
 ---

@@ -83,6 +83,32 @@ func TestCheckAllowsUnconfiguredCredentialsForLocalSDKAuth(t *testing.T) {
 	}
 }
 
+func TestCheckBlocksMissingVerifyExecutable(t *testing.T) {
+	health := Check(&api.WorkflowConfig{
+		AgentRuntime: api.AgentRuntimeConfig{Provider: "codex", Command: "go version"},
+		Workspace:    api.WorkspaceConfig{Root: t.TempDir(), Mode: "directory"},
+		Verify:       api.VerifyConfig{Commands: []string{"definitely-missing-verify-tool --check"}},
+	})
+	if health.Status != StatusBlocked {
+		t.Fatalf("status = %q, want blocked", health.Status)
+	}
+	for _, issue := range health.Issues {
+		if issue.Code == "verify_command_not_found" {
+			return
+		}
+	}
+	t.Fatalf("issues = %+v, want verify_command_not_found", health.Issues)
+}
+
+func TestGitHubPreflightBlocksMissingCLI(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	health := api.ProjectHealth{Status: StatusReady}
+	addGitHubCLICheck(&health, &api.GitHubConfig{Enabled: true})
+	if len(health.Issues) != 1 || health.Issues[0].Code != "github_cli_not_found" {
+		t.Fatalf("issues = %+v, want github_cli_not_found", health.Issues)
+	}
+}
+
 func TestCheckBlocksMissingAgentCommand(t *testing.T) {
 	health := Check(&api.WorkflowConfig{
 		Workspace: api.WorkspaceConfig{Root: t.TempDir(), Mode: "directory"},

@@ -401,6 +401,44 @@ func TestResolveConfig_ReasoningEffortSupportsMaxAlias(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_VerifyAndGitHubMergeGate(t *testing.T) {
+	def := &api.WorkflowDefinition{Config: map[string]interface{}{
+		"tracker": map[string]interface{}{"kind": "linear", "api_key": "$SIM_TEST_TRACKER_KEY", "project_slug": "proj"},
+		"verify": map[string]interface{}{
+			"commands":   []interface{}{"go test ./...", "go vet ./..."},
+			"timeout_ms": 123000,
+		},
+		"github": map[string]interface{}{
+			"enabled":                      true,
+			"merge_method":                 "rebase",
+			"checks_timeout_ms":            456000,
+			"checks_registration_grace_ms": 12000,
+		},
+	}}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	if !slicesEqual(cfg.Verify.Commands, []string{"go test ./...", "go vet ./..."}) || cfg.Verify.TimeoutMs != 123000 {
+		t.Fatalf("verify = %+v", cfg.Verify)
+	}
+	if !cfg.GitHub.Enabled || cfg.GitHub.MergeMethod != "rebase" || cfg.GitHub.ChecksTimeoutMs != 456000 || cfg.GitHub.ChecksRegistrationGraceMs != 12000 {
+		t.Fatalf("github = %+v", cfg.GitHub)
+	}
+}
+
+func TestResolveConfig_RejectsInvalidGitHubChecksRegistrationGrace(t *testing.T) {
+	def := &api.WorkflowDefinition{Config: map[string]interface{}{
+		"tracker": map[string]interface{}{"kind": "linear", "api_key": "$SIM_TEST_TRACKER_KEY", "project_slug": "proj"},
+		"github":  map[string]interface{}{"checks_registration_grace_ms": -1},
+	}}
+	_, err := ResolveConfig(def, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "checks_registration_grace_ms must be non-negative") {
+		t.Fatalf("ResolveConfig error = %v", err)
+	}
+}
+
 func TestResolveConfig_RejectsInvalidStageRuntimeProvider(t *testing.T) {
 	def := &api.WorkflowDefinition{Config: map[string]interface{}{
 		"tracker": map[string]interface{}{"kind": "linear", "api_key": "$SIM_TEST_TRACKER_KEY", "project_slug": "proj"},

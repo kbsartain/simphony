@@ -174,6 +174,30 @@ In most workflows, `after_create` should clone the repository or copy a prepared
 
 On Windows, hooks run through `cmd /C`. On POSIX systems, hooks run through `bash -lc`.
 
+## Merge Verification And GitHub Checks
+
+```yaml
+verify:
+  commands:
+    - pnpm lint
+    - pnpm test
+  timeout_ms: 600000
+
+github:
+  enabled: true
+  merge_method: squash
+  checks_timeout_ms: 1800000
+  checks_registration_grace_ms: 60000
+```
+
+`verify.commands` are run in order before an approved branch is merged. In the local merge flow they run against the tentative merged result, which is rolled back on failure. In the GitHub flow they run in the issue worktree before the branch is pushed. Command output uses the bounded head-and-tail diagnostic described in troubleshooting.
+
+When `github.enabled` is true, Simphony pushes the issue branch, opens or reuses a pull request, waits for GitHub checks, merges through `gh pr merge`, and refreshes the local base branch. `merge_method` accepts `merge`, `squash`, or `rebase`.
+
+GitHub may briefly report “no checks reported” immediately after PR creation or a branch update. Simphony treats that result as pending for `checks_registration_grace_ms` (60 seconds by default), probing until checks register. Once registered, it watches them until success, failure, or the overall `checks_timeout_ms` deadline. Errors distinguish `checks_not_registered`, `checks_failed`, and `checks_timeout`.
+
+Enabling the GitHub gate requires an installed and authenticated `gh` CLI. Project preflight checks `gh auth status` before dispatch.
+
 ## Agent
 
 ```yaml

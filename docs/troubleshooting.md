@@ -94,3 +94,13 @@ Checks:
 Hook subprocess output is retained as a bounded diagnostic: the first 8 KiB, the final 24 KiB, and a truncation marker containing the original byte count. ANSI terminal controls are stripped. This keeps startup context and the final test summary without allowing verbose commands to create unbounded retry errors, API payloads, or tracker comments.
 
 If the failure still lacks a useful tail, confirm the verification tool writes its final summary before exiting and does not redirect it to a separate file. For very large machine-readable reports, configure the hook to print a concise failure summary and store the full artifact inside the issue workspace.
+
+## GitHub Reports No Checks Immediately After PR Creation
+
+The GitHub PR gate treats `gh pr checks` reporting “no checks reported” as a registration race, not an immediate failed check. It probes during `github.checks_registration_grace_ms`, then starts the normal check watcher once any check appears.
+
+- `checks_not_registered` means no check appeared before the registration grace period expired. Confirm the workflow has a `pull_request` trigger and that the branch/path filters include this PR.
+- `checks_failed` means checks registered and at least one failed. Inspect the named GitHub check and its logs.
+- `checks_timeout` means the overall `github.checks_timeout_ms` elapsed during registration or while registered checks were running.
+
+The registration grace is bounded by the overall timeout. Increasing it can help slow GitHub workflow registration, but it will not hide a missing or incorrectly filtered workflow indefinitely.

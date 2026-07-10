@@ -186,6 +186,16 @@ func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.Workfl
 		return nil, err
 	}
 
+	verifyMap := getSubMap(def.Config, "verify")
+	if err := resolveVerify(verifyMap, cfg); err != nil {
+		return nil, err
+	}
+
+	githubMap := getSubMap(def.Config, "github")
+	if err := resolveGitHubConfig(githubMap, cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
 }
 
@@ -1148,6 +1158,53 @@ func resolveServer(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		return fmt.Errorf("%s: server.port must be between 1 and 65535, got %d", api.ErrWorkflowParseError, port)
 	}
 	cfg.Server = &api.ServerConfig{Port: port}
+	return nil
+}
+
+func resolveVerify(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	verify := api.VerifyConfig{TimeoutMs: 600000}
+	if v, ok := getStringSlice(m, "commands"); ok {
+		verify.Commands = v
+	}
+	if v, ok := getInt(m, "timeout_ms"); ok {
+		if v <= 0 {
+			return fmt.Errorf("%s: verify.timeout_ms must be positive, got %d", api.ErrWorkflowParseError, v)
+		}
+		verify.TimeoutMs = v
+	}
+	cfg.Verify = verify
+	return nil
+}
+
+func resolveGitHubConfig(m map[string]interface{}, cfg *api.WorkflowConfig) error {
+	github := api.GitHubConfig{
+		MergeMethod:               "squash",
+		ChecksTimeoutMs:           1800000,
+		ChecksRegistrationGraceMs: 60000,
+	}
+	if v, ok := getBool(m, "enabled"); ok {
+		github.Enabled = v
+	}
+	if v, ok := getString(m, "merge_method"); ok && strings.TrimSpace(v) != "" {
+		method := strings.ToLower(strings.TrimSpace(v))
+		if method != "merge" && method != "squash" && method != "rebase" {
+			return fmt.Errorf("%s: github.merge_method must be merge, squash, or rebase, got %q", api.ErrWorkflowParseError, method)
+		}
+		github.MergeMethod = method
+	}
+	if v, ok := getInt(m, "checks_timeout_ms"); ok {
+		if v <= 0 {
+			return fmt.Errorf("%s: github.checks_timeout_ms must be positive, got %d", api.ErrWorkflowParseError, v)
+		}
+		github.ChecksTimeoutMs = v
+	}
+	if v, ok := getInt(m, "checks_registration_grace_ms"); ok {
+		if v < 0 {
+			return fmt.Errorf("%s: github.checks_registration_grace_ms must be non-negative, got %d", api.ErrWorkflowParseError, v)
+		}
+		github.ChecksRegistrationGraceMs = v
+	}
+	cfg.GitHub = github
 	return nil
 }
 

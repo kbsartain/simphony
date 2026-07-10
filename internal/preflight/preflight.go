@@ -55,9 +55,83 @@ func Check(cfg *api.WorkflowConfig) api.ProjectHealth {
 		addRuntimeCommandCheck(&health, effective, stage)
 		addRuntimeCredentialCheck(&health, effective, stage)
 	}
+	addVerifyCommandsCheck(&health, cfg.Verify.Commands)
+	addGitHubCLICheck(&health, &cfg.GitHub)
 	addWorkspaceCheck(&health, &cfg.Workspace)
 	finalize(&health)
 	return health
+}
+
+func addVerifyCommandsCheck(health *api.ProjectHealth, commands []string) {
+	seen := make(map[string]struct{})
+	for _, command := range commands {
+		trimmed := strings.TrimSpace(command)
+		if trimmed == "" || containsShellOperators(trimmed) {
+			continue
+		}
+		executable := commandExecutable(trimmed)
+		if executable == "" || isShellBuiltin(executable) {
+			continue
+		}
+		if _, ok := seen[executable]; ok {
+			continue
+		}
+		seen[executable] = struct{}{}
+		if _, err := exec.LookPath(executable); err != nil {
+			addIssue(health, api.HealthIssue{
+				Code:       "verify_command_not_found",
+				Severity:   SeverityBlocker,
+				Message:    "A verify.commands executable was not found on PATH",
+				Detail:     executable,
+				Suggestion: fmt.Sprintf("Install %s or make it available to the Simphony process before enabling merge verification.", executable),
+			})
+		}
+	}
+}
+
+func containsShellOperators(command string) bool {
+	for _, operator := range []string{"&&", "||", "|", ";", "$(", "`", ">", "<"} {
+		if strings.Contains(command, operator) {
+			return true
+		}
+	}
+	return false
+}
+
+func isShellBuiltin(name string) bool {
+	switch strings.ToLower(filepath.Base(name)) {
+	case "cd", "echo", "set", "export", "source", "exit", "if", "for", "while", "test", "[":
+		return true
+	default:
+		return false
+	}
+}
+
+func addGitHubCLICheck(health *api.ProjectHealth, cfg *api.GitHubConfig) {
+	if cfg == nil || !cfg.Enabled {
+		return
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		addIssue(health, api.HealthIssue{
+			Code:       "github_cli_not_found",
+			Severity:   SeverityBlocker,
+			Message:    "github.enabled is true but the gh CLI was not found on PATH",
+			Suggestion: "Install GitHub CLI, or disable the GitHub PR merge gate.",
+		})
+		return
+	}
+	var out bytes.Buffer
+	cmd := exec.Command("gh", "auth", "status")
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		addIssue(health, api.HealthIssue{
+			Code:       "github_cli_not_authenticated",
+			Severity:   SeverityBlocker,
+			Message:    "gh CLI is installed but not authenticated",
+			Detail:     strings.TrimSpace(out.String()),
+			Suggestion: "Run `gh auth login` for the account used by Simphony.",
+		})
+	}
 }
 
 func addRuntimeCommandCheck(health *api.ProjectHealth, runtime api.AgentRuntimeConfig, stage string) {

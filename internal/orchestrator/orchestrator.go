@@ -1584,11 +1584,27 @@ func (o *Orchestrator) transitionMergeIssueToDone(ctx context.Context, runtime r
 		if strings.TrimSpace(workspacePath) == "" {
 			workspacePath = runtime.workspaceMgr.GetWorkspacePath(issue.Identifier)
 		}
-		if err := runtime.workspaceMgr.MergeWorkspaceToBaseBranch(issue, workspacePath); err != nil {
-			o.logf("issue_id=%s issue_identifier=%s action=merge_completion_transition status=failed error=%v", issue.ID, identifier, err)
-			o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("merge completion: %v", err), retryKindCompletionTransition)
+		var verify func(string) error
+		if len(runtime.cfg.Verify.Commands) > 0 {
+			verify = func(repoPath string) error {
+				return runtime.workspaceMgr.RunVerifyCommands(repoPath, runtime.cfg.Verify.Commands, runtime.cfg.Verify.TimeoutMs)
+			}
+		}
+		var mergeErr error
+		mergeAction := "merge_branch"
+		if runtime.cfg.GitHub.Enabled {
+			mergeAction = "merge_branch_github_pr"
+			mergeErr = runtime.workspaceMgr.MergeIssueBranchViaGitHubPR(issue, workspacePath, verify, runtime.cfg.GitHub)
+		} else {
+			mergeErr = runtime.workspaceMgr.MergeWorkspaceToBaseBranchVerified(issue, workspacePath, verify)
+		}
+		if mergeErr != nil {
+			o.logf("issue_id=%s issue_identifier=%s action=%s status=failed error=%v", issue.ID, identifier, mergeAction, mergeErr)
+			_ = runtime.tracker.AddIssueComment(ctx, issue, fmt.Sprintf("**Simphony merge failed**\n\nThe branch was not merged into `%s`:\n\n```\n%v\n```\n\nSimphony will retry automatically.", runtime.cfg.Workspace.BaseBranch, mergeErr))
+			o.scheduleRetry(issue.ID, identifier, fmt.Sprintf("branch merge into %s: %v", runtime.cfg.Workspace.BaseBranch, mergeErr), retryKindCompletionTransition)
 			return
 		}
+		o.logf("issue_id=%s issue_identifier=%s action=%s status=success", issue.ID, identifier, mergeAction)
 	}
 
 	updatedIssue, err := runtime.tracker.MoveIssueToState(ctx, issue.ID, runtime.cfg.Pipeline.DoneState)
