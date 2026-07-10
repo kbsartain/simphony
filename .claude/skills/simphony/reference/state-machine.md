@@ -1,0 +1,195 @@
+# Simphony State Machine (canonical reference)
+
+This is the behavioural contract the `simphony` skill emulates. It mirrors the
+Go orchestrator in `internal/orchestrator/orchestrator.go` and the config in
+`WORKFLOW.md` front matter. When emulating without the harness, follow this
+document exactly.
+
+## 1. Pipeline stages
+
+The stage is derived **purely from the issue's tracker state**. There is no
+separate stage field — state *is* the stage pointer.
+
+| Issue state (configurable)     | Stage               | What the agent does |
+|--------------------------------|---------------------|---------------------|
+| `working_state` / any active non-pipeline state (e.g. `Todo`, `Backlog`, `In Progress`) | `coding` | Implement the issue in an isolated workspace. |
+| `pipeline.review_state` (e.g. `In Review`) | `review` | Internal high-confidence review before approval. |
+| `pipeline.review_resolution_state` (optional, only if enabled) | `review_resolution` | Autonomously resolve formal PR/code-review feedback. |
+| `pipeline.merge_state` (e.g. `Approved`) | `merge` | Merge the branch to base and finalize. |
+
+Stage resolution order (first match wins): `review_resolution` → `review` →
+`merge` → else `coding`.
+
+## 2. State transitions (the loop)
+
+```
+        pick up candidate
+Todo ─────────────────────────► In Progress        (dispatch: coding starts)
+(working_state transition happens BEFORE the agent runs, only for coding)
+
+In Progress ──[coding done]───► In Review          (review_state)
+In Review   ──[review done]───► Approved            (merge_state)
+                    │  (if review_resolution enabled: In Review → Review Resolution → Approved)
+Approved    ──[merge done]────► Done                (done_state; branch merged into base first)
+```
+
+Concrete transition functions:
+
+- **coding complete** → move issue to the first available of
+  `[review_state, "In Review", "Review", "Done", "Completed"]` (the
+  `completionStatePreferences` list). Normally lands on `review_state`.
+- **review complete** → move to `merge_state`
+  (or to `review_resolution_state` if review-resolution is enabled).
+- **review_resolution complete** → parse the agent's final
+  `SIMPHONY_REVIEW_DECISION:` directive:
+  - `approved` → move to `merge_state`
+  - `retry` → run another review_resolution pass; after
+    `review_resolution.max_attempts` passes, escalate.
+  - `escalate` → move to `review_resolution.escalation_state`
+    (default = `review_state`) and add an escalation comment.
+- **merge complete** → run `verify.commands`, merge the issue branch into
+  `workspace.base_branch` (or open/merge a GitHub PR if `github.enabled`),
+  then move to `done_state`. On merge failure, comment and retry.
+
+The `working_state` transition (`→ In Progress`) happens **at dispatch, before**
+the coding agent runs, and only when the current state is not already
+`working_state`. Review / merge / review_resolution stages do **not** get a
+pre-run transition — they run in-place and only transition on completion.
+
+## 3. Config defaults (WORKFLOW.md front matter)
+
+```yaml
+polling:
+  interval_ms: 30000            # loop cadence
+tracker:
+  kind: linear
+  # NOTE: list EVERY pipeline state you want processed. The harness auto-appends
+  # working_state + merge_state (and review_resolution_state when enabled) to the
+  # active set, but does NOT auto-append review_state — so `In Review` must be
+  # listed explicitly or the review stage never runs. (Go: internal/config/
+  # workflow.go appends working_state @378, merge_state @470, done_state→terminal
+  # @471; there is no review_state append.) The raw Go default is just
+  # [Todo, In Progress]; this fuller list is the recommended explicit config.
+  active_states: [Backlog, Todo, In Progress, In Review, Approved]
+  working_state: In Progress
+  completion_states: [In Review, Review, Done, Completed]
+  terminal_states: [Closed, Cancelled, Canceled, Duplicate, Done]  # done_state auto-added
+pipeline:
+  review_state: In Review
+  merge_state: Approved
+  done_state: Done
+  escalation_state: Blocked        # where stuck work lands (see §8); a distinct
+                                   # state or a `simphony:blocked` label if no state
+  # review_resolution_state: (optional; enables the review_resolution stage)
+review_resolution:                # only active if enabled AND review_resolution_state set
+  enabled: false
+  max_attempts: 3
+  escalation_state: <review_state>
+  require_checks_green: true
+  require_code_review_approval: true
+  unresolved_comment_policy: fix_or_explain
+  escalate_on: []
+workspace:
+  mode: git_worktree
+  repo: .
+  root: ./simphony_workspaces
+  base_branch: main
+  branch_prefix: simphony/
+  cleanup_worktrees: false
+agent:
+  max_concurrent_agents: 10
+  max_turns: 20
+  max_attempts: 3                 # per (issue, stage) tries before escalation (§8)
+verify:
+  commands: []                    # e.g. [go test ./...]
+  timeout_ms: 600000
+github:
+  enabled: false                  # if true, merge via PR + wait for checks
+```
+
+Unknown front-matter keys are ignored (forward compatibility).
+
+**Effective active set (emulator rule).** The real harness computes the set of
+states it polls by auto-appending pipeline states to `active_states`. The
+emulator has none of that code, so when it fetches candidates it must use:
+
+```
+effective_active = active_states
+                 ∪ {working_state, review_state, merge_state}
+                 ∪ {review_resolution_state}   # only if review_resolution enabled
+                 − terminal_states
+```
+
+Always include every pipeline state here even if the user's `active_states`
+omits one, or that stage's issues are invisible and silently never processed.
+
+## 4. Candidate selection & ordering
+
+Fetch issues in `tracker.active_states` for the configured project. **Skip** an
+issue when it is:
+
+- already running, already claimed, or completed during this run,
+- in a terminal state, or outside the active-state set,
+- in `Todo` **and** blocked by a non-terminal blocker (inverse `blocks`
+  relation). Issues in other active states are not subject to the block rule.
+
+**Dispatch order:** by priority (Linear Urgent=1 → Low=4 first; **None=0 is
+treated as lowest and ordered last**), then `created_at` oldest first, then
+identifier lexicographic.
+
+Concurrency is capped by `agent.max_concurrent_agents` (global) and any
+per-state limits.
+
+## 5. Soft pause / single-stage focus
+
+The harness supports pausing individual stages (`coding`, `review`,
+`review_resolution`, `merge`) and the whole project. When a stage is paused,
+issues that resolve to that stage are **deferred, not processed** — they stay in
+their current state and are retried on the next tick once unpaused.
+
+"Focus on one stage" = pause every stage *except* the target. The skill
+implements this directly with a `stage=<name>` argument: it only dispatches
+issues whose resolved stage matches, and leaves all others untouched.
+
+## 6. Comments (state preservation / observability)
+
+Post tracker comments at these points (mirrors `postStatusComment` /
+`postAgentComment`):
+
+- review complete: a concise review summary (from `stages/review.md`).
+- review_resolution start: policy summary.
+- review_resolution approved / retry scheduled / escalated.
+- merge failed: the error and that a retry will happen.
+- escalation (any stage, §8): why it escalated and after how many attempts.
+- Optionally, surface the agent's notable messages as issue comments.
+
+## 7. Recovery model
+
+No database. State lives in the tracker + the filesystem worktrees. On restart,
+re-derive everything by re-reading issue states and existing worktrees; an issue
+in `In Review` is simply a `review`-stage item, etc. This is why the tracker
+state must always be kept authoritative and up to date.
+
+## 8. Retries, attempts, and escalation
+
+Failures must **converge**, not loop forever — a persistently failing issue that
+keeps re-dispatching burns an unbounded budget (this is the real orchestrator's
+weak spot: coding failures retry with backoff indefinitely). The emulator adds a
+per-(issue, stage) **attempt cap** so stuck work escalates instead of thrashing.
+
+- Track an attempt count per (issue, stage), keyed off the tracker so it
+  survives restart: the count = number of `simphony:attempt` markers, or simply
+  re-derive from the last N escalation/failure comments on the issue.
+- On a worker `failed`/`retry`: increment the attempt count and reschedule with
+  exponential backoff (base `max_retry_backoff_ms`, capped). **Do not advance.**
+- When `attempts >= agent.max_attempts` (default 3): **escalate** —
+  - move the issue to `pipeline.escalation_state` if one is configured, else
+    apply a `simphony:blocked` label (so it drops out of the active set), and
+  - post an escalation comment (why, attempt count, last error), and
+  - release the claim + optionally keep the worktree for a human.
+- `review_resolution` keeps its own `max_attempts` + `escalation_state`
+  (§2); this general cap governs coding / review / merge failures.
+
+Escalated / blocked issues are **terminal-for-now**: they leave the active set
+and count as "done-for-now" for a `/goal` completion condition, so one wedged
+issue never blocks a backlog drain.
