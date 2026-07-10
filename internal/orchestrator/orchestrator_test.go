@@ -1641,7 +1641,7 @@ func TestOrchestrator_RecordsEffectiveStageSDKAndModel(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Tracker.ActiveStates = append(cfg.Tracker.ActiveStates, "In Review")
 	cfg.AgentRuntime.Provider = "codex"
-	cfg.AgentRuntime.Command = "codex app-server"
+	cfg.AgentRuntime.Command = "go version"
 	cfg.AgentRuntime.Model = "gpt-coding"
 	cfg.AgentRuntime.ModelProvider = "openai"
 	cfg.AgentRuntime.StageOverrides = map[string]api.AgentStageOverride{
