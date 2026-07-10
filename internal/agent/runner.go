@@ -164,12 +164,19 @@ func (r *Runner) Run(ctx context.Context, issue api.Issue, workspace *api.Worksp
 	if err != nil {
 		return fmt.Errorf("%s: %w", api.ErrCodexNotFound, err)
 	}
+	command = ensureCodexShellEnvironment(command)
 
 	if !strings.Contains(command, "--listen") {
 		command += " --listen stdio://"
 	}
 
-	cmd := shellCommandContext(ctx, command)
+	cmd, direct, err := codexcmd.CommandContext(ctx, command)
+	if err != nil {
+		return fmt.Errorf("%s: %w", api.ErrCodexNotFound, err)
+	}
+	if !direct {
+		cmd = shellCommandContext(ctx, command)
+	}
 	cmd.Dir = workspace.Path
 	cmd.Stderr = os.Stderr
 	if err := configureSubprocessEnv(cmd, workspace.Path, cfg); err != nil {
@@ -936,11 +943,21 @@ func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentR
 	if rgPath, err := exec.LookPath("rg"); err == nil {
 		env = prependPath(env, filepath.Dir(rgPath))
 	}
+	if !strings.EqualFold(cfg.Provider, "claude") {
+		env = prependCodexToolPaths(env)
+	}
 	env = prependWorkspaceToolPaths(env, workspacePath)
 	env = applyRuntimeEnv(env, cfg)
 
 	cmd.Env = env
 	return nil
+}
+
+func ensureCodexShellEnvironment(command string) string {
+	if strings.Contains(strings.ToLower(command), "shell_environment_policy.") {
+		return command
+	}
+	return command + " -c shell_environment_policy.inherit=all"
 }
 
 var inheritedAgentEnvKeys = map[string]struct{}{
@@ -1067,6 +1084,17 @@ func prependWorkspaceToolPaths(env []string, workspacePath string) []string {
 		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
 			env = prependPath(env, dir)
 		}
+	}
+	return env
+}
+
+func prependCodexToolPaths(env []string) []string {
+	if runtime.GOOS != "windows" {
+		return env
+	}
+	binDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "OpenAI", "Codex", "bin")
+	if fi, err := os.Stat(filepath.Join(binDir, "rg.exe")); err == nil && !fi.IsDir() {
+		return prependPath(env, binDir)
 	}
 	return env
 }

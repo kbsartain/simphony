@@ -40,6 +40,18 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestEnsureCodexShellEnvironment(t *testing.T) {
+	got := ensureCodexShellEnvironment("codex app-server")
+	if !strings.Contains(got, "shell_environment_policy.inherit=all") {
+		t.Fatalf("command = %q, want shell environment override", got)
+	}
+
+	explicit := "codex app-server -c shell_environment_policy.inherit=core"
+	if got := ensureCodexShellEnvironment(explicit); got != explicit {
+		t.Fatalf("explicit policy was overridden: %q", got)
+	}
+}
+
 func runMockClaudeShim() {
 	var req claudeShimRequest
 	if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {

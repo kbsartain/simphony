@@ -392,7 +392,7 @@ claude:
 
 `claude:` is the provider-specific configuration for `agent_runtime.provider: claude`. Simphony writes an embedded Node.js shim into the issue workspace and launches it unless `claude.command` or `agent_runtime.command` is set. The shim loads the Claude Agent SDK from the workspace or wrapper environment, runs one turn, emits Simphony-normalized JSON events, and resumes the prior Claude session for continuation turns.
 
-Install a supported Claude SDK package where Node can resolve it, or set `SIMPHONY_CLAUDE_SDK_PACKAGE` to the package name your environment uses. The embedded shim tries `@anthropic-ai/claude-agent-sdk` first and falls back to `@anthropic-ai/claude-code`.
+Install a supported Claude SDK package where Node can resolve it, or set `SIMPHONY_CLAUDE_SDK_PACKAGE` to the package name your environment uses. The repository root declares `@anthropic-ai/claude-agent-sdk`; run `npm install` there for Simphony workspaces that inherit the root package manifest. Other managed repositories must make the SDK resolvable from their own workspace. The embedded shim tries `@anthropic-ai/claude-agent-sdk` first and falls back to `@anthropic-ai/claude-code`.
 
 Set `claude.command` when you want to provide your own wrapper. The wrapper must read one JSON request from stdin and emit newline-delimited JSON events with `event`, optional `payload`, and optional `usage` fields.
 

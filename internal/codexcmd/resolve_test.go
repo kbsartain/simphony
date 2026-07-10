@@ -51,6 +51,22 @@ func TestSplitExecutablePreservesArguments(t *testing.T) {
 	}
 }
 
+func TestSplitCommandArgsPreservesQuotedValues(t *testing.T) {
+	got, err := splitCommandArgs(` app-server -c "shell_environment_policy.inherit=all" --listen stdio://`)
+	if err != nil {
+		t.Fatalf("splitCommandArgs: %v", err)
+	}
+	want := []string{"app-server", "-c", "shell_environment_policy.inherit=all", "--listen", "stdio://"}
+	if len(got) != len(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestLegacyWinGetCodexPath(t *testing.T) {
 	path := `C:\Users\dev\AppData\Local\Microsoft\WinGet\Packages\OpenAI.Codex_Microsoft.Winget.Source_test\codex-x86_64-pc-windows-msvc.exe`
 	if !isCodexExecutable(path) || !isLegacyWinGetCodexPath(path) {
