@@ -35,7 +35,8 @@ switch ($Cmd) {
     $baseRef = "origin/$Base"
     git -C $Repo rev-parse --verify --quiet "$baseRef^{commit}" *> $null
     if ($LASTEXITCODE -ne 0) { $baseRef = $Base }
-    $hasBranch = (git -C $Repo show-ref --verify --quiet "refs/heads/$Branch"; $LASTEXITCODE -eq 0)
+    git -C $Repo show-ref --verify --quiet "refs/heads/$Branch"
+    $hasBranch = ($LASTEXITCODE -eq 0)
     if ($hasBranch) { git -C $Repo worktree add $wt $Branch | Out-Host }
     else            { git -C $Repo worktree add -b $Branch $wt $baseRef | Out-Host }
     Write-Output $wt
