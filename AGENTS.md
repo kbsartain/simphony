@@ -148,3 +148,30 @@ When implementing, verify against these spec sections:
 This project is being developed on Windows. For shell hooks:
 - The spec mandates `bash -lc` on POSIX. On Windows, use `cmd /C` or PowerShell as fallback, but prefer WSL/MSYS2 `bash` if available.
 - Path handling must use `filepath` package for portability.
+
+## Live harness operations (added 2026-09-24, from Claude memory import)
+
+Beyond this dev guide: simphony also runs as Keith's **live, unattended coding-agent
+harness** (`simphony.exe -config simphony.yaml`, registry mode, `127.0.0.1:8080`),
+managing `simphony` (self) and `geekli` (`../geekli`), each via its own
+`WORKFLOW.md`. It polls Linear and spawns a coding SDK subprocess per stage (Codex
+app-server or Claude CLI); tracker state = stage.
+
+- **Deploying is the USER's action, not the agent's** — compiled Go binary: agent
+  builds/stages (`go build -o simphony.exe ./cmd/simphony`); Keith stops/starts
+  (`Start-Process`) from a shell with the provider key env vars.
+- **Keys are OS environment variables, no `.env`**: `ZAI_API_KEY`,
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY` (resolved at WORKFLOW.md
+  load). z.ai key rotated 2026-07 after plaintext exposure in geekli git history.
+- Keith configures projects by hand-editing each WORKFLOW.md, not the dashboard.
+- **ADR-0001 provider catalog** (`docs/adr/0001-provider-model-catalog.md`):
+  phases 1–3 backend done on main; remaining dashboard wiring + per-stage SDK
+  selector is gated on modeling z.ai's two endpoints (Anthropic-compatible
+  `/api/anthropic` vs OpenAI-compatible `/api/coding/paas/v4`) as one vendor.
+- Production bug class to avoid: Claude CLI variadic `--disallowed-tools` swallows
+  the trailing prompt (use `--`); setting BOTH `ANTHROPIC_API_KEY` and
+  `ANTHROPIC_AUTH_TOKEN` makes the CLI send both auth headers → rejected by
+  z.ai/Kimi (send one, endpoint-primary).
+
+**Full imported memory archive:**
+`%USERPROFILE%\Documents\kimi\workspace\claude-import-archive\simphony-memory\`
