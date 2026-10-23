@@ -3,21 +3,19 @@ agent:
     max_concurrent_agents: 10
     max_retry_backoff_ms: 300000
     max_turns: 20
-codex:
+agent_runtime:
+    endpoint_url: https://api.z.ai/api/anthropic
+    model: glm-5.2
+    model_provider: zai
+    provider: claude
+claude:
+    api_key: $ZAI_API_KEY
     approval_policy: never
-    command: codex app-server
-    read_timeout_ms: 5000
+    endpoint_url: https://api.z.ai/api/anthropic
+    model: glm-5.2
+    read_timeout_ms: 60000
     reasoning_effort: high
     stall_timeout_ms: 300000
-    stage_overrides:
-        coding:
-            reasoning_effort: high
-        review:
-            reasoning_effort: xhigh
-        merge:
-            reasoning_effort: high
-    thread_sandbox: danger-full-access
-    turn_sandbox_policy: danger-full-access
     turn_timeout_ms: 3.6e+06
 hooks:
     before_run: |

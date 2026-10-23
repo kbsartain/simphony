@@ -1,0 +1,29 @@
+server:
+  bind_address: 127.0.0.1
+  port: 8080
+  api_prefix: /api/v1
+  dashboard_enabled: true
+concurrency:
+  max_concurrent_agents: 10
+  default_project_max_concurrent_agents: 5
+security:
+  allow_workspace_overlap: false
+  allow_workspace_under_registry_dir: true
+  allow_remote_dashboard: false
+projects:
+  - id: simphony
+    name: Simphony
+    workflow_path: ./WORKFLOW.md
+    start_paused: true
+    max_concurrent_agents: 5
+  - id: geekli
+    name: Geekli
+    workflow_path: ../geekli/WORKFLOW.md
+    start_paused: true
+    max_concurrent_agents: 5
+agent_runtime:
+  provider: claude
+  model: glm-5.2
+  model_provider: zai
+  permission_mode: acceptEdits
+  endpoint_url: https://api.z.ai/api/anthropic
