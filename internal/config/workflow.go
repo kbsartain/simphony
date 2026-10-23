@@ -180,6 +180,9 @@ func ResolveConfig(def *api.WorkflowDefinition, workflowDir string) (*api.Workfl
 	if err := resolveAgentRuntime(agentRuntimeMap, cfg); err != nil {
 		return nil, err
 	}
+	if err := validateAgentRuntimeSecurity(cfg.AgentRuntime); err != nil {
+		return nil, err
+	}
 
 	serverMap := getSubMap(def.Config, "server")
 	if err := resolveServer(serverMap, cfg); err != nil {
@@ -392,6 +395,10 @@ func resolveTracker(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		completionStates = v
 	}
 	completionStates = appendUniqueStrings(completionStates, terminalStates...)
+	trustedLabels := []string{"simphony:approved"}
+	if v, ok := getStringSlice(m, "trusted_labels"); ok && len(v) > 0 {
+		trustedLabels = appendUniqueStrings(v)
+	}
 
 	cfg.Tracker = api.TrackerConfig{
 		Kind:             kind,
@@ -402,6 +409,7 @@ func resolveTracker(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 		WorkingState:     workingState,
 		TerminalStates:   terminalStates,
 		CompletionStates: completionStates,
+		TrustedLabels:    trustedLabels,
 	}
 	return nil
 }
@@ -864,9 +872,9 @@ func resolveAgentRuntime(m map[string]interface{}, cfg *api.WorkflowConfig) erro
 func defaultRuntimeConfig(provider string) api.AgentRuntimeConfig {
 	runtime := api.AgentRuntimeConfig{
 		Provider:          provider,
-		ApprovalPolicy:    "auto",
-		ThreadSandbox:     "none",
-		TurnSandboxPolicy: "none",
+		ApprovalPolicy:    "never",
+		ThreadSandbox:     "workspace-write",
+		TurnSandboxPolicy: "workspace-write",
 		TurnTimeoutMs:     3600000,
 		ReadTimeoutMs:     5000,
 		StallTimeoutMs:    300000,
@@ -875,7 +883,9 @@ func defaultRuntimeConfig(provider string) api.AgentRuntimeConfig {
 	case "codex":
 		runtime.Command = "codex app-server"
 	case "claude":
-		runtime.PermissionMode = "acceptEdits"
+		runtime.PermissionMode = "default"
+		runtime.AllowedTools = []string{"Read", "Edit", "Write", "Glob", "Grep", "Bash"}
+		runtime.DisallowedTools = []string{"WebFetch", "WebSearch"}
 	}
 	return runtime
 }
@@ -936,6 +946,9 @@ func applyRuntimeCommon(m map[string]interface{}, runtime *api.AgentRuntimeConfi
 	}
 	if v, ok := getString(m, "turn_sandbox_policy"); ok && v != "" {
 		runtime.TurnSandboxPolicy = strings.TrimSpace(v)
+	}
+	if v, ok := getBool(m, "allow_unsafe_host_access"); ok {
+		runtime.AllowUnsafeHostAccess = v
 	}
 	if v, ok := getInt(m, "turn_timeout_ms"); ok {
 		runtime.TurnTimeoutMs = v
@@ -1058,7 +1071,10 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 		if v, ok := getString(stageMap, "turn_sandbox_policy"); ok {
 			override.TurnSandboxPolicy = strings.TrimSpace(v)
 		}
-		if override.Provider == "" && override.Command == "" && override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && override.EndpointURL == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured && len(override.Env) == 0 && len(override.Skills) == 0 && len(override.AllowedTools) == 0 && len(override.DisallowedTools) == 0 && override.PermissionMode == "" && len(override.SettingSources) == 0 && override.ApprovalPolicy == "" && override.ThreadSandbox == "" && override.TurnSandboxPolicy == "" {
+		if v, ok := getBool(stageMap, "allow_unsafe_host_access"); ok {
+			override.AllowUnsafeHostAccess = &v
+		}
+		if override.Provider == "" && override.Command == "" && override.Model == "" && override.ModelProvider == "" && override.ReasoningEffort == "" && override.EndpointURL == "" && !override.APIKeyConfigured && !override.AuthTokenConfigured && len(override.Env) == 0 && len(override.Skills) == 0 && len(override.AllowedTools) == 0 && len(override.DisallowedTools) == 0 && override.PermissionMode == "" && len(override.SettingSources) == 0 && override.ApprovalPolicy == "" && override.ThreadSandbox == "" && override.TurnSandboxPolicy == "" && override.AllowUnsafeHostAccess == nil {
 			continue
 		}
 		overrides[stageKey] = override
@@ -1067,6 +1083,51 @@ func resolveAgentStageOverrides(m map[string]interface{}, section string) (map[s
 		return nil, nil
 	}
 	return overrides, nil
+}
+
+func validateAgentRuntimeSecurity(runtime api.AgentRuntimeConfig) error {
+	isUnsafeSandbox := func(value string) bool {
+		value = strings.ToLower(strings.TrimSpace(value))
+		return value == "none" || value == "danger-full-access"
+	}
+	validate := func(section string, provider string, threadSandbox string, turnSandbox string, permissionMode string, allowUnsafe bool) error {
+		unsafe := strings.EqualFold(provider, "codex") &&
+			(isUnsafeSandbox(threadSandbox) || isUnsafeSandbox(turnSandbox))
+		unsafe = unsafe || strings.EqualFold(strings.TrimSpace(permissionMode), "bypassPermissions")
+		if unsafe && !allowUnsafe {
+			return fmt.Errorf("%s: %s requests unrestricted host access; set allow_unsafe_host_access=true only as an explicit, audited exception", api.ErrWorkflowParseError, section)
+		}
+		return nil
+	}
+	if err := validate("agent_runtime", runtime.Provider, runtime.ThreadSandbox, runtime.TurnSandboxPolicy, runtime.PermissionMode, runtime.AllowUnsafeHostAccess); err != nil {
+		return err
+	}
+	for stage, override := range runtime.StageOverrides {
+		provider := runtime.Provider
+		if override.Provider != "" {
+			provider = override.Provider
+		}
+		threadSandbox := runtime.ThreadSandbox
+		if override.ThreadSandbox != "" {
+			threadSandbox = override.ThreadSandbox
+		}
+		turnSandbox := runtime.TurnSandboxPolicy
+		if override.TurnSandboxPolicy != "" {
+			turnSandbox = override.TurnSandboxPolicy
+		}
+		permissionMode := runtime.PermissionMode
+		if override.PermissionMode != "" {
+			permissionMode = override.PermissionMode
+		}
+		allowUnsafe := runtime.AllowUnsafeHostAccess
+		if override.AllowUnsafeHostAccess != nil {
+			allowUnsafe = *override.AllowUnsafeHostAccess
+		}
+		if err := validate("agent_runtime.stage_overrides."+stage, provider, threadSandbox, turnSandbox, permissionMode, allowUnsafe); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeReasoningEffort(value string) (string, error) {

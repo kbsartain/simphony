@@ -1,8 +1,8 @@
 # Future Enhancements Backlog
 
-This backlog captures follow-on work that is valuable after the current multi-project implementation is validated against a real Linear-backed project.
+This backlog captures follow-on work that is valuable after the mandatory [Security Remediation Plan](security-remediation-plan.md) and [Security Remediation Backlog](security-remediation-backlog.md) are complete.
 
-The next near-term step is not more feature development: wire one project to Linear and run end-to-end testing through the dashboard, API, scheduler, workspace creation, agent launch, retry/cleanup paths, and settings flows.
+The next near-term step is not feature development or a live Linear-backed E2E run. First complete the P0/P1 security remediation, then perform the controlled disposable-environment validation in `SEC-053`. The E2E items below may resume only after the control-plane and credential/SSRF exit gates pass.
 
 ## E2E Validation First
 
@@ -16,11 +16,13 @@ The next near-term step is not more feature development: wire one project to Lin
 
 ## Security And Access Control
 
-- `FE-1.1` Add optional dashboard/API authentication for non-local deployments.
-- `FE-1.2` Support an authenticated reverse-proxy deployment guide with recommended headers, TLS expectations, and trusted-origin settings.
-- `FE-1.3` Add role-aware UI/API permissions if Simphony is used by more than one operator.
-- `FE-1.4` Add optional audit logging for settings changes, project lifecycle actions, and manual refreshes.
-- `FE-1.5` Evaluate a secret-vault integration for teams that do not want workflow or registry files to contain secret references.
+Authentication, local-only binding, trusted origins, CSRF protection, route permissions, audit logging, credential-origin binding, and SSRF defenses are mandatory remediation rather than optional enhancements:
+
+- `FE-1.1` is superseded by `SEC-001` through `SEC-006` in the security remediation backlog.
+- `FE-1.2` is superseded by the remote-access and reverse-proxy documentation in `SEC-052`.
+- `FE-1.4` is superseded by the mandatory privileged-action audit logging in `SEC-050`.
+- `FE-1.3` remains a post-remediation enhancement: expand the baseline read/operator permission model into full multi-user roles if Simphony is used by more than one operator.
+- `FE-1.5` remains a post-remediation enhancement: evaluate OS secret stores or a vault integration after origin-scoped credential references from `SEC-010` and `SEC-011` are stable.
 
 ## Health And Observability
 
@@ -62,7 +64,7 @@ The next near-term step is not more feature development: wire one project to Lin
 
 ## Product Decisions To Revisit After E2E
 
-- Whether built-in dashboard auth is necessary or an authenticated proxy is enough for the expected deployment model.
+- Whether the baseline single-operator read/operator permission model should expand into multi-user roles. Authentication itself is mandatory.
 - Whether passive scheduled tracker health is useful enough to justify extra Linear traffic and credential exposure surface.
 - Whether the current owner-aware FIFO limiter is sufficient under real concurrent project load.
 - Whether project setup should remain registry-file-oriented or evolve toward a more guided control-plane experience.

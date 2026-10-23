@@ -932,6 +932,9 @@ func quoteCommandArg(arg string) string {
 }
 
 func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentRuntimeConfig) error {
+	if cfg != nil && cfg.AllowUnsafeHostAccess {
+		log.Printf("security_audit action=agent_start outcome=unsafe_override provider=%q workspace=%q", cfg.Provider, workspacePath)
+	}
 	env := scrubInheritedAgentEnv(os.Environ())
 
 	gitConfigPath, err := writeGitSafeDirectoryConfig(workspacePath)
@@ -960,15 +963,34 @@ func ensureCodexShellEnvironment(command string) string {
 	return command + " -c shell_environment_policy.inherit=all"
 }
 
-var inheritedAgentEnvKeys = map[string]struct{}{
-	"ANTHROPIC_API_KEY":    {},
-	"ANTHROPIC_AUTH_TOKEN": {},
-	"ANTHROPIC_BASE_URL":   {},
-	"LINEAR_API_KEY":       {},
-	"LINEAR_AUTH_TOKEN":    {},
-	"OPENAI_API_KEY":       {},
-	"OPENAI_AUTH_TOKEN":    {},
-	"OPENAI_BASE_URL":      {},
+var allowedInheritedAgentEnvKeys = map[string]struct{}{
+	"APPDATA":                {},
+	"COMSPEC":                {},
+	"HOME":                   {},
+	"LANG":                   {},
+	"LOCALAPPDATA":           {},
+	"LOGNAME":                {},
+	"NUMBER_OF_PROCESSORS":   {},
+	"PATH":                   {},
+	"PATHEXT":                {},
+	"PROCESSOR_ARCHITECTURE": {},
+	"PROGRAMDATA":            {},
+	"PROGRAMFILES":           {},
+	"PROGRAMFILES(X86)":      {},
+	"SHELL":                  {},
+	"SYSTEMDRIVE":            {},
+	"SYSTEMROOT":             {},
+	"SIMPHONY_MOCK_CAPTURE":  {},
+	"SIMPHONY_MOCK_CLAUDE":   {},
+	"SIMPHONY_MOCK_CODEX":    {},
+	"SIMPHONY_MOCK_MODE":     {},
+	"TEMP":                   {},
+	"TERM":                   {},
+	"TMP":                    {},
+	"TMPDIR":                 {},
+	"USER":                   {},
+	"USERPROFILE":            {},
+	"WINDIR":                 {},
 }
 
 func scrubInheritedAgentEnv(env []string) []string {
@@ -976,10 +998,11 @@ func scrubInheritedAgentEnv(env []string) []string {
 	for _, entry := range env {
 		key, _, ok := strings.Cut(entry, "=")
 		if !ok {
-			out = append(out, entry)
 			continue
 		}
-		if _, drop := inheritedAgentEnvKeys[strings.ToUpper(key)]; drop {
+		upperKey := strings.ToUpper(strings.TrimSpace(key))
+		_, allowed := allowedInheritedAgentEnvKeys[upperKey]
+		if !allowed && !strings.HasPrefix(upperKey, "LC_") && !strings.HasPrefix(upperKey, "XDG_") {
 			continue
 		}
 		out = append(out, entry)

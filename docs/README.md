@@ -4,6 +4,8 @@ Start with the root [README](../README.md) for the project overview and quick st
 
 ## Guides
 
+- [Security remediation plan](security-remediation-plan.md): threat model, containment posture, phased delivery, migration, verification, and release gates for the October 2026 security review.
+- [Security remediation backlog](security-remediation-backlog.md): prioritized, dependency-ordered work items with acceptance criteria and verification commands.
 - [Configuration](configuration.md): `WORKFLOW.md` structure, defaults, hooks, Codex settings, and prompt fields.
 - [Environment and secrets](environment.md): required environment variables and safe credential handling.
 - [Workflow examples](workflow-examples.md): complete starter workflow files for common local setups.
@@ -12,7 +14,7 @@ Start with the root [README](../README.md) for the project overview and quick st
 - [Two-project registry example](examples/two-projects.simphony.yaml): sample global config for a local workstation.
 - [Architecture](architecture.md): runtime flow and package responsibilities.
 - [Multi-project backlog](multi-project-backlog.md): phased plan for isolated project runtimes and aggregate UI support.
-- [Future enhancements backlog](future-enhancements.md): post-E2E follow-up ideas for auth, observability, onboarding, provider diagnostics, and operational hardening.
+- [Future enhancements backlog](future-enhancements.md): post-remediation follow-up ideas for observability, onboarding, provider diagnostics, and operational hardening.
 - [HTTP API](api.md): state, issue detail, refresh, and error responses.
 - [Operations](operations.md): startup, logs, refreshes, hot reload, shutdown, and retries.
 - [Development](development.md): local backend and dashboard workflows.

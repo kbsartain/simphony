@@ -721,6 +721,9 @@ func (o *Orchestrator) filterEligible(candidates []api.Issue) []api.Issue {
 		if strings.EqualFold(stateNorm, "todo") && o.hasOpenBlocker(cfg, issue) {
 			continue
 		}
+		if !issueTrustedWithConfig(cfg, issue) {
+			continue
+		}
 
 		eligible = append(eligible, issue)
 	}
@@ -734,6 +737,20 @@ func (o *Orchestrator) hasOpenBlocker(cfg *api.WorkflowConfig, issue api.Issue) 
 		}
 		if !o.isTerminalWithConfig(cfg, strings.ToLower(*b.State)) {
 			return true
+		}
+	}
+	return false
+}
+
+func issueTrustedWithConfig(cfg *api.WorkflowConfig, issue api.Issue) bool {
+	if cfg == nil || len(cfg.Tracker.TrustedLabels) == 0 {
+		return true
+	}
+	for _, issueLabel := range issue.Labels {
+		for _, trustedLabel := range cfg.Tracker.TrustedLabels {
+			if strings.EqualFold(strings.TrimSpace(issueLabel), strings.TrimSpace(trustedLabel)) {
+				return true
+			}
 		}
 	}
 	return false
@@ -811,6 +828,11 @@ func issueSequence(identifier string) (string, int, bool) {
 
 func (o *Orchestrator) dispatch(issue api.Issue) bool {
 	runtime := o.runtimeSnapshot()
+	if !issueTrustedWithConfig(runtime.cfg, issue) {
+		o.logf("issue_id=%s issue_identifier=%s action=dispatch_deferred reason=untrusted_issue", issue.ID, issue.Identifier)
+		o.setDispatchDeferred("untrusted_issue", time.Now())
+		return true
+	}
 	stage := o.pipelineStage(issue, runtime.cfg)
 	if reason := o.pauseReason(stage.Kind); reason != "" {
 		o.logf("issue_id=%s issue_identifier=%s action=dispatch_deferred reason=%s stage=%s", issue.ID, issue.Identifier, reason, stage.Kind)
@@ -1135,6 +1157,8 @@ func (o *Orchestrator) continueDecision(ctx context.Context, issueID string) (ap
 		decision.Reason = "terminal_state"
 	} else if !o.isActiveWithConfig(runtime.cfg, stateNorm) {
 		decision.Reason = "non_active_state"
+	} else if !issueTrustedWithConfig(runtime.cfg, issue) {
+		decision.Reason = "untrusted_issue"
 	} else {
 		decision.Reason = "completed_turn"
 	}
@@ -1488,6 +1512,11 @@ func (o *Orchestrator) handleRetry(issueID string) {
 		o.releaseClaim(issueID)
 		return
 	}
+	if !issueTrustedWithConfig(runtime.cfg, *issue) {
+		o.logf("issue_id=%s issue_identifier=%s action=retry_deferred reason=untrusted_issue", issueID, issue.Identifier)
+		o.setDispatchDeferred("untrusted_issue", time.Now())
+		return
+	}
 
 	stage := o.pipelineStage(*issue, runtime.cfg)
 	if reason := o.pauseReason(stage.Kind); reason != "" {
@@ -1548,6 +1577,11 @@ func (o *Orchestrator) handleCompletionTransitionRetry(ctx context.Context, runt
 		delete(o.state.RetryAttempts, issueID)
 		o.mu.Unlock()
 		o.releaseClaim(issueID)
+		return
+	}
+	if !issueTrustedWithConfig(runtime.cfg, issue) {
+		o.logf("issue_id=%s issue_identifier=%s action=completion_transition_retry deferred=untrusted_issue", issueID, identifier)
+		o.setDispatchDeferred("untrusted_issue", time.Now())
 		return
 	}
 	stage := o.pipelineStage(issue, runtime.cfg)

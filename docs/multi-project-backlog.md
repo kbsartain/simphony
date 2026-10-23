@@ -206,7 +206,7 @@ Status:
 - Done: `MP-6.2`; multi-project startup validation rejects enabled project workspace roots under the registry directory unless `security.allow_workspace_under_registry_dir` is true.
 - Done: `MP-6.5`; validation emits warnings when multiple enabled projects reference the same Linear endpoint/project slug.
 - Done: `MP-6.3`; agent subprocesses scrub inherited OpenAI, Anthropic, and Linear provider/tracker values before applying the selected project's runtime config and explicit env.
-- Done: `MP-6.6`; registry servers bind to `127.0.0.1` by default and non-loopback binds require `security.allow_remote_dashboard: true`.
+- Superseded by `SEC-001`: registry servers bind to loopback and reject direct non-loopback binds; remote access uses an authenticated TLS reverse proxy.
 - Done: `MP-6.4`; settings and registry API responses mask secrets, dashboard state uses masked values/configured flags, Linear upstream errors redact echoed API keys, and orchestrator logs scrub configured tracker/runtime/env secrets.
 - Done: `MP-6.7`; configuration and operations docs cover workspace isolation, local binding, and the explicit remote dashboard/API opt-in.
 
@@ -259,5 +259,5 @@ Acceptance:
 - Answered: global agent defaults fill missing values; project `agent_runtime` fields override individual global fields.
 - Answered: disabled projects are shown as inactive so operators can edit, re-enable, or remove them from Project Setup.
 - Answered: project IDs are explicit stable registry keys. Bootstrap/setup flows may derive starter IDs for convenience, but operators can edit them before saving.
-- Answered: this iteration does not include built-in dashboard authentication. Non-loopback dashboard/API binding requires `security.allow_remote_dashboard: true`; remote deployments should sit behind a private network, authenticated proxy, or tunnel.
+- Superseded by the security remediation: dashboard/API authentication is mandatory, direct non-loopback binding is rejected, and remote deployments use an authenticated TLS reverse proxy in front of the loopback listener.
 - Answered: the global concurrency gate uses lightweight owner-aware FIFO fairness. It avoids a larger scheduler while preventing one project from repeatedly bypassing earlier waiting projects.

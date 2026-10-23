@@ -414,7 +414,7 @@ projects:
 	}
 }
 
-func TestProjectServerUpdatesRegistryAgentRuntimeDefaultsAndPreservesSecrets(t *testing.T) {
+func TestProjectServerUpdatesRegistryAgentRuntimeDefaultsWithExplicitSecrets(t *testing.T) {
 	dir := t.TempDir()
 	alphaWorkflow := filepath.Join(dir, "alpha", "WORKFLOW.md")
 	writeServerTestWorkflow(t, alphaWorkflow, filepath.Join(dir, "..", "alpha-workspaces"))
@@ -442,7 +442,9 @@ projects:
     "model": "kimi-k2",
     "model_provider": "moonshot",
     "reasoning_effort": "medium",
-    "endpoint_url": "https://openai-compatible.example/v1"
+    "endpoint_url": "https://openai-compatible.example/v1",
+    "api_key": "$OLD_RUNTIME_KEY",
+    "auth_token": "$OLD_RUNTIME_TOKEN"
   }
 }`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/registry", strings.NewReader(payload))
@@ -460,7 +462,7 @@ projects:
 		t.Fatalf("agent runtime = %+v, want updated codex moonshot model", body.Registry.AgentRuntime)
 	}
 	if !body.Registry.AgentRuntime.APIKeyConfigured || !body.Registry.AgentRuntime.AuthTokenConfigured {
-		t.Fatalf("secret flags = %+v, want existing secrets preserved", body.Registry.AgentRuntime)
+		t.Fatalf("secret flags = %+v, want explicitly reselected secrets", body.Registry.AgentRuntime)
 	}
 	data, err := os.ReadFile(registryPath)
 	if err != nil {

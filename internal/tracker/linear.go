@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ const (
 	defaultLinearEndpoint = "https://api.linear.app/graphql"
 	linearTimeout         = 30000 * time.Millisecond
 	linearPageSize        = 50
+	linearMaxResponseSize = 4 << 20
 )
 
 // LinearClient implements api.Tracker for Linear.
@@ -42,13 +42,19 @@ func NewLinearClient(cfg api.TrackerConfig) (*LinearClient, error) {
 	if endpoint == "" {
 		endpoint = defaultLinearEndpoint
 	}
+	parsedEndpoint, _, err := ValidateCredentialURL(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("%s: unsafe Linear endpoint: %w", api.ErrLinearAPIRequest, err)
+	}
+	httpClient, err := NewSecureHTTPClient(parsedEndpoint.String(), linearTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("%s: initialize Linear HTTP client: %w", api.ErrLinearAPIRequest, err)
+	}
 
 	return &LinearClient{
-		cfg:      cfg,
-		endpoint: endpoint,
-		httpClient: &http.Client{
-			Timeout: linearTimeout,
-		},
+		cfg:        cfg,
+		endpoint:   parsedEndpoint.String(),
+		httpClient: httpClient,
 	}, nil
 }
 
@@ -407,9 +413,12 @@ func (c *LinearClient) doGraphQL(ctx context.Context, query string, variables ma
 		return nil, fmt.Errorf("%s: %w", api.ErrLinearAPIRequest, err)
 	}
 	defer resp.Body.Close()
+	respBytes, readErr := ReadAllLimited(resp.Body, linearMaxResponseSize)
+	if readErr != nil {
+		return nil, fmt.Errorf("%s: %w", api.ErrLinearUnknownPayload, readErr)
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBytes, _ := io.ReadAll(resp.Body)
 		body := c.redactSecrets(strings.TrimSpace(string(respBytes)))
 		if body != "" {
 			return nil, fmt.Errorf("%s: received HTTP %d: %s", api.ErrLinearAPIStatus, resp.StatusCode, body)
@@ -423,7 +432,7 @@ func (c *LinearClient) doGraphQL(ctx context.Context, query string, variables ma
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&respPayload); err != nil {
+	if err := json.Unmarshal(respBytes, &respPayload); err != nil {
 		return nil, fmt.Errorf("%s: %w", api.ErrLinearUnknownPayload, err)
 	}
 

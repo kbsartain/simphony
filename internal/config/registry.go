@@ -177,8 +177,8 @@ func ValidateProjectIsolation(registry *ProjectRegistry) (RegistryValidationRepo
 		return report, fmt.Errorf("%s: project registry is nil", api.ErrProjectRegistryParseError)
 	}
 
-	if registry.Server != nil && !registry.Security.AllowRemoteDashboard && !isLocalBindAddress(registry.Server.BindAddress) {
-		return report, fmt.Errorf("%s: server.bind_address %q exposes the dashboard/API outside localhost; set security.allow_remote_dashboard=true to allow this intentionally", api.ErrProjectRegistryParseError, registry.Server.BindAddress)
+	if registry.Server != nil && !isLocalBindAddress(registry.Server.BindAddress) {
+		return report, fmt.Errorf("%s: server.bind_address %q exposes the control plane outside localhost; bind to 127.0.0.1 or ::1 and use an authenticated TLS reverse proxy", api.ErrProjectRegistryParseError, registry.Server.BindAddress)
 	}
 
 	var resolved []registryResolvedProject

@@ -1,12 +1,14 @@
 module github.com/kbsartain/simphony
 
-go 1.25.0
-
-require gopkg.in/yaml.v3 v3.0.1
+go 1.26.10
 
 require (
-	github.com/fsnotify/fsnotify v1.10.0 // indirect
-	github.com/osteele/liquid v1.8.1 // indirect
+	github.com/fsnotify/fsnotify v1.10.0
+	github.com/osteele/liquid v1.8.1
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+require (
 	github.com/osteele/tuesday v1.0.4 // indirect
 	golang.org/x/mod v0.29.0 // indirect
 	golang.org/x/sync v0.18.0 // indirect

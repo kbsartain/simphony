@@ -43,8 +43,8 @@ docs/                  Project documentation
 
 ## Requirements
 
-- Go 1.25 or newer.
-- Node.js and npm for the dashboard.
+- Go 1.26.10 or a newer supported release.
+- Node.js 22 or newer and npm for the dashboard and Claude Agent SDK shim.
 - A Linear API key for tracker access.
 - Codex CLI with app-server support, or Node.js with the Claude Code Agent SDK for `agent_runtime.provider: claude`.
 

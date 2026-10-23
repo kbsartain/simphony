@@ -328,6 +328,7 @@ func TestScrubInheritedAgentEnvRemovesProviderAndTrackerValues(t *testing.T) {
 		"openai_base_url=https://parent-openai.example/v1",
 		"ANTHROPIC_API_KEY=parent-anthropic",
 		"LINEAR_API_KEY=parent-linear",
+		"SIMPHONY_MOCK_SECRET=must-not-pass",
 		"PATH=/usr/bin",
 		"CUSTOM=value",
 	}
@@ -345,8 +346,8 @@ func TestScrubInheritedAgentEnvRemovesProviderAndTrackerValues(t *testing.T) {
 	if getEnv(got, "LINEAR_API_KEY") != "" {
 		t.Fatal("LINEAR_API_KEY was inherited")
 	}
-	if getEnv(got, "PATH") != "/usr/bin" || getEnv(got, "CUSTOM") != "value" {
-		t.Fatalf("non-secret env was not preserved: %+v", got)
+	if getEnv(got, "PATH") != "/usr/bin" || getEnv(got, "CUSTOM") != "" || getEnv(got, "SIMPHONY_MOCK_SECRET") != "" {
+		t.Fatalf("environment allowlist was not enforced: %+v", got)
 	}
 }
 
@@ -901,7 +902,7 @@ func TestEffectiveRuntimeConfigSwitchesSDKWithoutLeakingProviderSettings(t *test
 	if effective.Model != "claude-opus-test" || effective.ModelProvider != "anthropic" || effective.APIKey != "anthropic-key" {
 		t.Fatalf("effective Claude routing = %+v", effective)
 	}
-	if effective.EndpointURL != "" || effective.AuthToken != "" || effective.ThreadSandbox != "none" {
+	if effective.EndpointURL != "" || effective.AuthToken != "" || effective.ThreadSandbox != "workspace-write" {
 		t.Fatalf("Codex-only routing or sandbox leaked into Claude: %+v", effective)
 	}
 	if effective.PermissionMode != "acceptEdits" || effective.TurnSandboxPolicy != "workspace-write" {
@@ -1007,8 +1008,8 @@ func TestRunnerRunAppliesWorkflowProviderOnlyStageOverrides(t *testing.T) {
 				}
 			},
 			"stall_timeout_ms": 300000,
-			"thread_sandbox": "danger-full-access",
-			"turn_sandbox_policy": "danger-full-access",
+			"thread_sandbox": "workspace-write",
+			"turn_sandbox_policy": "workspace-write",
 			"turn_timeout_ms": 3600000
 		},
 		"hooks": {

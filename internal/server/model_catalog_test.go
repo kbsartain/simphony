@@ -20,6 +20,7 @@ func TestFetchModelCatalog(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-new"},{"id":"gpt-old","display_name":"GPT Old"}]}`))
 	}))
 	defer upstream.Close()
+	t.Setenv("SIMPHONY_TRUSTED_OUTBOUND_ORIGINS", upstream.URL)
 
 	result, err := fetchModelCatalog(context.Background(), api.AgentRuntimeConfig{
 		ModelProvider: "openai",

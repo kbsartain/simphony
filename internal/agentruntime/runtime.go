@@ -98,15 +98,18 @@ func EffectiveConfig(cfg *api.AgentRuntimeConfig, stage api.PipelineStage) api.A
 	if override.TurnSandboxPolicy != "" {
 		effective.TurnSandboxPolicy = override.TurnSandboxPolicy
 	}
+	if override.AllowUnsafeHostAccess != nil {
+		effective.AllowUnsafeHostAccess = *override.AllowUnsafeHostAccess
+	}
 	return effective
 }
 
 func defaultsForProvider(provider string) api.AgentRuntimeConfig {
 	runtime := api.AgentRuntimeConfig{
 		Provider:          provider,
-		ApprovalPolicy:    "auto",
-		ThreadSandbox:     "none",
-		TurnSandboxPolicy: "none",
+		ApprovalPolicy:    "never",
+		ThreadSandbox:     "workspace-write",
+		TurnSandboxPolicy: "workspace-write",
 		TurnTimeoutMs:     3600000,
 		ReadTimeoutMs:     5000,
 		StallTimeoutMs:    300000,
@@ -114,7 +117,9 @@ func defaultsForProvider(provider string) api.AgentRuntimeConfig {
 	if provider == "codex" {
 		runtime.Command = "codex app-server"
 	} else if provider == "claude" {
-		runtime.PermissionMode = "acceptEdits"
+		runtime.PermissionMode = "default"
+		runtime.AllowedTools = []string{"Read", "Edit", "Write", "Glob", "Grep", "Bash"}
+		runtime.DisallowedTools = []string{"WebFetch", "WebSearch"}
 	}
 	return runtime
 }

@@ -72,6 +72,7 @@ type TrackerConfig struct {
 	WorkingState     string   `json:"working_state"`
 	TerminalStates   []string `json:"terminal_states"`
 	CompletionStates []string `json:"completion_states"`
+	TrustedLabels    []string `json:"trusted_labels"`
 }
 
 // PipelineConfig configures the issue states used for coding, review, merge, and completion.
@@ -134,52 +135,54 @@ type AgentConfig struct {
 
 // AgentRuntimeConfig selects and configures the coding-agent provider.
 type AgentRuntimeConfig struct {
-	Provider            string                        `json:"provider"`
-	Command             string                        `json:"command"`
-	Model               string                        `json:"model,omitempty"`
-	ModelProvider       string                        `json:"model_provider,omitempty"`
-	ReasoningEffort     string                        `json:"reasoning_effort,omitempty"`
-	EndpointURL         string                        `json:"endpoint_url,omitempty"`
-	APIKeyConfigured    bool                          `json:"api_key_configured,omitempty"`
-	AuthTokenConfigured bool                          `json:"auth_token_configured,omitempty"`
-	APIKey              string                        `json:"-"`
-	AuthToken           string                        `json:"-"`
-	Env                 map[string]string             `json:"env,omitempty"`
-	Skills              []AgentSkillRef               `json:"skills,omitempty"`
-	AllowedTools        []string                      `json:"allowed_tools,omitempty"`
-	DisallowedTools     []string                      `json:"disallowed_tools,omitempty"`
-	PermissionMode      string                        `json:"permission_mode,omitempty"`
-	SettingSources      []string                      `json:"setting_sources,omitempty"`
-	ApprovalPolicy      string                        `json:"approval_policy"`
-	ThreadSandbox       string                        `json:"thread_sandbox"`
-	TurnSandboxPolicy   string                        `json:"turn_sandbox_policy"`
-	TurnTimeoutMs       int                           `json:"turn_timeout_ms"`
-	ReadTimeoutMs       int                           `json:"read_timeout_ms"`
-	StallTimeoutMs      int                           `json:"stall_timeout_ms"`
-	StageOverrides      map[string]AgentStageOverride `json:"stage_overrides,omitempty"`
+	Provider              string                        `json:"provider"`
+	Command               string                        `json:"command"`
+	Model                 string                        `json:"model,omitempty"`
+	ModelProvider         string                        `json:"model_provider,omitempty"`
+	ReasoningEffort       string                        `json:"reasoning_effort,omitempty"`
+	EndpointURL           string                        `json:"endpoint_url,omitempty"`
+	APIKeyConfigured      bool                          `json:"api_key_configured,omitempty"`
+	AuthTokenConfigured   bool                          `json:"auth_token_configured,omitempty"`
+	APIKey                string                        `json:"-"`
+	AuthToken             string                        `json:"-"`
+	Env                   map[string]string             `json:"env,omitempty"`
+	Skills                []AgentSkillRef               `json:"skills,omitempty"`
+	AllowedTools          []string                      `json:"allowed_tools,omitempty"`
+	DisallowedTools       []string                      `json:"disallowed_tools,omitempty"`
+	PermissionMode        string                        `json:"permission_mode,omitempty"`
+	SettingSources        []string                      `json:"setting_sources,omitempty"`
+	ApprovalPolicy        string                        `json:"approval_policy"`
+	ThreadSandbox         string                        `json:"thread_sandbox"`
+	TurnSandboxPolicy     string                        `json:"turn_sandbox_policy"`
+	AllowUnsafeHostAccess bool                          `json:"allow_unsafe_host_access,omitempty"`
+	TurnTimeoutMs         int                           `json:"turn_timeout_ms"`
+	ReadTimeoutMs         int                           `json:"read_timeout_ms"`
+	StallTimeoutMs        int                           `json:"stall_timeout_ms"`
+	StageOverrides        map[string]AgentStageOverride `json:"stage_overrides,omitempty"`
 }
 
 // AgentStageOverride overrides selected runtime settings for a pipeline stage.
 type AgentStageOverride struct {
-	Provider            string            `json:"provider,omitempty"`
-	Command             string            `json:"command,omitempty"`
-	Model               string            `json:"model,omitempty"`
-	ModelProvider       string            `json:"model_provider,omitempty"`
-	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
-	EndpointURL         string            `json:"endpoint_url,omitempty"`
-	APIKeyConfigured    bool              `json:"api_key_configured,omitempty"`
-	AuthTokenConfigured bool              `json:"auth_token_configured,omitempty"`
-	APIKey              string            `json:"-"`
-	AuthToken           string            `json:"-"`
-	Env                 map[string]string `json:"env,omitempty"`
-	Skills              []AgentSkillRef   `json:"skills,omitempty"`
-	AllowedTools        []string          `json:"allowed_tools,omitempty"`
-	DisallowedTools     []string          `json:"disallowed_tools,omitempty"`
-	PermissionMode      string            `json:"permission_mode,omitempty"`
-	SettingSources      []string          `json:"setting_sources,omitempty"`
-	ApprovalPolicy      string            `json:"approval_policy,omitempty"`
-	ThreadSandbox       string            `json:"thread_sandbox,omitempty"`
-	TurnSandboxPolicy   string            `json:"turn_sandbox_policy,omitempty"`
+	Provider              string            `json:"provider,omitempty"`
+	Command               string            `json:"command,omitempty"`
+	Model                 string            `json:"model,omitempty"`
+	ModelProvider         string            `json:"model_provider,omitempty"`
+	ReasoningEffort       string            `json:"reasoning_effort,omitempty"`
+	EndpointURL           string            `json:"endpoint_url,omitempty"`
+	APIKeyConfigured      bool              `json:"api_key_configured,omitempty"`
+	AuthTokenConfigured   bool              `json:"auth_token_configured,omitempty"`
+	APIKey                string            `json:"-"`
+	AuthToken             string            `json:"-"`
+	Env                   map[string]string `json:"env,omitempty"`
+	Skills                []AgentSkillRef   `json:"skills,omitempty"`
+	AllowedTools          []string          `json:"allowed_tools,omitempty"`
+	DisallowedTools       []string          `json:"disallowed_tools,omitempty"`
+	PermissionMode        string            `json:"permission_mode,omitempty"`
+	SettingSources        []string          `json:"setting_sources,omitempty"`
+	ApprovalPolicy        string            `json:"approval_policy,omitempty"`
+	ThreadSandbox         string            `json:"thread_sandbox,omitempty"`
+	TurnSandboxPolicy     string            `json:"turn_sandbox_policy,omitempty"`
+	AllowUnsafeHostAccess *bool             `json:"allow_unsafe_host_access,omitempty"`
 }
 
 // AgentSkillRef selects an agent skill by name and, when known, absolute path.

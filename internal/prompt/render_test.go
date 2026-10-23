@@ -24,7 +24,7 @@ func TestRender_Basic(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "Issue PROJ-42: Fix the bug\nSomething is broken."
+	want := securedPrompt("Issue PROJ-42: " + untrustedPromptField("title", "Fix the bug") + "\n" + untrustedPromptField("description", "Something is broken."))
 	if result != want {
 		t.Fatalf("render result = %q, want %q", result, want)
 	}
@@ -46,7 +46,7 @@ func TestRender_WithAttempt(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "Attempt 3 for PROJ-42"
+	want := securedPrompt("Attempt 3 for PROJ-42")
 	if result != want {
 		t.Fatalf("render result = %q, want %q", result, want)
 	}
@@ -106,7 +106,7 @@ func TestRender_LabelsIteration(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "Labels: bug, critical"
+	want := securedPrompt("Labels: bug, critical")
 	if result != want {
 		t.Fatalf("render result = %q, want %q", result, want)
 	}
@@ -128,7 +128,7 @@ func TestRender_LabelsJoinFilter(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "Labels: bug, critical"
+	want := securedPrompt("Labels: bug, critical")
 	if result != want {
 		t.Fatalf("render result = %q, want %q", result, want)
 	}
@@ -153,7 +153,7 @@ func TestRender_Blockers(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "Blocked by: PROJ-10 (Todo)"
+	want := securedPrompt("Blocked by: PROJ-10 (Todo)")
 	if result != want {
 		t.Fatalf("render result = %q, want %q", result, want)
 	}
@@ -168,7 +168,7 @@ func TestRender_EmptyTemplateFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "You are working on an issue from Linear."
+	want := securedPrompt("You are working on an issue from Linear.")
 	if result != want {
 		t.Fatalf("render result = %q, want %q", result, want)
 	}
@@ -191,7 +191,7 @@ func TestRender_NilOptionalFields(t *testing.T) {
 	}
 
 	// nil values in Liquid render as empty string
-	want := "Title: Fix the bug, Priority: , Desc: "
+	want := securedPrompt("Title: " + untrustedPromptField("title", "Fix the bug") + ", Priority: , Desc: ")
 	if result != want {
 		t.Fatalf("render result = %q, want %q", result, want)
 	}
@@ -221,4 +221,8 @@ func TestRender_Timestamps(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+func securedPrompt(body string) string {
+	return promptSecurityPreamble + "\n\n" + body
 }

@@ -270,12 +270,12 @@ projects:
 	if err == nil {
 		t.Fatal("ValidateProjectIsolation succeeded, want remote bind error")
 	}
-	if !strings.Contains(err.Error(), "allow_remote_dashboard") {
-		t.Fatalf("error = %q, want allow_remote_dashboard message", err.Error())
+	if !strings.Contains(err.Error(), "authenticated TLS reverse proxy") {
+		t.Fatalf("error = %q, want loopback/reverse-proxy guidance", err.Error())
 	}
 }
 
-func TestValidateProjectIsolationAllowsRemoteServerBindWhenConfigured(t *testing.T) {
+func TestValidateProjectIsolationRejectsRemoteServerBindEvenWhenLegacyFlagConfigured(t *testing.T) {
 	dir := t.TempDir()
 	workspaceRoot := t.TempDir()
 	writeTestWorkflow(t, filepath.Join(dir, "alpha", "WORKFLOW.md"), "workspace:\n  root: "+yamlPath(workspaceRoot)+"\n")
@@ -295,8 +295,8 @@ projects:
 	if err != nil {
 		t.Fatalf("LoadProjectRegistry returned error: %v", err)
 	}
-	if _, err := ValidateProjectIsolation(registry); err != nil {
-		t.Fatalf("ValidateProjectIsolation returned error: %v", err)
+	if _, err := ValidateProjectIsolation(registry); err == nil {
+		t.Fatal("ValidateProjectIsolation succeeded, want remote bind error")
 	}
 }
 

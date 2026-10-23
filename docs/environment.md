@@ -8,6 +8,9 @@ The repository includes [`.env.example`](../.env.example) as a reference. Simpho
 
 | Name | Used by | Purpose |
 | --- | --- | --- |
+| `SIMPHONY_OPERATOR_TOKEN` | HTTP server | Required 32+ character bearer/Basic credential for all dashboard and API access. |
+| `SIMPHONY_TRUSTED_ORIGINS` | HTTP server | Optional comma-separated exact browser origins; same-origin access needs no entry. |
+| `SIMPHONY_TRUSTED_OUTBOUND_ORIGINS` | Tracker/model HTTP clients | Optional comma-separated exact development origins allowed to use HTTP or private addresses. |
 | `LINEAR_API_KEY` | Simphony tracker client | Authenticates Linear GraphQL requests. |
 | `OPENAI_API_KEY` or local Codex auth | Codex app-server | Authenticates Codex, depending on your Codex installation. |
 | `ANTHROPIC_API_KEY` | Claude Code Agent SDK | Authenticates Claude when `agent_runtime.provider: claude`. |
@@ -36,6 +39,7 @@ PowerShell:
 $env:LINEAR_API_KEY = "replace-with-your-linear-api-key"
 $env:OPENAI_API_KEY = "replace-with-your-openai-api-key"
 $env:ANTHROPIC_API_KEY = "replace-with-your-anthropic-api-key"
+$env:SIMPHONY_OPERATOR_TOKEN = "replace-with-a-random-32-character-or-longer-token"
 ```
 
 POSIX shells:
@@ -44,9 +48,14 @@ POSIX shells:
 export LINEAR_API_KEY="replace-with-your-linear-api-key"
 export OPENAI_API_KEY="replace-with-your-openai-api-key"
 export ANTHROPIC_API_KEY="replace-with-your-anthropic-api-key"
+export SIMPHONY_OPERATOR_TOKEN="replace-with-a-random-32-character-or-longer-token"
 ```
 
 These commands set variables for the current shell session. Use your operating system's secret manager, shell profile, or process manager for longer-running deployments.
+
+The operator token is never read from `WORKFLOW.md` or `simphony.yaml`. Browsers use the built-in HTTP Basic challenge with username `simphony` and the operator token as the password. Automation should use `Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN`. Do not place the token in a URL, dashboard storage, command history, or checked-in file.
+
+Credential-bearing tracker and model clients require HTTPS and deny loopback, private, link-local, multicast, unspecified, and metadata addresses by default. For a local fake service, add its exact origin, including port, to `SIMPHONY_TRUSTED_OUTBOUND_ORIGINS`. This exception is process-owned and cannot be enabled through an ordinary endpoint URL update.
 
 ## What Not To Commit
 

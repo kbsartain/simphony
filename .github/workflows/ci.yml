@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
@@ -39,6 +42,35 @@ jobs:
       - name: Run vet
         run: go vet ./...
 
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+      - name: Scan reachable Go vulnerabilities
+        run: govulncheck ./...
+
+  agent-sdk:
+    name: Agent SDK dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Audit complete dependency tree
+        run: npm audit --audit-level=high
+
   dashboard:
     name: Dashboard
     runs-on: ubuntu-latest
@@ -61,3 +93,30 @@ jobs:
 
       - name: Build dashboard
         run: npm run build
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Audit complete dependency tree
+        run: npm audit --audit-level=high
+
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+
+      - name: Scan repository history for secrets
+        run: gitleaks git --redact --no-banner --exit-code 1

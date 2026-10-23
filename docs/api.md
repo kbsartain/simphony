@@ -7,7 +7,15 @@ server:
   port: 8080
 ```
 
-The server allows cross-origin requests and returns JSON for all API responses.
+The server binds to loopback and requires `SIMPHONY_OPERATOR_TOKEN` before it starts. All dashboard assets and API routes require authentication. Cross-origin access is disabled by default; optional origins are exact values from `SIMPHONY_TRUSTED_ORIGINS`.
+
+Command-line clients should send a bearer token:
+
+```http
+Authorization: Bearer <SIMPHONY_OPERATOR_TOKEN>
+```
+
+Browsers use HTTP Basic authentication with username `simphony` and the operator token as the password. State-changing browser requests must be same-origin (or from an exact trusted origin) and use `Content-Type: application/json`. Untrusted origins, form posts, wildcard CORS, and credentialed cross-origin reflection are rejected.
 
 In multi-project `-config` mode, a registry-level `server:` block enables the aggregate project API:
 
@@ -235,7 +243,7 @@ Retrying issues return the same wrapper shape with `running` set to `null` and `
 POST /api/v1/refresh
 ```
 
-Queues an immediate orchestrator tick. `GET` is also accepted for convenience.
+Queues an immediate orchestrator tick. Only `POST` is accepted.
 
 ```json
 {
@@ -262,7 +270,7 @@ Returns the editable `WORKFLOW.md` front matter, the resolved runtime configurat
 PUT /api/v1/settings
 ```
 
-Validates, applies, and saves updated workflow settings. If a masked secret value is submitted unchanged, Simphony preserves the current value from `WORKFLOW.md`.
+Validates, applies, and saves updated workflow settings. If a masked secret value is submitted unchanged, Simphony preserves the current value only when the credential's provider and normalized endpoint origin are unchanged. Changing scheme, host, effective port, or provider requires explicitly selecting the secret reference again.
 
 ## Validate Linear Settings
 
@@ -298,5 +306,10 @@ Errors use a consistent wrapper:
 
 Common HTTP statuses:
 
+- `401` for missing or invalid authentication.
+- `403` for an untrusted browser origin.
+- `413` for a request body larger than 1 MiB.
+- `415` for a mutation body that is not JSON.
+- `429` after repeated authentication failures.
 - `404` for unknown API paths or issue identifiers.
 - `405` for unsupported methods.

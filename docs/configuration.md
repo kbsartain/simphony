@@ -35,7 +35,6 @@ concurrency:
 security:
   allow_workspace_overlap: false
   allow_workspace_under_registry_dir: false
-  allow_remote_dashboard: false
 projects:
   - id: alpha
     name: Alpha
@@ -66,7 +65,7 @@ Registry-level `concurrency.max_concurrent_agents` is a supervisor-owned cap acr
 
 `concurrency.default_project_max_concurrent_agents` fills `agent.max_concurrent_agents` for project workflows that do not set their own local limit. `projects[].max_concurrent_agents` is stricter: it caps that specific project even if its `WORKFLOW.md` requests a higher value.
 
-Multi-project validation resolves every enabled project workflow before startup. By default, Simphony refuses workspace roots that overlap another enabled project or live under the registry directory. Set `security.allow_workspace_overlap: true` or `security.allow_workspace_under_registry_dir: true` only when the operator has intentionally accepted that risk. Registry servers also refuse non-loopback `server.bind_address` values unless `security.allow_remote_dashboard: true` is set. Simphony also warns when multiple enabled projects point at the same Linear project slug.
+Multi-project validation resolves every enabled project workflow before startup. By default, Simphony refuses workspace roots that overlap another enabled project or live under the registry directory. Set `security.allow_workspace_overlap: true` or `security.allow_workspace_under_registry_dir: true` only when the operator has intentionally accepted that risk. Registry servers always refuse non-loopback `server.bind_address` values; use a TLS reverse proxy in front of the loopback listener for remote access. Simphony also warns when multiple enabled projects point at the same Linear project slug.
 
 Each enabled project's `WORKFLOW.md` should set a unique `workspace.root`; the single-project default temp root is shared and will be rejected when more than one enabled project resolves to it.
 
@@ -84,6 +83,8 @@ tracker:
     - Todo
     - In Progress
     - Approved
+  trusted_labels:
+    - simphony:approved
   completion_states:
     - In Review
     - Done
@@ -97,6 +98,7 @@ tracker:
 - `project_slug` is required for Linear.
 - `endpoint` defaults to Linear's GraphQL endpoint.
 - `active_states` defaults to `Todo` and `In Progress`; the configured pipeline merge state is added automatically.
+- `trusted_labels` defaults to `simphony:approved`. At least one configured structured tracker label must be present before initial dispatch, retries, continuation turns, or merge-stage work. Issue title/description text cannot satisfy this gate.
 - `completion_states` controls the ordered target states for successful coding runs and defaults to review-oriented states plus terminal states.
 - `terminal_states` defaults to `Closed`, `Cancelled`, `Canceled`, `Duplicate`, and `Done`.
 
@@ -260,7 +262,7 @@ Common fields in `agent_runtime` override provider-specific defaults from `codex
 
 `agent_runtime.provider` is the project default. A `stage_overrides` entry may set its own execution `provider` to `codex` or `claude` for `coding`, `review`, `review_resolution`, or `merge`. This is a new provider-native session at the stage boundary; Simphony passes the existing workspace, Git history, issue, and tracker state rather than attempting to transfer a live SDK thread.
 
-Stage overrides support `provider`, `command`, `model`, `model_provider`, `reasoning_effort`, `endpoint_url`, `api_key`, `auth_token`, `env`, `skills`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `setting_sources`, `approval_policy`, `thread_sandbox`, and `turn_sandbox_policy`. When a stage changes execution provider, Simphony recomputes provider-specific command, credential, permission, and sandbox defaults before applying the stage values. It does not inherit the other provider's model, endpoint, credentials, environment, command, or sandbox settings. Shared skills and operational timeout limits remain available.
+Stage overrides support `provider`, `command`, `model`, `model_provider`, `reasoning_effort`, `endpoint_url`, `api_key`, `auth_token`, `env`, `skills`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `setting_sources`, `approval_policy`, `thread_sandbox`, `turn_sandbox_policy`, and `allow_unsafe_host_access`. When a stage changes execution provider, Simphony recomputes provider-specific command, credential, permission, and sandbox defaults before applying the stage values. It does not inherit the other provider's model, endpoint, credentials, environment, command, or sandbox settings. Shared skills and operational timeout limits remain available.
 
 For example, coding can use Codex while review uses the Claude Agent SDK:
 
@@ -274,7 +276,7 @@ agent_runtime:
       provider: claude
       model: claude-opus-4.7
       api_key: $ANTHROPIC_API_KEY
-      permission_mode: acceptEdits
+      permission_mode: default
       allowed_tools: [Read, Edit, Bash]
 ```
 
@@ -329,9 +331,9 @@ codex:
         - github:gh-fix-ci
     merge:
       reasoning_effort: high
-  approval_policy: auto
-  thread_sandbox: none
-  turn_sandbox_policy: none
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy: workspace-write
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000
@@ -357,7 +359,9 @@ By default, `pipeline.review_state` is a durable human-review gate because it is
 
 Dashboard stage pauses and changes made with the runtime pause API remain in memory only. A pause lets in-flight work finish while blocking new dispatches and retries for that stage. On restart, a project returns to the registry's `start_paused` policy; stage pauses always clear. Keep the review state out of `tracker.active_states` when the gate must survive restarts or require a human to advance the tracker state.
 
-`approval_policy: auto` is mapped to Codex protocol value `never`.
+The secure Codex defaults are `approval_policy: never`, `thread_sandbox: workspace-write`, and `turn_sandbox_policy: workspace-write`. The legacy value `approval_policy: auto` is still mapped to protocol value `never`.
+
+Codex `thread_sandbox` or `turn_sandbox_policy` values of `none` or `danger-full-access`, and Claude `permission_mode: bypassPermissions`, are rejected unless the same runtime or stage sets `allow_unsafe_host_access: true`. That flag is an explicit, audited compatibility exception and should not appear in ordinary examples.
 
 `stall_timeout_ms` defaults to 300000. Set it to `0` to disable orchestrator-level stall detection.
 
@@ -377,7 +381,7 @@ agent_runtime:
   api_key: $ANTHROPIC_API_KEY
 
 claude:
-  permission_mode: acceptEdits
+  permission_mode: default
   allowed_tools:
     - Read
     - Edit
@@ -385,6 +389,9 @@ claude:
     - Bash
     - Glob
     - Grep
+  disallowed_tools:
+    - WebFetch
+    - WebSearch
   setting_sources:
     - project
     - local
@@ -403,7 +410,7 @@ server:
   port: 8080
 ```
 
-When `server.port` is set, Simphony starts the HTTP API. If `dashboard/dist` exists, the same server also serves the dashboard from `/`.
+When `server.port` is set, Simphony starts the HTTP API on `127.0.0.1`. `SIMPHONY_OPERATOR_TOKEN` must contain at least 32 characters or startup fails before workers begin. If `dashboard/dist` exists, the same authenticated server also serves the dashboard from `/`. Cross-origin access is disabled unless an exact origin is listed in `SIMPHONY_TRUSTED_ORIGINS`.
 
 ## Prompt Template
 
@@ -421,5 +428,7 @@ The Markdown body of `WORKFLOW.md` is rendered for the first agent turn. It can 
 - `issue.blocked_by`
 - `issue.created_at`
 - `issue.updated_at`
+
+Simphony prepends a security boundary instruction and wraps issue title and description in explicit untrusted-data markers. Each untrusted field is bounded to 64 KiB. Prompt framing is defense in depth; the structured tracker approval label, environment allowlist, sandbox, service identity, and network controls remain the enforceable boundaries.
 
 Simphony uses strict prompt rendering. Template errors stop the attempt and are reported with the `template_render_error` category.

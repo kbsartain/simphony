@@ -23,7 +23,6 @@ concurrency:
 security:
   allow_workspace_overlap: false
   allow_workspace_under_registry_dir: false
-  allow_remote_dashboard: false
 
 projects:
   - id: alpha

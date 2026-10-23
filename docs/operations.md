@@ -34,9 +34,9 @@ Start only one enabled project from a registry:
 go run ./cmd/simphony -config ./simphony.yaml -project alpha
 ```
 
-The `-config` mode validates project isolation, starts project runtimes, and, when the registry has a `server:` block, exposes the aggregate project API. The dashboard can use these project-scoped routes when it is run separately during development.
+The `-config` mode validates project isolation, starts project runtimes, and, when the registry has a `server:` block, exposes the aggregate project API. Set `SIMPHONY_OPERATOR_TOKEN` to a random value of at least 32 characters before startup. Validation happens before any project runtime starts.
 
-Multi-project startup refuses enabled projects with overlapping workspace roots or workspace roots under the registry directory unless the registry explicitly allows those cases in `security:`. It also refuses non-loopback registry server bind addresses unless `security.allow_remote_dashboard: true` is set, and prints warnings when multiple enabled projects reference the same Linear project slug.
+Multi-project startup refuses enabled projects with overlapping workspace roots or workspace roots under the registry directory unless the registry explicitly allows those cases in `security:`. It always refuses non-loopback registry server binds. For remote access, keep Simphony on loopback and use an authenticated TLS reverse proxy with an exact `SIMPHONY_TRUSTED_ORIGINS` entry. The legacy `security.allow_remote_dashboard` setting no longer permits a wildcard/LAN listener.
 
 When the dashboard is pointed at an aggregate server, it discovers `/api/v1/projects` and shows a project selector. If the aggregate project endpoint is not available, the dashboard falls back to the single-project API routes.
 
@@ -84,7 +84,7 @@ The poll loop runs on `polling.interval_ms`. Each tick reconciles running sessio
 Trigger an immediate tick through the API:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/refresh
+curl -H "Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN" -X POST http://127.0.0.1:8080/api/v1/refresh
 ```
 
 Refresh requests are coalesced when a refresh is already pending.
@@ -94,18 +94,18 @@ Refresh requests are coalesced when a refresh is already pending.
 Use the API or dashboard to inspect runtime state:
 
 ```bash
-curl http://localhost:8080/api/v1/state
-curl http://localhost:8080/api/v1/SIM-123
+curl -H "Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN" http://127.0.0.1:8080/api/v1/state
+curl -H "Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN" http://127.0.0.1:8080/api/v1/SIM-123
 ```
 
 In multi-project mode:
 
 ```bash
-curl http://localhost:8080/api/v1/projects
-curl http://localhost:8080/api/v1/projects/alpha/state
-curl http://localhost:8080/api/v1/projects/alpha/issues/SIM-123
-curl -X POST http://localhost:8080/api/v1/projects/alpha/refresh
-curl http://localhost:8080/api/v1/projects/alpha/settings
+curl -H "Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN" http://127.0.0.1:8080/api/v1/projects
+curl -H "Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN" http://127.0.0.1:8080/api/v1/projects/alpha/state
+curl -H "Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN" http://127.0.0.1:8080/api/v1/projects/alpha/issues/SIM-123
+curl -H "Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN" -X POST http://127.0.0.1:8080/api/v1/projects/alpha/refresh
+curl -H "Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN" http://127.0.0.1:8080/api/v1/projects/alpha/settings
 ```
 
 The project list includes supervisor-wide slot usage and marks projects waiting for a global agent slot.
@@ -119,7 +119,7 @@ Use `simphony projects -config ./simphony.yaml` before startup to catch registry
 When a multi-project process is running, start triage from the aggregate project list:
 
 ```bash
-curl http://localhost:8080/api/v1/projects
+curl -H "Authorization: Bearer $SIMPHONY_OPERATOR_TOKEN" http://127.0.0.1:8080/api/v1/projects
 ```
 
 The project list shows which projects are disabled, stopped, failed, running, retrying, waiting on the supervisor concurrency gate, or missing an active workflow watcher. A failed project does not stop healthy sibling projects. Fix that project's `WORKFLOW.md`, Linear settings, hooks, or workspace root, then restart the Simphony process to start the failed runtime cleanly.
@@ -167,3 +167,11 @@ Failures are retried with exponential backoff:
 - delay is capped by `agent.max_retry_backoff_ms`.
 
 Continuation turns are managed inside a running Codex session. After each turn, Simphony checks the issue state in Linear. If the issue is still active, the runner starts another turn on the same Codex thread until the issue leaves an active state or reaches `agent.max_turns`.
+
+## Security Controls And Audit Events
+
+The server binds to loopback, requires authentication, rejects untrusted browser origins, accepts mutation bodies only as JSON, caps request bodies at 1 MiB, and configures header/read/write/idle timeouts. Ten failed authentication attempts from one source in a one-minute window produce `429` responses.
+
+Security-sensitive denials and permitted mutations are written as structured `security_audit` log lines containing the action, outcome, source, method, and path. Tokens, authorization headers, cookies, request bodies, and prompt content are not logged. Forward these logs to the operator's normal protected log sink and retain them according to the repository/security policy.
+
+Agents inherit only a small OS/runtime environment allowlist plus explicitly configured stage variables and the selected provider credential. Use a dedicated non-administrator service account, repository-scoped Git credentials, and firewall/proxy rules that limit agent egress to required source-control and model-provider origins.

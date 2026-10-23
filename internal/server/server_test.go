@@ -86,10 +86,12 @@ func (f *fakeOrchestrator) SetStagePaused(stage string, paused bool) (api.Contro
 
 func newTestServer(orch *fakeOrchestrator) *Server {
 	s := &Server{
-		orch: orch,
-		mux:  http.NewServeMux(),
+		orch:     orch,
+		mux:      http.NewServeMux(),
+		security: securityOptions{trustedOrigins: map[string]struct{}{}, limiter: newAuthFailureLimiter()},
 	}
 	s.registerRoutes()
+	s.httpServer = &http.Server{Handler: s.security.wrap(s.mux)}
 	return s
 }
 
@@ -116,13 +118,16 @@ func TestHandleStateReturnsSnapshot(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
 	rec := httptest.NewRecorder()
-	s.mux.ServeHTTP(rec, req)
+	s.httpServer.Handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("cors origin = %q, want *", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("cors origin = %q, want no cross-origin allowance", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("cache control = %q, want no-store", got)
@@ -159,7 +164,7 @@ func TestHandleRefreshPostsAndOptions(t *testing.T) {
 
 	optionsReq := httptest.NewRequest(http.MethodOptions, "/api/v1/refresh", nil)
 	optionsRec := httptest.NewRecorder()
-	s.mux.ServeHTTP(optionsRec, optionsReq)
+	s.httpServer.Handler.ServeHTTP(optionsRec, optionsReq)
 
 	if optionsRec.Code != http.StatusNoContent {
 		t.Fatalf("options status = %d, want %d", optionsRec.Code, http.StatusNoContent)
@@ -170,7 +175,7 @@ func TestHandleRefreshPostsAndOptions(t *testing.T) {
 
 	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/refresh", nil)
 	postRec := httptest.NewRecorder()
-	s.mux.ServeHTTP(postRec, postReq)
+	s.httpServer.Handler.ServeHTTP(postRec, postReq)
 
 	if postRec.Code != http.StatusOK {
 		t.Fatalf("post status = %d, want %d", postRec.Code, http.StatusOK)

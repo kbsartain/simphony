@@ -64,6 +64,9 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	if cfg.Tracker.WorkingState != "" {
 		t.Errorf("tracker.working_state = %q, want empty", cfg.Tracker.WorkingState)
 	}
+	if !slicesEqual(cfg.Tracker.TrustedLabels, []string{"simphony:approved"}) {
+		t.Errorf("tracker.trusted_labels = %v, want [simphony:approved]", cfg.Tracker.TrustedLabels)
+	}
 	wantTerminal := []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"}
 	if !slicesEqual(cfg.Tracker.TerminalStates, wantTerminal) {
 		t.Errorf("tracker.terminal_states = %v, want %v", cfg.Tracker.TerminalStates, wantTerminal)
@@ -142,8 +145,8 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	if cfg.AgentRuntime.Command != "codex app-server" {
 		t.Errorf("agent_runtime.command = %q, want default codex command", cfg.AgentRuntime.Command)
 	}
-	if cfg.Codex.ApprovalPolicy != "auto" {
-		t.Errorf("codex.approval_policy = %q, want auto", cfg.Codex.ApprovalPolicy)
+	if cfg.Codex.ApprovalPolicy != "never" {
+		t.Errorf("codex.approval_policy = %q, want never", cfg.Codex.ApprovalPolicy)
 	}
 	if cfg.Codex.ReasoningEffort != "" {
 		t.Errorf("codex.reasoning_effort = %q, want empty", cfg.Codex.ReasoningEffort)
@@ -154,11 +157,11 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 	if len(cfg.Codex.Skills) != 0 {
 		t.Errorf("codex.skills = %v, want empty", cfg.Codex.Skills)
 	}
-	if cfg.Codex.ThreadSandbox != "none" {
-		t.Errorf("codex.thread_sandbox = %q, want none", cfg.Codex.ThreadSandbox)
+	if cfg.Codex.ThreadSandbox != "workspace-write" {
+		t.Errorf("codex.thread_sandbox = %q, want workspace-write", cfg.Codex.ThreadSandbox)
 	}
-	if cfg.Codex.TurnSandboxPolicy != "none" {
-		t.Errorf("codex.turn_sandbox_policy = %q, want none", cfg.Codex.TurnSandboxPolicy)
+	if cfg.Codex.TurnSandboxPolicy != "workspace-write" {
+		t.Errorf("codex.turn_sandbox_policy = %q, want workspace-write", cfg.Codex.TurnSandboxPolicy)
 	}
 	if cfg.Codex.TurnTimeoutMs != 3600000 {
 		t.Errorf("codex.turn_timeout_ms = %d, want 3600000", cfg.Codex.TurnTimeoutMs)
@@ -172,6 +175,19 @@ func TestResolveConfig_FullDefaults(t *testing.T) {
 
 	if cfg.Server != nil {
 		t.Errorf("server = %v, want nil", cfg.Server)
+	}
+}
+
+func TestValidateAgentRuntimeSecurityRequiresExplicitUnsafeOverride(t *testing.T) {
+	for _, sandbox := range []string{"none", "danger-full-access"} {
+		runtime := api.AgentRuntimeConfig{Provider: "codex", ThreadSandbox: sandbox, TurnSandboxPolicy: "workspace-write"}
+		if err := validateAgentRuntimeSecurity(runtime); err == nil {
+			t.Fatalf("unrestricted Codex sandbox %q was accepted without explicit override", sandbox)
+		}
+		runtime.AllowUnsafeHostAccess = true
+		if err := validateAgentRuntimeSecurity(runtime); err != nil {
+			t.Fatalf("explicit unsafe override for %q was rejected: %v", sandbox, err)
+		}
 	}
 }
 

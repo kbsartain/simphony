@@ -124,7 +124,7 @@ agent_runtime:
   model: claude-sonnet-4
   api_key: $ANTHROPIC_API_KEY
 claude:
-  permission_mode: acceptEdits
+  permission_mode: default
   allowed_tools:
     - Read
     - Edit
@@ -212,7 +212,7 @@ agent_runtime:
       provider: claude
       model: claude-opus-4.7
       api_key: $ANTHROPIC_API_KEY
-      permission_mode: acceptEdits
+      permission_mode: default
       allowed_tools:
         - Read
         - Edit

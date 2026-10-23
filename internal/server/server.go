@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +47,7 @@ type Server struct {
 	workflowDir     string
 	settingsApplier SettingsApplier
 	settingsMu      sync.Mutex
+	security        securityOptions
 }
 
 // New creates a new Server. Call Start to begin listening.
@@ -60,6 +63,7 @@ func NewWithSettings(orch Orchestrator, port int, workflowPath string, applier S
 		mux:             http.NewServeMux(),
 		workflowPath:    workflowPath,
 		settingsApplier: applier,
+		security:        securityOptionsFromEnv(),
 	}
 	if workflowPath != "" {
 		s.workflowDir = filepath.Dir(workflowPath)
@@ -68,8 +72,13 @@ func NewWithSettings(orch Orchestrator, port int, workflowPath string, applier S
 	s.registerRoutes()
 
 	s.httpServer = &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: s.mux,
+		Addr:              net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		Handler:           s.security.wrap(s.mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	return s
@@ -181,7 +190,10 @@ func (s *Server) handleStageControl(w http.ResponseWriter, r *http.Request) {
 
 // Start begins listening. Blocks until the context is cancelled or an error occurs.
 func (s *Server) Start(ctx context.Context) error {
-	log.Printf("server listening on http://localhost:%d", s.port)
+	if err := s.security.validate("127.0.0.1"); err != nil {
+		return err
+	}
+	log.Printf("server listening on http://127.0.0.1:%d authentication=required", s.port)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -203,19 +215,12 @@ func (s *Server) Start(ctx context.Context) error {
 
 func (s *Server) withCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.setCORS(w)
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
 		next(w, r)
 	}
 }
 
 func (s *Server) setCORS(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	setSecurityHeaders(w)
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, v interface{}) {
@@ -480,10 +485,9 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter) {
 
 func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	var req api.SettingsUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
-			Error: api.APIError{Code: "bad_request", Message: fmt.Sprintf("Invalid JSON: %v", err)},
-		})
+	if err := decodeJSON(w, r, &req); err != nil {
+		status, apiErr := requestDecodeError(err)
+		s.writeJSON(w, status, api.APIErrorResponse{Error: apiErr})
 		return
 	}
 	if req.Config == nil {
@@ -563,10 +567,9 @@ func (s *Server) handleValidateTrackerSettings(w http.ResponseWriter, r *http.Re
 	}
 
 	var req api.SettingsUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
-			Error: api.APIError{Code: "bad_request", Message: fmt.Sprintf("Invalid JSON: %v", err)},
-		})
+	if err := decodeJSON(w, r, &req); err != nil {
+		status, apiErr := requestDecodeError(err)
+		s.writeJSON(w, status, api.APIErrorResponse{Error: apiErr})
 		return
 	}
 	if req.Config == nil {
@@ -687,8 +690,14 @@ func mergeMaskedSecrets(next map[string]interface{}, current map[string]interfac
 		{"claude", "auth_token"},
 	} {
 		if nestedString(merged, path) == settingsSecretMask {
-			if currentValue := nestedString(current, path); currentValue != "" {
-				setNestedString(merged, path, currentValue)
+			if credentialContextUnchanged(merged, current, path[0]) {
+				if currentValue := nestedString(current, path); currentValue != "" {
+					setNestedString(merged, path, currentValue)
+				}
+			} else {
+				// Leave the mask in place so validation fails instead of silently
+				// forwarding the old credential to a newly selected origin.
+				continue
 			}
 		}
 	}
@@ -697,7 +706,9 @@ func mergeMaskedSecrets(next map[string]interface{}, current map[string]interfac
 		{"codex", "env"},
 		{"claude", "env"},
 	} {
-		mergeMaskedEnvValues(merged, current, path)
+		if credentialContextUnchanged(merged, current, path[0]) {
+			mergeMaskedEnvValues(merged, current, path)
+		}
 	}
 	for _, section := range []string{"agent_runtime", "codex", "claude"} {
 		mergeMaskedStageOverrideSecrets(merged, current, section)
@@ -736,6 +747,9 @@ func mergeMaskedStageOverrideSecrets(next map[string]interface{}, current map[st
 		if !ok {
 			continue
 		}
+		if !runtimeMapContextUnchanged(nextStage, currentStage) {
+			continue
+		}
 		for _, key := range []string{"api_key", "auth_token"} {
 			if nestedString(nextStage, []string{key}) == settingsSecretMask {
 				if currentValue := nestedString(currentStage, []string{key}); currentValue != "" {
@@ -745,6 +759,36 @@ func mergeMaskedStageOverrideSecrets(next map[string]interface{}, current map[st
 		}
 		mergeMaskedEnvValues(nextStage, currentStage, []string{"env"})
 	}
+}
+
+func credentialContextUnchanged(next map[string]interface{}, current map[string]interface{}, section string) bool {
+	if section == "tracker" {
+		nextEndpoint := nestedString(next, []string{"tracker", "endpoint"})
+		currentEndpoint := nestedString(current, []string{"tracker", "endpoint"})
+		if strings.TrimSpace(nextEndpoint) == "" {
+			nextEndpoint = "https://api.linear.app/graphql"
+		}
+		if strings.TrimSpace(currentEndpoint) == "" {
+			currentEndpoint = "https://api.linear.app/graphql"
+		}
+		return tracker.SameOrigin(nextEndpoint, currentEndpoint)
+	}
+	return runtimeMapContextUnchanged(nestedMap(next, []string{section}), nestedMap(current, []string{section}))
+}
+
+func runtimeMapContextUnchanged(next map[string]interface{}, current map[string]interface{}) bool {
+	if next == nil || current == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(nestedString(next, []string{"provider"})), strings.TrimSpace(nestedString(current, []string{"provider"}))) {
+		return false
+	}
+	nextEndpoint := strings.TrimSpace(nestedString(next, []string{"endpoint_url"}))
+	currentEndpoint := strings.TrimSpace(nestedString(current, []string{"endpoint_url"}))
+	if nextEndpoint == "" || currentEndpoint == "" {
+		return nextEndpoint == currentEndpoint
+	}
+	return tracker.SameOrigin(nextEndpoint, currentEndpoint)
 }
 
 func mergeMaskedEnvValues(next map[string]interface{}, current map[string]interface{}, path []string) {

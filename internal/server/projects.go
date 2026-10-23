@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,12 +14,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kbsartain/simphony/internal/config"
 	"github.com/kbsartain/simphony/internal/project"
+	"github.com/kbsartain/simphony/internal/tracker"
 	"github.com/kbsartain/simphony/pkg/api"
 	"gopkg.in/yaml.v3"
 )
@@ -41,6 +44,7 @@ type ProjectServer struct {
 	mux        *http.ServeMux
 	httpServer *http.Server
 	registryMu sync.Mutex
+	security   securityOptions
 }
 
 // NewProjectServer creates an aggregate API server for multi-project mode.
@@ -62,11 +66,17 @@ func NewProjectServer(manager ProjectRuntimeManager, bind string, port int, apiP
 		port:      port,
 		apiPrefix: apiPrefix,
 		mux:       http.NewServeMux(),
+		security:  securityOptionsFromEnv(),
 	}
 	s.registerRoutes()
 	s.httpServer = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", bind, port),
-		Handler: s.mux,
+		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
+		Handler:           s.security.wrap(s.mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 	return s
 }
@@ -127,7 +137,10 @@ func (s *ProjectServer) registerRoutes() {
 
 // Start begins listening until ctx is cancelled.
 func (s *ProjectServer) Start(ctx context.Context) error {
-	log.Printf("project_server listening on http://%s:%d", s.bind, s.port)
+	if err := s.security.validate(s.bind); err != nil {
+		return err
+	}
+	log.Printf("project_server listening on http://%s:%d authentication=required", s.bind, s.port)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -149,19 +162,12 @@ func (s *ProjectServer) Start(ctx context.Context) error {
 
 func (s *ProjectServer) withCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.setCORS(w)
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
 		next(w, r)
 	}
 }
 
 func (s *ProjectServer) setCORS(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	setSecurityHeaders(w)
 }
 
 func (s *ProjectServer) writeJSON(w http.ResponseWriter, status int, v interface{}) {
@@ -180,10 +186,9 @@ func (s *ProjectServer) handleRegistry(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPut {
 		var req api.RegistryUpdateRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
-				Error: api.APIError{Code: "bad_request", Message: "Request body must be valid JSON"},
-			})
+		if err := decodeJSON(w, r, &req); err != nil {
+			status, apiErr := requestDecodeError(err)
+			s.writeJSON(w, status, api.APIErrorResponse{Error: apiErr})
 			return
 		}
 		response, status, errCode, err := s.updateRegistrySettings(req)
@@ -255,10 +260,9 @@ func (s *ProjectServer) handleRegistryProjects(w http.ResponseWriter, r *http.Re
 	}
 
 	var req api.RegistryProjectCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
-			Error: api.APIError{Code: "bad_request", Message: "Request body must be valid JSON"},
-		})
+	if err := decodeJSON(w, r, &req); err != nil {
+		status, apiErr := requestDecodeError(err)
+		s.writeJSON(w, status, api.APIErrorResponse{Error: apiErr})
 		return
 	}
 
@@ -301,10 +305,9 @@ func (s *ProjectServer) handleRegistryProjectRoute(w http.ResponseWriter, r *htt
 	}
 
 	var req api.RegistryProjectUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
-			Error: api.APIError{Code: "bad_request", Message: "Request body must be valid JSON"},
-		})
+	if err := decodeJSON(w, r, &req); err != nil {
+		status, apiErr := requestDecodeError(err)
+		s.writeJSON(w, status, api.APIErrorResponse{Error: apiErr})
 		return
 	}
 
@@ -705,10 +708,9 @@ func (s *ProjectServer) handleProjectSettings(w http.ResponseWriter, r *http.Req
 		s.writeJSON(w, http.StatusOK, settingsResponseFromProjectSettings(settings))
 	case http.MethodPut:
 		var req api.SettingsUpdateRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
-				Error: api.APIError{Code: "bad_request", Message: fmt.Sprintf("Invalid JSON: %v", err)},
-			})
+		if err := decodeJSON(w, r, &req); err != nil {
+			status, apiErr := requestDecodeError(err)
+			s.writeJSON(w, status, api.APIErrorResponse{Error: apiErr})
 			return
 		}
 		if req.Config == nil {
@@ -751,10 +753,9 @@ func (s *ProjectServer) handleProjectValidateTrackerSettings(w http.ResponseWrit
 	}
 
 	var req api.SettingsUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, api.APIErrorResponse{
-			Error: api.APIError{Code: "bad_request", Message: fmt.Sprintf("Invalid JSON: %v", err)},
-		})
+	if err := decodeJSON(w, r, &req); err != nil {
+		status, apiErr := requestDecodeError(err)
+		s.writeJSON(w, status, api.APIErrorResponse{Error: apiErr})
 		return
 	}
 	if req.Config == nil {
@@ -1303,6 +1304,14 @@ func applyRegistrySettingsUpdate(registry *config.ProjectRegistry, req api.Regis
 	}
 	if req.AgentRuntime != nil {
 		defaults := cloneRegistryMap(registry.AgentRuntimeDefaults)
+		if registryRuntimeContextChanged(defaults, req.AgentRuntime) {
+			if strings.TrimSpace(registryString(defaults, "api_key")) != "" && req.AgentRuntime.APIKey == nil {
+				return fmt.Errorf("agent_runtime.api_key must be explicitly selected when provider or endpoint_url changes")
+			}
+			if strings.TrimSpace(registryString(defaults, "auth_token")) != "" && req.AgentRuntime.AuthToken == nil {
+				return fmt.Errorf("agent_runtime.auth_token must be explicitly selected when provider or endpoint_url changes")
+			}
+		}
 		applyStringPtr(defaults, "provider", req.AgentRuntime.Provider, true)
 		applyStringPtr(defaults, "command", req.AgentRuntime.Command, false)
 		applyStringPtr(defaults, "model", req.AgentRuntime.Model, false)
@@ -1329,6 +1338,35 @@ func applyRegistrySettingsUpdate(registry *config.ProjectRegistry, req api.Regis
 		}
 	}
 	return nil
+}
+
+func registryRuntimeContextChanged(defaults map[string]interface{}, req *api.RegistryAgentRuntimeUpdateRequest) bool {
+	if req == nil {
+		return false
+	}
+	currentProvider := strings.ToLower(strings.TrimSpace(registryString(defaults, "provider")))
+	if currentProvider == "" {
+		currentProvider = "codex"
+	}
+	nextProvider := currentProvider
+	if req.Provider != nil {
+		nextProvider = strings.ToLower(strings.TrimSpace(*req.Provider))
+		if nextProvider == "" {
+			nextProvider = "codex"
+		}
+	}
+	if nextProvider != currentProvider {
+		return true
+	}
+	currentEndpoint := strings.TrimSpace(registryString(defaults, "endpoint_url"))
+	nextEndpoint := currentEndpoint
+	if req.EndpointURL != nil {
+		nextEndpoint = strings.TrimSpace(*req.EndpointURL)
+	}
+	if currentEndpoint == "" || nextEndpoint == "" {
+		return currentEndpoint != nextEndpoint
+	}
+	return !tracker.SameOrigin(currentEndpoint, nextEndpoint)
 }
 
 func applyStringPtr(values map[string]interface{}, key string, value *string, defaultCodex bool) {
@@ -1386,9 +1424,9 @@ func runtimeConfigFromDefaults(defaults map[string]interface{}) (*api.AgentRunti
 		AllowedTools:      registryStringSlice(defaults, "allowed_tools"),
 		DisallowedTools:   registryStringSlice(defaults, "disallowed_tools"),
 		SettingSources:    registryStringSlice(defaults, "setting_sources"),
-		ApprovalPolicy:    "auto",
-		ThreadSandbox:     "none",
-		TurnSandboxPolicy: "none",
+		ApprovalPolicy:    "never",
+		ThreadSandbox:     "workspace-write",
+		TurnSandboxPolicy: "workspace-write",
 		TurnTimeoutMs:     3600000,
 		ReadTimeoutMs:     5000,
 		StallTimeoutMs:    300000,
@@ -1397,7 +1435,9 @@ func runtimeConfigFromDefaults(defaults map[string]interface{}) (*api.AgentRunti
 		runtime.Command = "codex app-server"
 	}
 	if runtime.PermissionMode == "" && provider == "claude" {
-		runtime.PermissionMode = "acceptEdits"
+		runtime.PermissionMode = "default"
+		runtime.AllowedTools = []string{"Read", "Edit", "Write", "Glob", "Grep", "Bash"}
+		runtime.DisallowedTools = []string{"WebFetch", "WebSearch"}
 	}
 	if value := registryString(defaults, "reasoning_effort"); value != "" {
 		normalized, err := normalizeRegistryReasoningEffort(value)

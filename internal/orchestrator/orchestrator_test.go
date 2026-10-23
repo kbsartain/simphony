@@ -29,6 +29,18 @@ type mockTracker struct {
 	movePreferences [][]string
 }
 
+func TestIssueTrustedWithConfigRequiresStructuredApprovalLabel(t *testing.T) {
+	cfg := &api.WorkflowConfig{Tracker: api.TrackerConfig{TrustedLabels: []string{"simphony:approved"}}}
+	issue := api.Issue{Labels: []string{"bug", "SIMPHONY:APPROVED"}}
+	if !issueTrustedWithConfig(cfg, issue) {
+		t.Fatal("approved issue was not trusted")
+	}
+	issue.Labels = []string{"bug", "description-says-approved"}
+	if issueTrustedWithConfig(cfg, issue) {
+		t.Fatal("issue without structured approval label was trusted")
+	}
+}
+
 func (m *mockTracker) FetchCandidateIssues(ctx context.Context) ([]api.Issue, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

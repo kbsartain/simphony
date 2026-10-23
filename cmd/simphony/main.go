@@ -178,6 +178,11 @@ func runProjectRegistry(ctx context.Context, registryPath string, projectID stri
 	if err != nil {
 		return err
 	}
+	if registry.Server != nil {
+		if err := server.ValidateHTTPServerSecurity(registry.Server.BindAddress); err != nil {
+			return fmt.Errorf("validate HTTP server security: %w", err)
+		}
+	}
 	printRegistryWarnings(validationReport.Warnings)
 
 	manager := project.NewManager(registry)
@@ -263,6 +268,11 @@ func run(ctx context.Context, workflowPath string) error {
 	cfg, err := config.ResolveConfig(def, workflowDir)
 	if err != nil {
 		return fmt.Errorf("resolve config: %w", err)
+	}
+	if cfg.Server != nil {
+		if err := server.ValidateHTTPServerSecurity("127.0.0.1"); err != nil {
+			return fmt.Errorf("validate HTTP server security: %w", err)
+		}
 	}
 
 	trackerClient, err := tracker.NewLinearClient(cfg.Tracker)

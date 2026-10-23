@@ -808,6 +808,7 @@ func cloneIssueMap(issue map[string]interface{}) map[string]interface{} {
 
 func mustNewClient(t *testing.T, endpoint, projectSlug string, activeStates []string) *LinearClient {
 	t.Helper()
+	t.Setenv(trustedOutboundOriginsEnv, endpoint)
 	client, err := NewLinearClient(api.TrackerConfig{
 		Kind:         "linear",
 		Endpoint:     endpoint,

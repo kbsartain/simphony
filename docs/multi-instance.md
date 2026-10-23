@@ -117,7 +117,6 @@ concurrency:
 security:
   allow_workspace_overlap: false
   allow_workspace_under_registry_dir: false
-  allow_remote_dashboard: false
 projects:
   - id: alpha
     name: Alpha
@@ -163,4 +162,4 @@ Dashboard not showing projects:
 Remote dashboard bind rejected:
 
 - Symptom: startup or validation fails after setting `server.bind_address: 0.0.0.0`.
-- Fix: prefer `127.0.0.1` for local operation. If remote access is intentional, set `security.allow_remote_dashboard: true` and put the server behind an appropriate private network, proxy, or tunnel.
+- Fix: use `127.0.0.1` or `::1`. Direct remote binding is rejected; put an authenticated TLS reverse proxy in front of the loopback listener and configure only its exact browser origin in `SIMPHONY_TRUSTED_ORIGINS`.

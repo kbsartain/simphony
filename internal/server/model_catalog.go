@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/kbsartain/simphony/internal/agentruntime"
 	"github.com/kbsartain/simphony/internal/config"
+	"github.com/kbsartain/simphony/internal/tracker"
 	"github.com/kbsartain/simphony/pkg/api"
 )
 
@@ -34,11 +34,11 @@ func fetchModelCatalog(ctx context.Context, runtime api.AgentRuntimeConfig) (api
 		}
 	}
 
-	parsed, err := url.Parse(endpoint)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
-		return api.ModelCatalogResponse{}, fmt.Errorf("endpoint_url must be an HTTP(S) URL without embedded credentials")
+	parsed, _, err := tracker.ValidateCredentialURL(endpoint)
+	if err != nil {
+		return api.ModelCatalogResponse{}, fmt.Errorf("unsafe model endpoint: %w", err)
 	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.RawQuery != "" {
 		return api.ModelCatalogResponse{}, fmt.Errorf("endpoint_url must not contain a query string or fragment")
 	}
 
@@ -60,7 +60,11 @@ func fetchModelCatalog(ctx context.Context, runtime api.AgentRuntimeConfig) (api
 		}
 	}
 
-	response, err := http.DefaultClient.Do(req)
+	client, err := tracker.NewSecureHTTPClient(modelsURL, 20*time.Second)
+	if err != nil {
+		return api.ModelCatalogResponse{}, fmt.Errorf("initialize model catalog client: %w", err)
+	}
+	response, err := client.Do(req)
 	if err != nil {
 		return api.ModelCatalogResponse{}, fmt.Errorf("request model catalog: %w", err)
 	}
@@ -68,13 +72,17 @@ func fetchModelCatalog(ctx context.Context, runtime api.AgentRuntimeConfig) (api
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return api.ModelCatalogResponse{}, fmt.Errorf("model catalog returned HTTP %d", response.StatusCode)
 	}
+	responseBytes, err := tracker.ReadAllLimited(response.Body, 2<<20)
+	if err != nil {
+		return api.ModelCatalogResponse{}, fmt.Errorf("read model catalog: %w", err)
+	}
 	var body struct {
 		Data []struct {
 			ID      string `json:"id"`
 			Display string `json:"display_name"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(responseBytes, &body); err != nil {
 		return api.ModelCatalogResponse{}, fmt.Errorf("decode model catalog: %w", err)
 	}
 	models := make([]api.ModelCatalogEntry, 0, len(body.Data))
