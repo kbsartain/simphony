@@ -1137,6 +1137,26 @@ function App() {
                 <section className="panel compact-panel">
                   <div className="panel-heading">
                     <div>
+                      <p className="eyebrow">Spend</p>
+                      <h2>Estimated cost</h2>
+                    </div>
+                  </div>
+                  <div className="session-card">
+                    <DetailStat label="Total" value={formatCost(state.codex_totals.cost_usd)} />
+                    {Object.entries(state.stage_totals ?? {}).map(([stage, totals]) => (
+                      <DetailStat
+                        key={stage}
+                        label={stage}
+                        value={`${totals.total_tokens.toLocaleString()} tok · ${formatCost(totals.cost_usd)}`}
+                      />
+                    ))}
+                  </div>
+                  <p className="field-help">List-price estimates for known models; subscription and quota plans may differ.</p>
+                </section>
+
+                <section className="panel compact-panel">
+                  <div className="panel-heading">
+                    <div>
                       <p className="eyebrow">Rate limits</p>
                       <h2>Provider signal</h2>
                     </div>
@@ -2273,6 +2293,7 @@ function RunningRow(props: { item: RunningSnapshot; onOpen: (identifier: string)
       <div className="token-box">
         <strong>{item.tokens.total_tokens.toLocaleString()}</strong>
         <span>tokens</span>
+        {item.tokens.cost_usd != null && item.tokens.cost_usd > 0 && <span>{formatCost(item.tokens.cost_usd)}</span>}
       </div>
     </article>
   )
@@ -3492,6 +3513,19 @@ function IssueDetail(props: { detail: IssueDetailResponse }) {
             <DetailStat label="Session" value={compactID(detail.running.session_id)} />
             <DetailStat label="Turns" value={detail.running.turn_count.toLocaleString()} />
             <DetailStat label="Tokens" value={detail.running.tokens.total_tokens.toLocaleString()} />
+            <DetailStat label="Est. cost" value={formatCost(detail.running.tokens.cost_usd)} />
+          </div>
+        </section>
+      )}
+
+      {detail.usage && (
+        <section className="detail-section">
+          <h3>Usage this feature</h3>
+          <div className="session-card">
+            <DetailStat label="Tokens" value={detail.usage.total_tokens.toLocaleString()} />
+            <DetailStat label="Input" value={detail.usage.input_tokens.toLocaleString()} />
+            <DetailStat label="Output" value={detail.usage.output_tokens.toLocaleString()} />
+            <DetailStat label="Est. cost" value={formatCost(detail.usage.cost_usd)} />
           </div>
         </section>
       )}
@@ -3800,6 +3834,13 @@ function formatDateTime(value: string, fallback = value) {
     minute: '2-digit',
     second: '2-digit',
   })
+}
+
+function formatCost(value?: number | null) {
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return '—'
+  }
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 6 }).format(value)
 }
 
 function formatRelative(value: string, fallback = value) {

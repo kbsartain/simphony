@@ -210,7 +210,11 @@ func TestOrchestratorMixedSDKLifecycleCodexClaudeCodex(t *testing.T) {
 			t.Fatalf("SDK runs = %v, want %v", runs, want)
 		}
 	}
-	if _, ok := orch.IssueDetail(issue.Identifier); ok {
-		t.Fatal("terminal issue should not remain as a running or retrying detail")
+	detail, ok := orch.IssueDetail(issue.Identifier)
+	if ok && detail.Status != "completed" {
+		t.Fatalf("terminal issue detail status = %q, want completed", detail.Status)
+	}
+	if ok && detail.Usage == nil {
+		t.Fatal("terminal issue detail should retain usage statistics")
 	}
 }

@@ -239,6 +239,7 @@ type AgentSession struct {
 	CodexInputTokens         int        `json:"codex_input_tokens"`
 	CodexOutputTokens        int        `json:"codex_output_tokens"`
 	CodexTotalTokens         int        `json:"codex_total_tokens"`
+	CostUSD                  float64    `json:"cost_usd,omitempty"`
 	LastReportedInputTokens  int        `json:"last_reported_input_tokens"`
 	LastReportedOutputTokens int        `json:"last_reported_output_tokens"`
 	LastReportedTotalTokens  int        `json:"last_reported_total_tokens"`
@@ -268,6 +269,12 @@ type OrchestratorState struct {
 	Completed           map[string]struct{}      `json:"completed"`
 	CodexTotals         CodexTotals              `json:"codex_totals"`
 	CodexRateLimits     map[string]interface{}   `json:"codex_rate_limits"`
+	// StageTotals aggregates tokens and cost per pipeline stage for
+	// completed runs; live running sessions are added at snapshot time.
+	StageTotals map[string]TokenSnapshot `json:"stage_totals,omitempty"`
+	// IssueUsage retains tokens and cost per completed issue identifier so
+	// per-feature statistics survive after the run ends. In-memory only.
+	IssueUsage map[string]TokenSnapshot `json:"issue_usage,omitempty"`
 }
 
 // ControlState reports the operator-controlled soft-pause state.
@@ -297,22 +304,24 @@ type CodexTotals struct {
 	OutputTokens   int     `json:"output_tokens"`
 	TotalTokens    int     `json:"total_tokens"`
 	SecondsRunning float64 `json:"seconds_running"`
+	CostUSD        float64 `json:"cost_usd,omitempty"`
 }
 
 // StateSnapshot is returned by the optional HTTP API for dashboard consumption.
 type StateSnapshot struct {
-	GeneratedAt                time.Time              `json:"generated_at"`
-	PollIntervalMs             int                    `json:"poll_interval_ms"`
-	MaxConcurrentAgents        int                    `json:"max_concurrent_agents"`
-	Control                    ControlState           `json:"control"`
-	Counts                     StateCounts            `json:"counts"`
-	Health                     ProjectHealth          `json:"health"`
-	Running                    []RunningSnapshot      `json:"running"`
-	Retrying                   []RetrySnapshot        `json:"retrying"`
-	CodexTotals                CodexTotals            `json:"codex_totals"`
-	RateLimits                 map[string]interface{} `json:"rate_limits"`
-	LastDispatchDeferredReason string                 `json:"last_dispatch_deferred_reason,omitempty"`
-	LastDispatchDeferredAt     *time.Time             `json:"last_dispatch_deferred_at,omitempty"`
+	GeneratedAt                time.Time                `json:"generated_at"`
+	PollIntervalMs             int                      `json:"poll_interval_ms"`
+	MaxConcurrentAgents        int                      `json:"max_concurrent_agents"`
+	Control                    ControlState             `json:"control"`
+	Counts                     StateCounts              `json:"counts"`
+	Health                     ProjectHealth            `json:"health"`
+	Running                    []RunningSnapshot        `json:"running"`
+	Retrying                   []RetrySnapshot          `json:"retrying"`
+	CodexTotals                CodexTotals              `json:"codex_totals"`
+	RateLimits                 map[string]interface{}   `json:"rate_limits"`
+	StageTotals                map[string]TokenSnapshot `json:"stage_totals,omitempty"`
+	LastDispatchDeferredReason string                   `json:"last_dispatch_deferred_reason,omitempty"`
+	LastDispatchDeferredAt     *time.Time               `json:"last_dispatch_deferred_at,omitempty"`
 }
 
 // StateCounts provides summary counts.
@@ -372,11 +381,12 @@ type RetrySnapshot struct {
 	Error           *string   `json:"error"`
 }
 
-// TokenSnapshot holds token counts for API responses.
+// TokenSnapshot holds token counts and estimated cost for API responses.
 type TokenSnapshot struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	TotalTokens  int     `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
 }
 
 // IssueDetailResponse provides per-issue runtime/debug details.
@@ -388,6 +398,7 @@ type IssueDetailResponse struct {
 	Attempts        AttemptDetail          `json:"attempts"`
 	Running         *RunningSnapshot       `json:"running"`
 	Retry           *RetrySnapshot         `json:"retry"`
+	Usage           *TokenSnapshot         `json:"usage,omitempty"`
 	Logs            LogDetail              `json:"logs"`
 	RecentEvents    []EventDetail          `json:"recent_events"`
 	LastError       *string                `json:"last_error"`

@@ -268,6 +268,7 @@ function normalizeStateSnapshot(snapshot: StateSnapshot): StateSnapshot {
     running: (snapshot.running || []).map(normalizeRunningSnapshot),
     retrying: (snapshot.retrying || []).map(normalizeRetrySnapshot),
     codex_totals: snapshot.codex_totals || { input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0 },
+    stage_totals: snapshot.stage_totals || {},
     rate_limits: snapshot.rate_limits || null,
     last_dispatch_deferred_reason: snapshot.last_dispatch_deferred_reason || '',
     last_dispatch_deferred_at: snapshot.last_dispatch_deferred_at || '',

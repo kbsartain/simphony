@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -1341,6 +1342,58 @@ func TestOrchestrator_SessionAndTokenEventsPopulateSnapshot(t *testing.T) {
 	}
 	if snap.Running[0].Tokens.TotalTokens != 15 {
 		t.Fatalf("total tokens = %d, want 15", snap.Running[0].Tokens.TotalTokens)
+	}
+}
+
+func TestOrchestrator_TokenCostAccounting(t *testing.T) {
+	tracker := &mockTracker{
+		candidates: []api.Issue{
+			{ID: "1", Identifier: "A-1", Title: "First", State: "In Progress"},
+		},
+		byIDs: map[string]api.Issue{
+			"1": {ID: "1", Identifier: "A-1", Title: "First", State: "In Progress"},
+		},
+	}
+	wsMgr, _ := workspace.NewManager(t.TempDir())
+	runner := &mockRunner{delay: 50 * time.Millisecond, emitSession: true, errAfter: -1}
+	cfg := defaultConfig()
+	cfg.AgentRuntime.Model = "claude-sonnet-4.6" // $3 / $15 per 1M tokens
+
+	orch := New(cfg, tracker, wsMgr, runner)
+	orch.Start()
+	defer orch.Stop()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := orch.Snapshot()
+		if snap.CodexTotals.TotalTokens == 15 && snap.Counts.Running == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// 10 input * $3/1M + 5 output * $15/1M = $0.000105
+	const wantCost = 0.000105
+	snap := orch.Snapshot()
+	if snap.CodexTotals.TotalTokens != 15 {
+		t.Fatalf("total tokens = %d, want 15", snap.CodexTotals.TotalTokens)
+	}
+	if math.Abs(snap.CodexTotals.CostUSD-wantCost) > 1e-9 {
+		t.Fatalf("project cost = %v, want %v", snap.CodexTotals.CostUSD, wantCost)
+	}
+	stage, ok := snap.StageTotals["coding"]
+	if !ok {
+		t.Fatalf("stage totals missing coding bucket: %+v", snap.StageTotals)
+	}
+	if stage.TotalTokens != 15 || math.Abs(stage.CostUSD-wantCost) > 1e-9 {
+		t.Fatalf("coding stage totals = %+v, want 15 tokens and cost %v", stage, wantCost)
+	}
+	detail, found := orch.IssueDetail("A-1")
+	if !found || detail.Status != "completed" || detail.Usage == nil {
+		t.Fatalf("completed issue detail = %+v found=%v, want completed with usage", detail, found)
+	}
+	if detail.Usage.TotalTokens != 15 || math.Abs(detail.Usage.CostUSD-wantCost) > 1e-9 {
+		t.Fatalf("completed issue usage = %+v, want 15 tokens and cost %v", detail.Usage, wantCost)
 	}
 }
 

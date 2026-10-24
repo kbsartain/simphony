@@ -175,6 +175,11 @@ app-server or Claude CLI); tracker state = stage.
 - Codex with non-OpenAI endpoints (Kimi `/v1`, DeepSeek root, Z.ai
   `/api/coding/paas/v4`) remains a documented limitation: Simphony does not generate a
   per-workspace Codex `model_providers` configuration.
+- Spend statistics come from the built-in `internal/pricing` table (list-price
+  estimates per 1M tokens, prefix-matched by model): `cost_usd` accumulates in
+  `updateTokens`, folds into `codex_totals`/`stage_totals` on completion, and is
+  retained per issue identifier (FIFO cap 1000, in-memory, resets on restart).
+  Unknown models yield tokens without cost.
 - Production bug class to avoid: Claude CLI variadic `--disallowed-tools` swallows
   the trailing prompt (use `--`); setting BOTH `ANTHROPIC_API_KEY` and
   `ANTHROPIC_AUTH_TOKEN` makes the CLI send both auth headers → rejected by

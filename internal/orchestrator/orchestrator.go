@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -13,9 +14,13 @@ import (
 
 	"github.com/kbsartain/simphony/internal/agentruntime"
 	"github.com/kbsartain/simphony/internal/preflight"
+	"github.com/kbsartain/simphony/internal/pricing"
 	"github.com/kbsartain/simphony/internal/workspace"
 	"github.com/kbsartain/simphony/pkg/api"
 )
+
+// maxRetainedIssueUsage bounds the completed-issue usage history kept in memory.
+const maxRetainedIssueUsage = 1000
 
 // AgentRunner is the interface for launching coding-agent sessions.
 type AgentRunner interface {
@@ -87,6 +92,8 @@ type Orchestrator struct {
 	lastDispatchDeferredReason string
 	lastDispatchDeferredAt     time.Time
 	preflightHealth            api.ProjectHealth
+	issueUsageOrder            []string
+	issueUsageSeen             map[string]struct{}
 }
 
 // New creates a new Orchestrator. Call Start() to begin polling.
@@ -345,6 +352,10 @@ func (o *Orchestrator) Start() {
 	o.state.Completed = make(map[string]struct{})
 	o.state.CodexTotals = api.CodexTotals{}
 	o.state.CodexRateLimits = make(map[string]interface{})
+	o.state.StageTotals = make(map[string]api.TokenSnapshot)
+	o.state.IssueUsage = make(map[string]api.TokenSnapshot)
+	o.issueUsageOrder = nil
+	o.issueUsageSeen = make(map[string]struct{})
 	o.state.PollIntervalMs = o.cfg.Polling.IntervalMs
 	o.state.MaxConcurrentAgents = o.cfg.Agent.MaxConcurrentAgents
 	o.preflightHealth = preflight.Check(o.cfg)
@@ -656,6 +667,50 @@ func (o *Orchestrator) removeRunningLocked(id string) {
 	o.state.CodexTotals.InputTokens += entry.Session.CodexInputTokens
 	o.state.CodexTotals.OutputTokens += entry.Session.CodexOutputTokens
 	o.state.CodexTotals.TotalTokens += entry.Session.CodexTotalTokens
+	o.state.CodexTotals.CostUSD += entry.Session.CostUSD
+	stage := entry.Stage
+	if stage == "" {
+		stage = "coding"
+	}
+	stageTotals := o.state.StageTotals[stage]
+	stageTotals.InputTokens += entry.Session.CodexInputTokens
+	stageTotals.OutputTokens += entry.Session.CodexOutputTokens
+	stageTotals.TotalTokens += entry.Session.CodexTotalTokens
+	stageTotals.CostUSD += entry.Session.CostUSD
+	o.state.StageTotals[stage] = stageTotals
+	o.retainIssueUsageLocked(entry.Issue.Identifier, api.TokenSnapshot{
+		InputTokens:  entry.Session.CodexInputTokens,
+		OutputTokens: entry.Session.CodexOutputTokens,
+		TotalTokens:  entry.Session.CodexTotalTokens,
+		CostUSD:      entry.Session.CostUSD,
+	})
+}
+
+// retainIssueUsageLocked accumulates per-issue usage and bounds the retained
+// history to the oldest maxRetainedIssueUsage identifiers. Callers must hold o.mu.
+func (o *Orchestrator) retainIssueUsageLocked(identifier string, usage api.TokenSnapshot) {
+	if identifier == "" {
+		return
+	}
+	accumulated := o.state.IssueUsage[identifier]
+	accumulated.InputTokens += usage.InputTokens
+	accumulated.OutputTokens += usage.OutputTokens
+	accumulated.TotalTokens += usage.TotalTokens
+	accumulated.CostUSD += usage.CostUSD
+	o.state.IssueUsage[identifier] = accumulated
+	if o.issueUsageSeen == nil {
+		o.issueUsageSeen = make(map[string]struct{})
+	}
+	if _, seen := o.issueUsageSeen[identifier]; !seen {
+		o.issueUsageSeen[identifier] = struct{}{}
+		o.issueUsageOrder = append(o.issueUsageOrder, identifier)
+	}
+	for len(o.issueUsageOrder) > maxRetainedIssueUsage {
+		oldest := o.issueUsageOrder[0]
+		o.issueUsageOrder = o.issueUsageOrder[1:]
+		delete(o.issueUsageSeen, oldest)
+		delete(o.state.IssueUsage, oldest)
+	}
 }
 
 func (o *Orchestrator) dispatchEligibleIssues() {
@@ -990,7 +1045,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue api.Issue, workspace
 			}
 			// Token accounting from usage payload.
 			if event.Usage != nil {
-				updateTokens(&running.Session, event.Usage)
+				updateTokens(&running.Session, event.Usage, running.Model)
 			}
 		}
 		o.mu.Unlock()
@@ -1011,7 +1066,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue api.Issue, workspace
 	o.completedCh <- workerResult{issueID: issue.ID, err: err}
 }
 
-func updateTokens(session *api.AgentSession, usage map[string]interface{}) {
+func updateTokens(session *api.AgentSession, usage map[string]interface{}, model string) {
+	rates, priced := pricing.Lookup(model)
 	// Prefer absolute totals when available.
 	if total, ok := usage["total_tokens"]; ok {
 		if n, ok := toInt64(total); ok {
@@ -1028,6 +1084,9 @@ func updateTokens(session *api.AgentSession, usage map[string]interface{}) {
 			if delta > 0 {
 				session.CodexInputTokens += int(delta)
 				session.LastReportedInputTokens = int(n)
+				if priced {
+					session.CostUSD += rates.Input * float64(delta) / 1e6
+				}
 			}
 		}
 	}
@@ -1037,9 +1096,24 @@ func updateTokens(session *api.AgentSession, usage map[string]interface{}) {
 			if delta > 0 {
 				session.CodexOutputTokens += int(delta)
 				session.LastReportedOutputTokens = int(n)
+				if priced {
+					session.CostUSD += rates.Output * float64(delta) / 1e6
+				}
 			}
 		}
 	}
+}
+
+func roundCost(usd float64) float64 {
+	return math.Round(usd*1e6) / 1e6
+}
+
+func roundStageCosts(stageTotals map[string]api.TokenSnapshot) map[string]api.TokenSnapshot {
+	for stage, totals := range stageTotals {
+		totals.CostUSD = roundCost(totals.CostUSD)
+		stageTotals[stage] = totals
+	}
+	return stageTotals
 }
 
 func (o *Orchestrator) postAgentComment(issue api.Issue, runtime runtimeSnapshot, message string) {
@@ -1845,6 +1919,11 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 	inputTokens := o.state.CodexTotals.InputTokens
 	outputTokens := o.state.CodexTotals.OutputTokens
 	totalTokens := o.state.CodexTotals.TotalTokens
+	costUSD := o.state.CodexTotals.CostUSD
+	stageTotals := make(map[string]api.TokenSnapshot, len(o.state.StageTotals)+2)
+	for stage, totals := range o.state.StageTotals {
+		stageTotals[stage] = totals
+	}
 
 	running := make([]api.RunningSnapshot, 0, len(o.state.Running))
 	for _, entry := range o.state.Running {
@@ -1853,6 +1932,17 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 		inputTokens += entry.Session.CodexInputTokens
 		outputTokens += entry.Session.CodexOutputTokens
 		totalTokens += entry.Session.CodexTotalTokens
+		costUSD += entry.Session.CostUSD
+		stage := entry.Stage
+		if stage == "" {
+			stage = "coding"
+		}
+		stageSnapshot := stageTotals[stage]
+		stageSnapshot.InputTokens += entry.Session.CodexInputTokens
+		stageSnapshot.OutputTokens += entry.Session.CodexOutputTokens
+		stageSnapshot.TotalTokens += entry.Session.CodexTotalTokens
+		stageSnapshot.CostUSD += entry.Session.CostUSD
+		stageTotals[stage] = stageSnapshot
 
 		var lastEvent, lastMessage string
 		var lastEventAt time.Time
@@ -1886,6 +1976,7 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 				InputTokens:  entry.Session.CodexInputTokens,
 				OutputTokens: entry.Session.CodexOutputTokens,
 				TotalTokens:  entry.Session.CodexTotalTokens,
+				CostUSD:      roundCost(entry.Session.CostUSD),
 			},
 		})
 	}
@@ -1938,8 +2029,10 @@ func (o *Orchestrator) Snapshot() api.StateSnapshot {
 			OutputTokens:   outputTokens,
 			TotalTokens:    totalTokens,
 			SecondsRunning: seconds,
+			CostUSD:        roundCost(costUSD),
 		},
-		RateLimits: cloneInterfaceMap(o.state.CodexRateLimits),
+		RateLimits:  cloneInterfaceMap(o.state.CodexRateLimits),
+		StageTotals: roundStageCosts(stageTotals),
 	}
 }
 
@@ -2054,6 +2147,7 @@ func (o *Orchestrator) IssueDetail(identifier string) (api.IssueDetailResponse, 
 						InputTokens:  entry.Session.CodexInputTokens,
 						OutputTokens: entry.Session.CodexOutputTokens,
 						TotalTokens:  entry.Session.CodexTotalTokens,
+						CostUSD:      roundCost(entry.Session.CostUSD),
 					},
 				},
 				Logs:         api.LogDetail{CodexSessionLogs: []api.LogRef{}},
@@ -2090,6 +2184,30 @@ func (o *Orchestrator) IssueDetail(identifier string) (api.IssueDetailResponse, 
 				Tracked:      map[string]interface{}{},
 			}, true
 		}
+	}
+
+	if usage, ok := o.state.IssueUsage[identifier]; ok {
+		usage.CostUSD = roundCost(usage.CostUSD)
+		return api.IssueDetailResponse{
+			IssueIdentifier: identifier,
+			Status:          "completed",
+			Workspace: api.WorkspaceDetail{
+				Path: func() string {
+					if o.workspaceMgr != nil {
+						return o.workspaceMgr.GetWorkspacePath(identifier)
+					}
+					return ""
+				}(),
+			},
+			Attempts:     api.AttemptDetail{},
+			Running:      nil,
+			Retry:        nil,
+			Usage:        &usage,
+			Logs:         api.LogDetail{CodexSessionLogs: []api.LogRef{}},
+			RecentEvents: []api.EventDetail{},
+			LastError:    nil,
+			Tracked:      map[string]interface{}{},
+		}, true
 	}
 
 	return api.IssueDetailResponse{}, false

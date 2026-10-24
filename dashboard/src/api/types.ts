@@ -50,6 +50,7 @@ export interface TokenSnapshot {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  cost_usd?: number;
 }
 
 export interface RunningSnapshot {
@@ -87,6 +88,7 @@ export interface CodexTotals {
   output_tokens: number;
   total_tokens: number;
   seconds_running: number;
+  cost_usd?: number;
 }
 
 export interface StateSnapshot {
@@ -99,6 +101,7 @@ export interface StateSnapshot {
   running: RunningSnapshot[];
   retrying: RetrySnapshot[];
   codex_totals: CodexTotals;
+  stage_totals?: Record<string, TokenSnapshot>;
   rate_limits: Record<string, unknown> | null;
   last_dispatch_deferred_reason?: string;
   last_dispatch_deferred_at?: string;
@@ -313,6 +316,7 @@ export interface IssueDetailResponse {
   attempts: { restart_count: number; current_retry_attempt: number };
   running: RunningSnapshot | null;
   retry: RetrySnapshot | null;
+  usage?: TokenSnapshot | null;
   logs: { codex_session_logs: { label: string; path: string; url: string | null }[] };
   recent_events: { at: string; event: string; message: string }[];
   last_error: string | null;

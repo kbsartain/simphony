@@ -205,6 +205,8 @@ Two agent SDKs exist: `codex` (Codex app-server, OpenAI-native) and `claude` (Cl
 
 The dashboard Settings and Agent-defaults presets write the endpoint and `$`-referenced credential for the SDK you select. Limitation: Simphony does not generate a per-workspace Codex `model_providers` configuration, so Codex routes to non-OpenAI endpoints (Kimi `https://api.moonshot.ai/v1`, DeepSeek `https://api.deepseek.com`, Z.ai `https://api.z.ai/api/coding/paas/v4`) require your own Codex provider/router setup and are not turnkey.
 
+Simphony also tracks token usage and estimated spend per project, per pipeline stage, and per issue (feature), using built-in list-price estimates per model; unknown models contribute tokens without cost. Figures are estimates — subscription/quota plans may not map to token prices — and reset on restart (in-memory state). The dashboard shows totals, a per-stage spend panel, and per-feature usage on each issue's detail page.
+
 Global `agent_runtime` defaults can also live in `simphony.yaml`; each project `WORKFLOW.md` can override individual runtime fields when a project needs a different SDK, model, endpoint, or token source. In multi-project mode, the Project Setup page can edit these global defaults while masking/preserving existing secrets.
 
 ## Codex Model Selection
