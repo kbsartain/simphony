@@ -164,14 +164,24 @@ app-server or Claude CLI); tracker state = stage.
   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY` (resolved at WORKFLOW.md
   load). z.ai key rotated 2026-07 after plaintext exposure in geekli git history.
 - Keith configures projects by hand-editing each WORKFLOW.md, not the dashboard.
-- **ADR-0001 provider catalog** (`docs/adr/0001-provider-model-catalog.md`):
-  phases 1–3 backend done on main; remaining dashboard wiring + per-stage SDK
-  selector is gated on modeling z.ai's two endpoints (Anthropic-compatible
-  `/api/anthropic` vs OpenAI-compatible `/api/coding/paas/v4`) as one vendor.
+- **Provider/model presets live in the dashboard** (`dashboard/src/App.tsx`, `PROVIDER_OPTIONS`):
+  each preset carries per-SDK endpoints (`endpoints.claude` / `endpoints.codex`, since one
+  vendor can expose different endpoints per protocol), a model list, and an env-backed
+  `$API_KEY` reference. Kimi (`https://api.moonshot.ai/anthropic` via Claude SDK,
+  `$KIMI_API_KEY`; `$MOONSHOT_API_KEY` is the vendor-conventional alias) and DeepSeek
+  (`https://api.deepseek.com/anthropic` via Claude SDK, `$DEEPSEEK_API_KEY`) are configured
+  presets alongside live-verified Z.ai GLM (`https://api.z.ai/api/anthropic`). The historical
+  ADR-0001 provider-catalog architecture was not kept; do not resurrect it.
+- Codex with non-OpenAI endpoints (Kimi `/v1`, DeepSeek root, Z.ai
+  `/api/coding/paas/v4`) remains a documented limitation: Simphony does not generate a
+  per-workspace Codex `model_providers` configuration.
 - Production bug class to avoid: Claude CLI variadic `--disallowed-tools` swallows
   the trailing prompt (use `--`); setting BOTH `ANTHROPIC_API_KEY` and
   `ANTHROPIC_AUTH_TOKEN` makes the CLI send both auth headers → rejected by
-  z.ai/Kimi (send one, endpoint-primary).
+  z.ai/Kimi (send one, endpoint-primary); a logged-in personal Claude account in
+  `~/.claude.json` hijacks `ANTHROPIC_BASE_URL` auth when user settings load — the
+  embedded shim therefore defaults `settingSources` to `["project", "local"]`
+  (never `user`) unless the workflow sets `setting_sources` explicitly.
 
 **Full imported memory archive:**
 `%USERPROFILE%\Documents\kimi\workspace\claude-import-archive\simphony-memory\`

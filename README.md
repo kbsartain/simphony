@@ -188,7 +188,22 @@ agent_runtime:
   api_key: $ANTHROPIC_API_KEY
 ```
 
-`agent_runtime.endpoint_url` and `agent_runtime.api_key` support OpenAI-compatible and Anthropic-compatible gateways. For Codex, they are passed as `OPENAI_BASE_URL` and `OPENAI_API_KEY`; for Claude, they are passed as `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`.
+`agent_runtime.endpoint_url` and `agent_runtime.api_key` support OpenAI-compatible and Anthropic-compatible gateways. For Codex, they are passed as `OPENAI_BASE_URL` and `OPENAI_API_KEY`; for Claude, they are passed as `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`. Claude also supports `agent_runtime.auth_token` as `ANTHROPIC_AUTH_TOKEN`; configure only one credential field because `auth_token` takes precedence when both are present.
+
+### Model provider support
+
+Two agent SDKs exist: `codex` (Codex app-server, OpenAI-native) and `claude` (Claude Code Agent SDK, Anthropic-compatible). Third-party vendors with Anthropic-compatible endpoints run best through `provider: claude`, which is Simphony's unattended-proven path (session events, continuation turns, single credential).
+
+| Vendor | Route | Status |
+| --- | --- | --- |
+| Anthropic Claude | `provider: claude`, `https://api.anthropic.com` | Native, supported |
+| OpenAI | `provider: codex`, `https://api.openai.com/v1` | Native, supported |
+| Google Gemini | `provider: codex`, `https://generativelanguage.googleapis.com/v1beta/openai` | OpenAI-compatible only |
+| Z.ai GLM (`glm-5.2`, `glm-5.1`, `glm-4.7`) | `provider: claude`, `https://api.z.ai/api/anthropic` | Live-verified through the Claude SDK |
+| Moonshot Kimi (`kimi-k3.1-pro`, `kimi-k3.1-pro-highspeed`) | `provider: claude`, `https://api.moonshot.ai/anthropic`, credential `$KIMI_API_KEY` | Protocol-configured; smoke-test with your key before unattended use |
+| DeepSeek (`deepseek-v4-pro`, `deepseek-flash`) | `provider: claude`, `https://api.deepseek.com/anthropic`, credential `$DEEPSEEK_API_KEY` | Protocol-configured; smoke-test with your key before unattended use |
+
+The dashboard Settings and Agent-defaults presets write the endpoint and `$`-referenced credential for the SDK you select. Limitation: Simphony does not generate a per-workspace Codex `model_providers` configuration, so Codex routes to non-OpenAI endpoints (Kimi `https://api.moonshot.ai/v1`, DeepSeek `https://api.deepseek.com`, Z.ai `https://api.z.ai/api/coding/paas/v4`) require your own Codex provider/router setup and are not turnkey.
 
 Global `agent_runtime` defaults can also live in `simphony.yaml`; each project `WORKFLOW.md` can override individual runtime fields when a project needs a different SDK, model, endpoint, or token source. In multi-project mode, the Project Setup page can edit these global defaults while masking/preserving existing secrets.
 

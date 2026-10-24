@@ -260,6 +260,19 @@ Common fields in `agent_runtime` override provider-specific defaults from `codex
 
 `endpoint_url`, `api_key`, `auth_token`, and `env` values beginning with `$` are resolved from environment variables. Literal values in `api_key` and `auth_token` are rejected at config-load time with `literal_secret_in_config`. Secrets are passed only to the agent subprocess environment and are omitted from the resolved API JSON. For `provider: codex`, `api_key` maps to `OPENAI_API_KEY` and `endpoint_url` maps to `OPENAI_BASE_URL`. For `provider: claude`, `api_key` maps to `ANTHROPIC_API_KEY` and `endpoint_url` maps to `ANTHROPIC_BASE_URL`.
 
+Provider protocol matrix — the first route is the preferred unattended configuration:
+
+| Vendor | Preferred SDK | Anthropic-compatible endpoint | OpenAI-compatible endpoint |
+| --- | --- | --- | --- |
+| Anthropic Claude | `claude` (native) | `https://api.anthropic.com` | — |
+| OpenAI | `codex` (native) | — | `https://api.openai.com/v1` |
+| Google Gemini | `codex` only | — | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| Z.ai GLM | `claude` | `https://api.z.ai/api/anthropic` | `https://api.z.ai/api/coding/paas/v4` (limitation below) |
+| Moonshot Kimi | `claude` | `https://api.moonshot.ai/anthropic` | `https://api.moonshot.ai/v1` (limitation below) |
+| DeepSeek | `claude` | `https://api.deepseek.com/anthropic` | `https://api.deepseek.com` (limitation below) |
+
+Kimi (`kimi-k3.1-pro`, `kimi-k3.1-pro-highspeed`), DeepSeek (`deepseek-v4-pro`, `deepseek-flash`), and Z.ai GLM (`glm-5.2`, `glm-5.1`, `glm-4.7`) are exposed as dashboard presets that write the endpoint and `$`-referenced credential for the selected SDK. Z.ai GLM was live-verified through the Claude SDK; Kimi and DeepSeek presets are protocol-configured and should be smoke-tested with your own keys before unattended use. Limitation: the Codex/OpenAI-compatible routes for Kimi, DeepSeek, and Z.ai require a Codex `model_providers` configuration that Simphony does not generate per workspace, so treat the Claude SDK routes above as the supported path for those vendors.
+
 `agent_runtime.provider` is the project default. A `stage_overrides` entry may set its own execution `provider` to `codex` or `claude` for `coding`, `review`, `review_resolution`, or `merge`. This is a new provider-native session at the stage boundary; Simphony passes the existing workspace, Git history, issue, and tracker state rather than attempting to transfer a live SDK thread.
 
 Stage overrides support `provider`, `command`, `model`, `model_provider`, `reasoning_effort`, `endpoint_url`, `api_key`, `auth_token`, `env`, `skills`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `setting_sources`, `approval_policy`, `thread_sandbox`, `turn_sandbox_policy`, and `allow_unsafe_host_access`. When a stage changes execution provider, Simphony recomputes provider-specific command, credential, permission, and sandbox defaults before applying the stage values. It does not inherit the other provider's model, endpoint, credentials, environment, command, or sandbox settings. Shared skills and operational timeout limits remain available.
@@ -397,11 +410,15 @@ claude:
     - local
 ```
 
-`claude:` is the provider-specific configuration for `agent_runtime.provider: claude`. Simphony writes an embedded Node.js shim into the issue workspace and launches it unless `claude.command` or `agent_runtime.command` is set. The shim loads the Claude Agent SDK from the workspace or wrapper environment, runs one turn, emits Simphony-normalized JSON events, and resumes the prior Claude session for continuation turns.
+`claude:` is the provider-specific configuration for `agent_runtime.provider: claude`. Simphony writes an embedded Node.js shim into the issue workspace and launches it unless `claude.command` or `agent_runtime.command` is set. The shim loads the Claude Agent SDK, runs one turn, emits Simphony-normalized JSON events, and resumes the prior Claude session for continuation turns. `reasoning_effort` is passed to the SDK as `effort`. A turn succeeds only after the SDK returns a successful result; SDK error results and result-less streams fail the attempt.
 
-Install a supported Claude SDK package where Node can resolve it, or set `SIMPHONY_CLAUDE_SDK_PACKAGE` to the package name your environment uses. The repository root declares `@anthropic-ai/claude-agent-sdk`; run `npm install` there for Simphony workspaces that inherit the root package manifest. Other managed repositories must make the SDK resolvable from their own workspace. The embedded shim tries `@anthropic-ai/claude-agent-sdk` first and falls back to `@anthropic-ai/claude-code`.
+The repository root declares `@anthropic-ai/claude-agent-sdk`; run `npm install` there once. Simphony discovers its `sdk.mjs` by walking upward from the service working directory and executable directory, so issue workspaces in other repositories can use that installation. You can instead set `agent_runtime.env.SIMPHONY_CLAUDE_SDK_PACKAGE` to an absolute `sdk.mjs` path or another Node-resolvable package name. Without an explicit override, the embedded shim tries `@anthropic-ai/claude-agent-sdk` and then `@anthropic-ai/claude-code`.
 
-Set `claude.command` when you want to provide your own wrapper. The wrapper must read one JSON request from stdin and emit newline-delimited JSON events with `event`, optional `payload`, and optional `usage` fields.
+For Anthropic-compatible providers, configure only one of `api_key` (`ANTHROPIC_API_KEY`) or `auth_token` (`ANTHROPIC_AUTH_TOKEN`). If both are configured, `auth_token` takes precedence so the subprocess does not send competing authentication headers.
+
+When `setting_sources` is not configured, the embedded shim loads only `project` and `local` settings. It deliberately excludes the operator's `user` settings: on hosts where the Claude CLI is logged into a personal Claude account, loading user settings makes the SDK send that account's session to `ANTHROPIC_BASE_URL`, and Anthropic-compatible gateways (Z.ai, Kimi, DeepSeek) reject it as an invalid key. Set `setting_sources` explicitly (for example `["user", "project", "local"]`) only when you intentionally want user-level settings or account authentication.
+
+Set `claude.command` when you want to provide your own wrapper. The wrapper must read one JSON request from stdin and emit newline-delimited JSON events with `event`, optional `payload`, and optional `usage` fields. Its `turn/completed` event must include `payload.status: completed`; `failed`, `interrupted`, and unknown statuses fail or cancel the attempt rather than advancing the issue.
 
 ## Server
 

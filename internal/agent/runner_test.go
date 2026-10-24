@@ -94,11 +94,16 @@ func runMockClaudeShim() {
 			},
 		},
 	})
+	status := "completed"
+	switch mockMode(os.Getenv("SIMPHONY_MOCK_MODE")) {
+	case "failed", "interrupted":
+		status = os.Getenv("SIMPHONY_MOCK_MODE")
+	}
 	_ = enc.Encode(claudeShimEvent{
 		Event: "turn/completed",
 		Payload: map[string]interface{}{
 			"session_id": sessionID,
-			"status":     "completed",
+			"status":     status,
 			"turn_count": req.TurnCount,
 		},
 	})
@@ -386,6 +391,96 @@ func TestRuntimeEnvAppliesProjectScopedValuesAfterScrub(t *testing.T) {
 	}
 }
 
+func TestClaudeRuntimeEnvUsesSingleCredential(t *testing.T) {
+	tests := []struct {
+		name          string
+		apiKey        string
+		authToken     string
+		wantAPIKey    string
+		wantAuthToken string
+	}{
+		{name: "api key only", apiKey: "project-key", wantAPIKey: "project-key"},
+		{name: "auth token only", authToken: "project-token", wantAuthToken: "project-token"},
+		{name: "auth token takes precedence", apiKey: "project-key", authToken: "project-token", wantAuthToken: "project-token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := []string{
+				"ANTHROPIC_API_KEY=inherited-key",
+				"ANTHROPIC_AUTH_TOKEN=inherited-token",
+			}
+			cfg := &api.AgentRuntimeConfig{
+				Provider:    "claude",
+				APIKey:      tt.apiKey,
+				AuthToken:   tt.authToken,
+				EndpointURL: "https://api.z.ai/api/anthropic",
+			}
+			got := applyRuntimeEnv(env, cfg)
+			if getEnv(got, "ANTHROPIC_API_KEY") != tt.wantAPIKey {
+				t.Fatalf("ANTHROPIC_API_KEY = %q, want %q", getEnv(got, "ANTHROPIC_API_KEY"), tt.wantAPIKey)
+			}
+			if getEnv(got, "ANTHROPIC_AUTH_TOKEN") != tt.wantAuthToken {
+				t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q, want %q", getEnv(got, "ANTHROPIC_AUTH_TOKEN"), tt.wantAuthToken)
+			}
+			if getEnv(got, "ANTHROPIC_BASE_URL") != cfg.EndpointURL {
+				t.Fatalf("ANTHROPIC_BASE_URL = %q, want %q", getEnv(got, "ANTHROPIC_BASE_URL"), cfg.EndpointURL)
+			}
+		})
+	}
+}
+
+func TestClaudeRuntimeEnvRoutesCompatibleProviderEndpoints(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		provider    string
+		endpointURL string
+		apiKey      string
+		authToken   string
+	}{
+		{name: "zai glm anthropic endpoint", model: "glm-5.2", provider: "zai", endpointURL: "https://api.z.ai/api/anthropic", apiKey: "zai-key"},
+		{name: "kimi anthropic endpoint", model: "kimi-k3.1-pro", provider: "moonshot", endpointURL: "https://api.moonshot.ai/anthropic", apiKey: "kimi-key"},
+		{name: "deepseek anthropic endpoint", model: "deepseek-v4-pro", provider: "deepseek", endpointURL: "https://api.deepseek.com/anthropic", apiKey: "deepseek-key"},
+		{name: "kimi anthropic endpoint via auth token", model: "kimi-k3.1-pro", provider: "moonshot", endpointURL: "https://api.moonshot.ai/anthropic", authToken: "kimi-token"},
+		{name: "deepseek anthropic endpoint via auth token", model: "deepseek-flash", provider: "deepseek", endpointURL: "https://api.deepseek.com/anthropic", authToken: "deepseek-token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := []string{
+				"ANTHROPIC_API_KEY=inherited-key",
+				"ANTHROPIC_AUTH_TOKEN=inherited-token",
+			}
+			cfg := &api.AgentRuntimeConfig{
+				Provider:      "claude",
+				Model:         tt.model,
+				ModelProvider: tt.provider,
+				APIKey:        tt.apiKey,
+				AuthToken:     tt.authToken,
+				EndpointURL:   tt.endpointURL,
+			}
+			got := applyRuntimeEnv(env, cfg)
+			if getEnv(got, "ANTHROPIC_BASE_URL") != tt.endpointURL {
+				t.Fatalf("ANTHROPIC_BASE_URL = %q, want %q", getEnv(got, "ANTHROPIC_BASE_URL"), tt.endpointURL)
+			}
+			if tt.authToken != "" {
+				if getEnv(got, "ANTHROPIC_AUTH_TOKEN") != tt.authToken {
+					t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q, want %q", getEnv(got, "ANTHROPIC_AUTH_TOKEN"), tt.authToken)
+				}
+				if getEnv(got, "ANTHROPIC_API_KEY") != "" {
+					t.Fatal("ANTHROPIC_API_KEY was emitted alongside auth token")
+				}
+			} else {
+				if getEnv(got, "ANTHROPIC_API_KEY") != tt.apiKey {
+					t.Fatalf("ANTHROPIC_API_KEY = %q, want %q", getEnv(got, "ANTHROPIC_API_KEY"), tt.apiKey)
+				}
+				if getEnv(got, "ANTHROPIC_AUTH_TOKEN") != "" {
+					t.Fatal("ANTHROPIC_AUTH_TOKEN was emitted alongside api key")
+				}
+			}
+		})
+	}
+}
+
 func TestRunnerSuccessfulSession(t *testing.T) {
 	// Set up environment so that the mock server runs.
 	for _, e := range mockEnv(mockModeNormal) {
@@ -569,6 +664,33 @@ func TestRunnerClaudeShimSession(t *testing.T) {
 	}
 	if !hasSessionStarted || !hasMessage || !hasUsage {
 		t.Fatalf("events missing session/message/usage: session=%t message=%t usage=%t events=%+v", hasSessionStarted, hasMessage, hasUsage, events)
+	}
+}
+
+func TestRunClaudeTurnRejectsNonSuccessfulCompletion(t *testing.T) {
+	tests := []struct {
+		status  string
+		wantErr string
+	}{
+		{status: "failed", wantErr: api.ErrTurnFailed},
+		{status: "interrupted", wantErr: api.ErrTurnCancelled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			t.Setenv("SIMPHONY_MOCK_CLAUDE", "1")
+			t.Setenv("SIMPHONY_MOCK_CODEX", "")
+			t.Setenv("SIMPHONY_MOCK_MODE", tt.status)
+			runner := NewRunner("test")
+			cfg := &api.AgentRuntimeConfig{
+				Provider:      "claude",
+				Command:       mockCommand(mockModeNormal),
+				TurnTimeoutMs: 30000,
+			}
+			_, err := runner.runClaudeTurn(context.Background(), &api.Workspace{Path: t.TempDir()}, cfg, "test", "", 1, func(api.AgentEvent) {})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want %s", err, tt.wantErr)
+			}
+		})
 	}
 }
 

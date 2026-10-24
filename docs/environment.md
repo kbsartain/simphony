@@ -14,6 +14,9 @@ The repository includes [`.env.example`](../.env.example) as a reference. Simpho
 | `LINEAR_API_KEY` | Simphony tracker client | Authenticates Linear GraphQL requests. |
 | `OPENAI_API_KEY` or local Codex auth | Codex app-server | Authenticates Codex, depending on your Codex installation. |
 | `ANTHROPIC_API_KEY` | Claude Code Agent SDK | Authenticates Claude when `agent_runtime.provider: claude`. |
+| `ZAI_API_KEY` | Claude Code Agent SDK / Codex | Authenticates Z.ai GLM via `https://api.z.ai/api/anthropic` (Claude SDK) or `https://api.z.ai/api/coding/paas/v4` (Codex-compatible). |
+| `KIMI_API_KEY` | Claude Code Agent SDK / Codex | Authenticates Moonshot Kimi via `https://api.moonshot.ai/anthropic` (Claude SDK) or `https://api.moonshot.ai/v1` (Codex-compatible). `MOONSHOT_API_KEY` is the vendor-conventional alias; reference whichever you set from WORKFLOW.md. |
+| `DEEPSEEK_API_KEY` | Claude Code Agent SDK / Codex | Authenticates DeepSeek via `https://api.deepseek.com/anthropic` (Claude SDK) or `https://api.deepseek.com` (Codex-compatible). |
 | `OPENAI_BASE_URL` | Codex/OpenAI-compatible runtime | Optional endpoint for OpenAI-compatible gateways. |
 | `ANTHROPIC_BASE_URL` | Claude/Anthropic-compatible runtime | Optional endpoint for Anthropic-compatible gateways. |
 
@@ -64,6 +67,7 @@ Avoid committing:
 - real Linear API keys,
 - OpenAI API keys,
 - Anthropic API keys,
+- Z.ai, Kimi/Moonshot, or DeepSeek API keys,
 - private repository clone tokens,
 - local absolute paths to one developer's Codex binary,
 - workflow files that point at production issue states without review.

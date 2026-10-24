@@ -70,8 +70,18 @@ type ProviderOption = {
   label: string
   models: ModelOption[]
   reasoning: ReasoningOption[]
-  endpointURL: string
+  endpoints: Partial<Record<'codex' | 'claude', string>>
   apiKey: string
+}
+
+function providerEndpointURL(provider: ProviderOption | undefined, sdkProvider: string): string {
+  if (!provider) {
+    return ''
+  }
+  if (sdkProvider === 'claude') {
+    return provider.endpoints.claude || provider.endpoints.codex || ''
+  }
+  return provider.endpoints.codex || provider.endpoints.claude || ''
 }
 type ReasoningOption = {
   value: string
@@ -169,15 +179,11 @@ const GEMINI_25_FLASH_REASONING_OPTIONS: ReasoningOption[] = [
   { value: 'medium', label: 'Thinking budget: medium' },
   { value: 'high', label: 'Thinking budget: high' },
 ]
-const REASONER_MODEL_OPTIONS: ReasoningOption[] = [
-  { value: '', label: 'Model default' },
-  { value: 'high', label: 'Reasoner mode' },
-]
 const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'openai',
     label: 'OpenAI',
-    endpointURL: 'https://api.openai.com/v1',
+    endpoints: { codex: 'https://api.openai.com/v1' },
     apiKey: '$OPENAI_API_KEY',
     reasoning: CODEX_REASONING_OPTIONS,
     models: [
@@ -191,7 +197,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'anthropic',
     label: 'Anthropic',
-    endpointURL: 'https://api.anthropic.com',
+    endpoints: { claude: 'https://api.anthropic.com' },
     apiKey: '$ANTHROPIC_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
     models: [
@@ -202,7 +208,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'google',
     label: 'Google Gemini',
-    endpointURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    endpoints: { codex: 'https://generativelanguage.googleapis.com/v1beta/openai' },
     apiKey: '$GEMINI_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
     models: [
@@ -232,15 +238,18 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'moonshot',
     label: 'Moonshot',
-    endpointURL: 'https://api.moonshot.ai/v1',
-    apiKey: '$MOONSHOT_API_KEY',
+    endpoints: { claude: 'https://api.moonshot.ai/anthropic', codex: 'https://api.moonshot.ai/v1' },
+    apiKey: '$KIMI_API_KEY',
     reasoning: THINKING_REASONING_OPTIONS,
-    models: [{ id: 'moonshot:kimi-k2-2.6', label: 'Kimi K2 2.6', model: 'kimi-k2-2.6', modelProvider: 'moonshot' }],
+    models: [
+      { id: 'moonshot:kimi-k3.1-pro', label: 'Kimi K3.1 Pro', model: 'kimi-k3.1-pro', modelProvider: 'moonshot' },
+      { id: 'moonshot:kimi-k3.1-pro-highspeed', label: 'Kimi K3.1 Pro Highspeed', model: 'kimi-k3.1-pro-highspeed', modelProvider: 'moonshot' },
+    ],
   },
   {
     id: 'zai',
     label: 'Z.ai',
-    endpointURL: 'https://api.z.ai/api/coding/paas/v4',
+    endpoints: { claude: 'https://api.z.ai/api/anthropic', codex: 'https://api.z.ai/api/coding/paas/v4' },
     apiKey: '$ZAI_API_KEY',
     reasoning: ZAI_REASONING_OPTIONS,
     models: [
@@ -252,20 +261,12 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'deepseek',
     label: 'DeepSeek',
-    endpointURL: 'https://api.deepseek.com',
+    endpoints: { claude: 'https://api.deepseek.com/anthropic', codex: 'https://api.deepseek.com' },
     apiKey: '$DEEPSEEK_API_KEY',
-    reasoning: DEFAULT_REASONING_OPTIONS,
+    reasoning: THINKING_REASONING_OPTIONS,
     models: [
       { id: 'deepseek:deepseek-v4-pro', label: 'DeepSeek V4 Pro', model: 'deepseek-v4-pro', modelProvider: 'deepseek' },
-      { id: 'deepseek:deepseek-v4-flash', label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash', modelProvider: 'deepseek' },
-      { id: 'deepseek:deepseek-chat', label: 'DeepSeek Chat (legacy)', model: 'deepseek-chat', modelProvider: 'deepseek' },
-      {
-        id: 'deepseek:deepseek-reasoner',
-        label: 'DeepSeek Reasoner (legacy)',
-        model: 'deepseek-reasoner',
-        modelProvider: 'deepseek',
-        reasoning: REASONER_MODEL_OPTIONS,
-      },
+      { id: 'deepseek:deepseek-flash', label: 'DeepSeek Flash', model: 'deepseek-flash', modelProvider: 'deepseek' },
     ],
   },
 ]
@@ -1785,7 +1786,15 @@ function ProjectSetupView(props: {
                 <span>SDK</span>
                 <select
                   value={props.registryRuntimeDraft.sdkProvider}
-                  onChange={event => props.onRegistryRuntimeDraftChange({ ...props.registryRuntimeDraft, sdkProvider: event.target.value })}
+                  onChange={event => {
+                    const nextSDK = event.target.value
+                    const provider = PROVIDER_OPTIONS.find(item => item.id === props.registryRuntimeDraft.modelProvider)
+                    props.onRegistryRuntimeDraftChange({
+                      ...props.registryRuntimeDraft,
+                      sdkProvider: nextSDK,
+                      ...(provider ? { endpointURL: providerEndpointURL(provider, nextSDK) } : {}),
+                    })
+                  }}
                 >
                   <option value="codex">Codex</option>
                   <option value="claude">Claude Code</option>
@@ -1806,7 +1815,7 @@ function ProjectSetupView(props: {
                       ...props.registryRuntimeDraft,
                       modelProvider: nextProvider,
                       model: nextModel,
-                      endpointURL: provider?.endpointURL || props.registryRuntimeDraft.endpointURL,
+                      endpointURL: provider ? providerEndpointURL(provider, props.registryRuntimeDraft.sdkProvider) : props.registryRuntimeDraft.endpointURL,
                       apiKey: provider?.apiKey || props.registryRuntimeDraft.apiKey,
                     })
                   }}
@@ -2952,7 +2961,7 @@ function applyProviderSelection(config: Record<string, unknown>, providerID: str
     delete runtime.model
   } else {
     runtime.model_provider = provider.id
-    runtime.endpoint_url = provider.endpointURL
+    runtime.endpoint_url = providerEndpointURL(provider, typeof runtime.provider === 'string' && runtime.provider ? runtime.provider : 'codex')
     runtime.api_key = provider.apiKey
     const currentModel = typeof runtime.model === 'string' ? runtime.model : ''
     if (currentModel && !provider.models.some(option => option.model === currentModel)) {
@@ -3218,7 +3227,7 @@ function providerOptionsWithCurrent(providerID: string) {
     return PROVIDER_OPTIONS
   }
   return [
-    { id: providerID, label: `${providerID} (custom)`, models: [], reasoning: DEFAULT_REASONING_OPTIONS, endpointURL: '', apiKey: '' },
+    { id: providerID, label: `${providerID} (custom)`, models: [], reasoning: DEFAULT_REASONING_OPTIONS, endpoints: {}, apiKey: '' },
     ...PROVIDER_OPTIONS,
   ]
 }

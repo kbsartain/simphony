@@ -110,16 +110,21 @@ async function main() {
   const options = {
     cwd,
     model: request.model || undefined,
+    effort: request.reasoning_effort || undefined,
     resume: request.resume_session_id || undefined,
     permissionMode: request.permission_mode || undefined,
     allowedTools: request.allowed_tools,
     disallowedTools: request.disallowed_tools,
-    settingSources: request.setting_sources,
+    // Default to project/local settings only: loading the operator's user
+    // settings can pull a logged-in Claude account into unattended runs and
+    // override ANTHROPIC_API_KEY on Anthropic-compatible gateways.
+    settingSources: Array.isArray(request.setting_sources) ? request.setting_sources : ["project", "local"],
   };
   Object.keys(options).forEach((key) => options[key] === undefined && delete options[key]);
 
   let sessionID = request.resume_session_id || "";
   let started = false;
+  let sawSuccessfulResult = false;
   let lastText = "";
   const stream = query({ prompt: request.prompt || "", options });
 
@@ -139,6 +144,14 @@ async function main() {
           turn_count: request.turn_count || 1,
         },
       });
+    }
+
+    if (message?.type === "result") {
+      if (message.subtype !== "success" || message.is_error) {
+        const details = Array.isArray(message.errors) ? message.errors.filter(Boolean).join("; ") : "";
+        throw new Error(`Claude SDK ${message.subtype || "error"}${details ? `: ${details}` : ""}`);
+      }
+      sawSuccessfulResult = true;
     }
 
     const usage = usageFrom(message);
@@ -167,6 +180,10 @@ async function main() {
         },
       });
     }
+  }
+
+  if (!sawSuccessfulResult) {
+    throw new Error("Claude SDK stream ended without a successful result");
   }
 
   if (!started) {

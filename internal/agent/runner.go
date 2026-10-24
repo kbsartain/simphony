@@ -683,7 +683,15 @@ func (r *Runner) runClaudeTurn(ctx context.Context, workspace *api.Workspace, cf
 			Payload:   shimEvent.Payload,
 		})
 		if shimEvent.Event == "turn/completed" {
-			completed = true
+			status, _ := shimEvent.Payload["status"].(string)
+			switch status {
+			case "completed":
+				completed = true
+			case "interrupted":
+				return sessionID, fmt.Errorf("%s: claude turn interrupted", api.ErrTurnCancelled)
+			default:
+				return sessionID, fmt.Errorf("%s: claude turn completed with status %q", api.ErrTurnFailed, status)
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -1016,14 +1024,19 @@ func applyRuntimeEnv(env []string, cfg *api.AgentRuntimeConfig) []string {
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
 	case "claude":
-		if cfg.APIKey != "" {
+		// Anthropic-compatible providers reject requests containing both auth headers.
+		if cfg.AuthToken != "" {
+			env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", cfg.AuthToken)
+			env = unsetEnv(env, "ANTHROPIC_API_KEY")
+		} else if cfg.APIKey != "" {
 			env = setEnv(env, "ANTHROPIC_API_KEY", cfg.APIKey)
+			env = unsetEnv(env, "ANTHROPIC_AUTH_TOKEN")
 		}
 		if cfg.EndpointURL != "" {
 			env = setEnv(env, "ANTHROPIC_BASE_URL", cfg.EndpointURL)
 		}
-		if cfg.AuthToken != "" {
-			env = setEnv(env, "ANTHROPIC_AUTH_TOKEN", cfg.AuthToken)
+		if sdkPath := agentruntime.FindClaudeSDKPackage(); sdkPath != "" {
+			env = setEnv(env, "SIMPHONY_CLAUDE_SDK_PACKAGE", sdkPath)
 		}
 	default:
 		if cfg.APIKey != "" {
@@ -1043,6 +1056,17 @@ func applyRuntimeEnv(env []string, cfg *api.AgentRuntimeConfig) []string {
 		env = setEnv(env, key, value)
 	}
 	return env
+}
+
+func unsetEnv(env []string, key string) []string {
+	prefix := strings.ToUpper(key) + "="
+	out := env[:0]
+	for _, entry := range env {
+		if !strings.HasPrefix(strings.ToUpper(entry), prefix) {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func writeGitSafeDirectoryConfig(workspacePath string) (string, error) {

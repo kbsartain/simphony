@@ -156,6 +156,12 @@ func walkPublicTextFiles(repoRoot string, extensions []string, visit func(path s
 		if matched, _ := filepath.Match("WORKFLOW-*.md", entry.Name()); matched {
 			return nil
 		}
+		// KIMI_CODE_HANDOFF.md is a local, per-developer session handoff note
+		// (like WORKFLOW.md) rather than public documentation, so the
+		// public-doc placeholder lint does not apply to it.
+		if entry.Name() == "KIMI_CODE_HANDOFF.md" {
+			return nil
+		}
 		if _, ok := allowed[filepath.Ext(path)]; !ok {
 			return nil
 		}
