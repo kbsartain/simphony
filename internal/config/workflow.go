@@ -824,6 +824,11 @@ func resolveClaude(m map[string]interface{}, cfg *api.WorkflowConfig) error {
 	if v, ok := getStringSlice(m, "setting_sources"); ok {
 		runtime.SettingSources = v
 	}
+	stageOverrides, err := resolveAgentStageOverrides(m, "claude")
+	if err != nil {
+		return err
+	}
+	runtime.StageOverrides = stageOverrides
 	cfg.Claude = runtime
 	return nil
 }

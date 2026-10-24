@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -664,6 +665,50 @@ func TestRunnerClaudeShimSession(t *testing.T) {
 	}
 	if !hasSessionStarted || !hasMessage || !hasUsage {
 		t.Fatalf("events missing session/message/usage: session=%t message=%t usage=%t events=%+v", hasSessionStarted, hasMessage, hasUsage, events)
+	}
+}
+
+func TestRunnerClaudeEmbeddedShimRunsWithoutShellCommand(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node.js is not installed")
+	}
+	dir := t.TempDir()
+	sdkPath := filepath.Join(dir, "sdk.mjs")
+	if err := os.WriteFile(sdkPath, []byte(fakeClaudeSDK), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SIMPHONY_TEST_SDK_MODE", "success")
+
+	runner := NewRunner("test prompt")
+	workspace := &api.Workspace{Path: t.TempDir()}
+	cfg := api.AgentRuntimeConfig{
+		Provider:      "claude",
+		Model:         "glm-test",
+		TurnTimeoutMs: 30000,
+		ReadTimeoutMs: 5000,
+		Env: map[string]string{
+			"SIMPHONY_CLAUDE_SDK_PACKAGE": sdkPath,
+		},
+	}
+
+	var sawSession bool
+	eventCallback := func(e api.AgentEvent) {
+		if e.Event == "session_started" {
+			sawSession = true
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := runner.Run(ctx, api.Issue{ID: "issue-embedded", Identifier: "TEST-EMBEDDED", Title: "Embedded", State: "In Progress"}, workspace, nil, &cfg, api.PipelineStage{Kind: "coding"}, 1, nil, eventCallback)
+	if err != nil {
+		t.Fatalf("embedded shim run failed: %v", err)
+	}
+	if !sawSession {
+		t.Fatal("no session_started event from embedded shim")
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Path, ".simphony", "claude-agent-shim.mjs")); err != nil {
+		t.Fatalf("embedded shim was not written into the workspace: %v", err)
 	}
 }
 

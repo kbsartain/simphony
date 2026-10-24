@@ -563,13 +563,6 @@ func (r *Runner) runClaude(ctx context.Context, issue api.Issue, workspace *api.
 
 func (r *Runner) runClaudeTurn(ctx context.Context, workspace *api.Workspace, cfg *api.AgentRuntimeConfig, prompt string, resumeSessionID string, turnCount int, eventCallback func(api.AgentEvent)) (string, error) {
 	command := strings.TrimSpace(cfg.Command)
-	if command == "" {
-		shimPath, err := writeEmbeddedClaudeShim(workspace.Path)
-		if err != nil {
-			return "", err
-		}
-		command = "node " + quoteCommandArg(shimPath)
-	}
 
 	turnTimeout := time.Duration(cfg.TurnTimeoutMs) * time.Millisecond
 	if turnTimeout <= 0 {
@@ -578,7 +571,18 @@ func (r *Runner) runClaudeTurn(ctx context.Context, workspace *api.Workspace, cf
 	turnCtx, cancel := context.WithTimeout(ctx, turnTimeout)
 	defer cancel()
 
-	cmd := shellCommandContext(turnCtx, command)
+	var cmd *exec.Cmd
+	if command == "" {
+		// Launch the embedded shim without a shell: cmd /C mangles quoted
+		// paths on Windows, and no shell features are needed here.
+		shimPath, err := writeEmbeddedClaudeShim(workspace.Path)
+		if err != nil {
+			return "", err
+		}
+		cmd = exec.CommandContext(turnCtx, "node", shimPath)
+	} else {
+		cmd = shellCommandContext(turnCtx, command)
+	}
 	cmd.Dir = workspace.Path
 	cmd.Stderr = os.Stderr
 	if err := configureSubprocessEnv(cmd, workspace.Path, cfg); err != nil {
@@ -930,13 +934,6 @@ func shellCommandContext(ctx context.Context, command string) *exec.Cmd {
 		return exec.CommandContext(ctx, "cmd", "/C", command)
 	}
 	return exec.CommandContext(ctx, "bash", "-lc", command)
-}
-
-func quoteCommandArg(arg string) string {
-	if runtime.GOOS == "windows" {
-		return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
-	}
-	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }
 
 func configureSubprocessEnv(cmd *exec.Cmd, workspacePath string, cfg *api.AgentRuntimeConfig) error {

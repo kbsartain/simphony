@@ -181,7 +181,10 @@ app-server or Claude CLI); tracker state = stage.
   z.ai/Kimi (send one, endpoint-primary); a logged-in personal Claude account in
   `~/.claude.json` hijacks `ANTHROPIC_BASE_URL` auth when user settings load — the
   embedded shim therefore defaults `settingSources` to `["project", "local"]`
-  (never `user`) unless the workflow sets `setting_sources` explicitly.
+  (never `user`) unless the workflow sets `setting_sources` explicitly; launching
+  the embedded shim through `cmd /C` with a quoted path mangles argv on Windows
+  (node receives the quotes as part of the module path) — the runner invokes
+  `node <shim>` directly, no shell, for the embedded-shim default path.
 
 **Full imported memory archive:**
 `%USERPROFILE%\Documents\kimi\workspace\claude-import-archive\simphony-memory\`

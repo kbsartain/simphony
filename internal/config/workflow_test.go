@@ -250,6 +250,62 @@ func TestResolveConfig_ClaudeAgentRuntime(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_ClaudeStageOverrides(t *testing.T) {
+	t.Setenv("TEST_CLAUDE_STAGE_KEY", "resolved-claude-stage-key")
+
+	def := &api.WorkflowDefinition{
+		Config: map[string]interface{}{
+			"tracker": map[string]interface{}{
+				"kind":         "linear",
+				"api_key":      "$SIM_TEST_TRACKER_KEY",
+				"project_slug": "proj",
+			},
+			"agent_runtime": map[string]interface{}{
+				"provider": "claude",
+				"model":    "glm-5.2",
+			},
+			"claude": map[string]interface{}{
+				"model": "glm-5.2",
+				"stage_overrides": map[string]interface{}{
+					"coding": map[string]interface{}{
+						"model":            "glm-5.1",
+						"reasoning_effort": "low",
+					},
+					"review": map[string]interface{}{
+						"model":        "claude-opus-4.7",
+						"endpoint_url": "https://api.anthropic.com",
+						"api_key":      "$TEST_CLAUDE_STAGE_KEY",
+					},
+				},
+			},
+		},
+	}
+
+	cfg, err := ResolveConfig(def, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Claude.StageOverrides["coding"].Model != "glm-5.1" {
+		t.Fatalf("claude.stage_overrides coding model = %q, want glm-5.1", cfg.Claude.StageOverrides["coding"].Model)
+	}
+	if cfg.Claude.StageOverrides["coding"].ReasoningEffort != "low" {
+		t.Fatalf("claude.stage_overrides coding reasoning_effort = %q, want low", cfg.Claude.StageOverrides["coding"].ReasoningEffort)
+	}
+	reviewOverride := cfg.Claude.StageOverrides["review"]
+	if reviewOverride.Model != "claude-opus-4.7" || reviewOverride.EndpointURL != "https://api.anthropic.com" {
+		t.Fatalf("claude.stage_overrides review = %+v, want model and endpoint", reviewOverride)
+	}
+	if reviewOverride.APIKey != "resolved-claude-stage-key" || !reviewOverride.APIKeyConfigured {
+		t.Fatalf("claude.stage_overrides review api_key = %q configured=%v, want resolved key", reviewOverride.APIKey, reviewOverride.APIKeyConfigured)
+	}
+	if cfg.AgentRuntime.StageOverrides["review"].Model != "claude-opus-4.7" {
+		t.Fatalf("agent_runtime inherited review override = %+v, want claude-opus-4.7", cfg.AgentRuntime.StageOverrides["review"])
+	}
+	if cfg.AgentRuntime.StageOverrides["coding"].Model != "glm-5.1" {
+		t.Fatalf("agent_runtime inherited coding override = %+v, want glm-5.1", cfg.AgentRuntime.StageOverrides["coding"])
+	}
+}
+
 func TestResolveConfig_EnvVarResolution(t *testing.T) {
 	os.Setenv("TEST_LINEAR_KEY", "resolved-key")
 	defer os.Unsetenv("TEST_LINEAR_KEY")
